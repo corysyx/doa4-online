@@ -2661,6 +2661,29 @@ def test_pair_hidden_launch(root):
           f"np_pair starts the third joiner hidden too: {got}")
 
 
+def test_pair_joiner_game(root):
+    # fix-filetimes: --joiner-game gives the joiner (and a third joiner) their own game folder, the host keeps --game (the
+    # launch command is the first line of command.txt)
+    def game_root(runs, folder):
+        words = open(os.path.join(runs, folder, "command.txt")).read().splitlines()[0].split(" ")
+        return [w for w in words if w.startswith("--game_data_root=")]
+    g_host, g_join = os.path.join(root, "game_host"), os.path.join(root, "game_joiner")
+    for g in (g_host, g_join):
+        os.makedirs(g)
+    code, out, runs = np_pair(root, "jg", "--game", g_host, "--joiner-game", g_join)
+    check(code == 0, f"np_pair --joiner-game: exit {code}\n{out}")
+    check(game_root(runs, "jg_host") == [f"--game_data_root={g_host}"], f"np_pair --joiner-game: the host runs on --game: {game_root(runs, 'jg_host')}")
+    check(game_root(runs, "jg_joiner") == [f"--game_data_root={g_join}"],
+          f"np_pair --joiner-game: the joiner runs on --joiner-game: {game_root(runs, 'jg_joiner')}")
+    code, out, runs = np_pair(root, "jg3", "--game", g_host, "--joiner-game", g_join, "--third-joiner", "--expect", "refused-busy")
+    check(game_root(runs, "jg3_third") == [f"--game_data_root={g_join}"],
+          f"np_pair --joiner-game: a third joiner runs on --joiner-game too: {game_root(runs, 'jg3_third')}")
+    # control: without --joiner-game the joiner runs on --game, like the host
+    code, out, runs = np_pair(root, "jg0", "--game", g_host)
+    check(code == 0 and game_root(runs, "jg0_joiner") == [f"--game_data_root={g_host}"],
+          f"np_pair without --joiner-game: the joiner runs on --game: exit {code} {game_root(runs, 'jg0_joiner')}")
+
+
 def test_pair_selftest(root):
     code, out, runs = np_pair(root, "stn", "--env-joiner", "FAKE_NO_SELFTEST=1")
     check(code == 1 and "joiner game.log: NO SELFTEST" in out, f"np_pair, no self-test line in the joiner's game.log: exit {code}\n{out}")

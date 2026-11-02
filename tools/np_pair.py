@@ -7,7 +7,7 @@ what each copy wrote.
       [--env-host K=V ...] [--env-joiner K=V ...] [--arg-host=ARG ...] [--arg-joiner=ARG ...]
       [--kill-joiner-at-frame N | --quit-joiner-at-frame N] [--third-joiner] [--host-only SECONDS]
       [--expect ok|desync|lost|refused-build|refused-files|refused-busy|refused-session|lobby] [--timeout S]
-      [--game DIR] [--end-grace S] [--step-timeout S] [--settle S] [--orphan-watch S]
+      [--game DIR] [--joiner-game DIR] [--end-grace S] [--step-timeout S] [--settle S] [--orphan-watch S]
 
 Run folders <runs>/NAME_host and <runs>/NAME_joiner (and NAME_third), each: ud/ (a copy of the pristine save), ctl/ (the
 test switches' folder DOA4_NP_TEST_DIR: np_ctl.on, status.txt, pids.txt, session/), game.log, command.txt, stdout.txt,
@@ -356,7 +356,8 @@ class Pair:
 
     def launch(self, side, exe, env, extra_args, affinity=None):
         a = self.a
-        args = [exe, "--headless=true", f"--game_data_root={a.game}", f"--user_data_root={side.ud}",
+        game = a.game if side.name == "host" else (a.joiner_game or a.game)  # --joiner-game: the joiner's own install
+        args = [exe, "--headless=true", f"--game_data_root={game}", f"--user_data_root={side.ud}",
                 f"--log_file={os.path.join(side.run, 'game.log')}"]
         if a.cache:
             os.makedirs(a.cache, exist_ok=True)
@@ -962,6 +963,7 @@ def main(argv=None):
     ap.add_argument("--joiner-exe")
     ap.add_argument("--cache")
     ap.add_argument("--game", default=np_run.GAME_DIR)
+    ap.add_argument("--joiner-game", help="the joiner's (and a third joiner's) game folder (default --game): two installs, as on two PCs")
     ap.add_argument("--joiner-affinity", help="logical CPU mask for the joiner, e.g. 0x3")
     ap.add_argument("--sim", help="DOA4_NP_SIM on both sides: delay_ms,jitter_ms,loss_pct")
     ap.add_argument("--delay", type=int)
