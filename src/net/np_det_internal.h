@@ -26,6 +26,7 @@ enum Fix : uint32_t {
   kKeepAlive = 1u << 11,  // the D3D kick thread's timeout re-present does nothing (np_core.h ClassifyKeepAlive)
   kReader = 1u << 12,     // the save manager's one-shot file thread runs to its end before the game polls it
   kPort1000 = 1u << 13,   // the game's own port-1000 socket is not opened (np_det_online.cpp)
+  kFileTimes = 1u << 14,  // every file reports kSessionFileTime as its times (SDK Entry::set_fixed_timestamp; np_det.cpp)
 };
 // The bit of fix i is 1u << i, with i its index in np_core.h kFixNames (the names DOA4_NP_FIX and the meta use).
 

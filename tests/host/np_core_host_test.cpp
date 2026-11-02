@@ -602,11 +602,13 @@ static const std::string kT11Fixes = "seed,clock,sdkclock,xam,audio,movie,loader
 static const std::string kT12Fixes = kT11Fixes + ",keepalive,reader";
 
 static void TestFixSets() {
-  CHECK(kFixCount == 14);
-  // The default (DOA4_NP_FIX unset, empty or "all") turns every fix on, port1000 (Task 13) last, in fix order.
-  CHECK(FixSetText(ParseFixSet(nullptr)) == kT12Fixes + ",port1000");
-  CHECK(FixSetText(ParseFixSet("")) == kT12Fixes + ",port1000");
-  CHECK(FixSetText(ParseFixSet("all")) == kT12Fixes + ",port1000");
+  CHECK(kFixCount == 15);
+  // The default (DOA4_NP_FIX unset, empty or "all") turns every fix on, port1000 (Task 13) then filetimes
+  // (fix-filetimes) last, in fix order.
+  CHECK(FixSetText(ParseFixSet(nullptr)) == kT12Fixes + ",port1000,filetimes");
+  CHECK(FixSetText(ParseFixSet("")) == kT12Fixes + ",port1000,filetimes");
+  CHECK(FixSetText(ParseFixSet("all")) == kT12Fixes + ",port1000,filetimes");
+  CHECK(ParseFixSet("filetimes") == 1u << 14);
   // Each name is its own bit, in kFixNames order (np_det_internal.h Fix pins the same bits).
   CHECK(ParseFixSet("keepalive") == 1u << 11);
   CHECK(ParseFixSet("reader") == 1u << 12);
@@ -614,7 +616,8 @@ static void TestFixSets() {
   CHECK(ParseFixSet("notify") == 1u << 10);
   // Task 13's before-half (DOA4_NP_FIX=all-port1000) is exactly the Task 12 set: port1000 cleared, the thirteen kept.
   CHECK((ParseFixSet("all-port1000") & (1u << 13)) == 0);
-  CHECK(FixSetText(ParseFixSet("all-port1000")) == kT12Fixes);
+  CHECK(FixSetText(ParseFixSet("all-port1000")) == kT12Fixes + ",filetimes");
+  CHECK(FixSetText(ParseFixSet("all-port1000-filetimes")) == kT12Fixes);
   CHECK(FixSetText(ParseFixSet("reader,port1000,seed")) == "seed,reader,port1000");
   CHECK(ParseFixSet("port") == 0);
   CHECK(ParseFixSet("port1000x") == 0);
@@ -631,16 +634,50 @@ static void TestFixSets() {
   const uint32_t off = ParseFixSet("all-keepalive-reader");
   CHECK((off & (1u << 11)) == 0);
   CHECK((off & (1u << 12)) == 0);
-  CHECK(FixSetText(off) == kT11Fixes + ",port1000");
-  CHECK(FixSetText(ParseFixSet("all-keepalive-reader-port1000")) == kT11Fixes);
+  CHECK(FixSetText(off) == kT11Fixes + ",port1000,filetimes");
+  CHECK(FixSetText(ParseFixSet("all-keepalive-reader-port1000-filetimes")) == kT11Fixes);
   // One fix at a time (Task 11a's keepalive-only and reader-only runs).
-  CHECK(FixSetText(ParseFixSet("all-reader")) == kT11Fixes + ",keepalive,port1000");
-  CHECK(FixSetText(ParseFixSet("all-keepalive")) == kT11Fixes + ",reader,port1000");
+  CHECK(FixSetText(ParseFixSet("all-reader")) == kT11Fixes + ",keepalive,port1000,filetimes");
+  CHECK(FixSetText(ParseFixSet("all-keepalive")) == kT11Fixes + ",reader,port1000,filetimes");
   // Unchanged: "none", and names that are not fixes (whole names only: no prefix match).
   CHECK(ParseFixSet("none") == 0 && FixSetText(0) == "none");
   CHECK(ParseFixSet("keep") == 0);
   CHECK(ParseFixSet("keepalivex") == 0);
   CHECK(ParseFixSet("readers") == 0);
+}
+
+// fix-filetimes: the fixed file times are for an online session (two installs) and for a replay of an online
+// session's recording; a record run and its replays keep the real times, so the fix set they log and write into the
+// meta is the one every recording made before this fix holds (they stay replayable).
+static void TestSessionFixes() {
+  const uint32_t all = ParseFixSet(nullptr);
+  CHECK((all & (1u << 14)) != 0);
+  // not online: the bit is cleared, everything else kept; the text is the Task 13 set (every older recording's)
+  CHECK(SessionFixes(all, false) == (all & ~(1u << 14)));
+  CHECK(FixSetText(SessionFixes(all, false)) == kT12Fixes + ",port1000");
+  // online: the set as DOA4_NP_FIX gives it
+  CHECK(SessionFixes(all, true) == all);
+  CHECK(FixSetText(SessionFixes(all, true)) == kT12Fixes + ",port1000,filetimes");
+  // the before-half switch DOA4_NP_FIX=all-filetimes turns it off in an online session too
+  CHECK(FixSetText(SessionFixes(ParseFixSet("all-filetimes"), true)) == kT12Fixes + ",port1000");
+  // other bits are never touched, in either mode
+  CHECK(SessionFixes(ParseFixSet("seed,reader"), false) == ParseFixSet("seed,reader"));
+  CHECK(SessionFixes(ParseFixSet("seed,reader"), true) == ParseFixSet("seed,reader"));
+  CHECK(SessionFixes(0, true) == 0 && SessionFixes(0, false) == 0);
+  // a recording's meta: an online session's (filetimes listed) asks a replay for the fixed times, any other does not
+  auto meta = [](const std::string& fixes) { return "build=1\ndata=2\nfixes=" + fixes + "\nserial=default\n"; };
+  CHECK(MetaFileTimes(meta(kT12Fixes + ",port1000,filetimes")));
+  CHECK(MetaFileTimes(meta("filetimes")));
+  CHECK(MetaFileTimes(meta("filetimes,seed")));
+  CHECK(!MetaFileTimes(meta(kT12Fixes + ",port1000")));
+  CHECK(!MetaFileTimes(meta("none")));
+  CHECK(!MetaFileTimes(meta("seed,filetimesx")));
+  CHECK(!MetaFileTimes(meta("xfiletimes")));
+  CHECK(!MetaFileTimes("build=1\ndata=2\n"));  // no fixes key (a version-1 recording)
+  CHECK(!MetaFileTimes("build=1\nxfixes=filetimes\n"));
+  // the fixed value: one FILETIME, before the sessions' virtual "now" (kFileTimeBase), 2024-01-01 00:00 UTC
+  CHECK(kSessionFileTime == 0x01DA3C457689C000ull);
+  CHECK(kSessionFileTime < kFileTimeBase);
 }
 
 // The recording's meta round trip with the new fix set (np_session.cpp CurrentMeta writes "fixes=" + the set).
@@ -649,7 +686,15 @@ static void TestMetaFixSet() {
     return "build=ded4ba28058f10b5\ndata=8ce3302b3fcea98d\nfixes=" + fixes +
            "\nserial=default\nsweep=4\ntweaks=doa4_tag_all_stages=0,doa4_mp_hidden_characters=0\n";
   };
-  const std::string cur = meta(FixSetText(ParseFixSet(nullptr)));
+  // fix-filetimes: a record run's (and its replays') default set is SessionFixes(all, false), which is the Task 13 set
+  // these pins were written for; an online session's set adds filetimes (TestSessionFixes, and below).
+  const std::string cur = meta(FixSetText(SessionFixes(ParseFixSet(nullptr), false)));
+  const std::string online = meta(FixSetText(SessionFixes(ParseFixSet(nullptr), true)));
+  // An online session's recording replays only in a session that also has filetimes (np_session.cpp: a replay of a
+  // recording whose fixes list it), never in a record-mode default one, and the other way round.
+  CHECK(MetaMismatch(online, cur) == "fixes " + kT12Fixes + ",port1000,filetimes vs " + kT12Fixes + ",port1000");
+  CHECK(MetaMismatch(cur, online) == "fixes " + kT12Fixes + ",port1000 vs " + kT12Fixes + ",port1000,filetimes");
+  CHECK(MetaMismatch(online, online).empty());
   // Written and read back unchanged, and equal to itself.
   std::string bytes = EncodeRecHeader(1, 0, cur) + EncodeRecFrame(FrameInput{});
   Recording r;
@@ -666,7 +711,7 @@ static void TestMetaFixSet() {
   // before-half recording (all-port1000) replays with the same setting.
   const std::string t12 = meta(kT12Fixes);
   CHECK(MetaMismatch(t12, cur) == "fixes " + kT12Fixes + " vs " + kT12Fixes + ",port1000");
-  const std::string no1000 = meta(FixSetText(ParseFixSet("all-port1000")));
+  const std::string no1000 = meta(FixSetText(SessionFixes(ParseFixSet("all-port1000"), false)));  // a record run's
   CHECK(MetaMismatch(cur, no1000) == "fixes " + kT12Fixes + ",port1000 vs " + kT12Fixes);
   CHECK(MetaMismatch(no1000, t12).empty());
   CHECK(MetaMismatch(no1000, no1000).empty());
@@ -873,6 +918,7 @@ int main() {
   TestAudioClocks();
   TestMtSeeds();
   TestFixSets();
+  TestSessionFixes();
   TestMetaFixSet();
   TestKeepAlive();
   TestReaderOutcome();

@@ -15,6 +15,9 @@
 
 namespace doa4::np::det {
 
+// Whether this session may use the "filetimes" fix (np_core.h SessionFixes): true for an online session and for a
+// replay of an online session's recording, false otherwise (the default). Set before FixSetName and Start.
+void AllowFileTimes(bool allow);
 // Called by Start when a session begins (before guest code runs).
 void Start(uint64_t seed, const std::filesystem::path& dir);
 // Called by the frame hook (main thread, loop head) with the frame about to run.
@@ -28,9 +31,9 @@ void Stop();
 const std::vector<std::string>& CounterNames();
 void CounterValues(std::vector<uint32_t>* out);
 
-// The fix names this session uses (from DOA4_NP_FIX), comma separated in fix order, or "none": as
-// Start logs them and the recording's meta holds them. Reads the environment, so it answers the same
-// before and after Start.
+// The fix names this session uses (from DOA4_NP_FIX, filetimes only if AllowFileTimes), comma separated in fix
+// order, or "none": as Start logs them and the recording's meta holds them. Reads the environment, so it answers
+// the same before and after Start.
 std::string FixSetName();
 
 // The "keepalive" fix for sub_8275AEE0, whose hook lives in doa4_photo_hook.cpp (sub_8275AD70's is in np_det.cpp):

@@ -45,6 +45,15 @@
 //             a frame later (Task 11a: the save-slot time 0x831B99D0 and the thread's state block 0x82E476A0).
 //             A thread not found or not ended after 2 s is a fallback (fb_reader).
 //   port1000  the game's online manager does not open its own socket (VDP, port 1000): np_det_online.cpp.
+//   filetimes every file the guest asks about (game folder, saves, cache) reports one fixed FILETIME
+//             (np_core.h kSessionFileTime) as its creation, access, write and change time, through the SDK's
+//             Entry::set_fixed_timestamp. The game keeps each AFS archive's creation time (sub_823FCBA0 ->
+//             GetFileInformationByHandle sub_82791920 -> NtQueryInformationFile class 34) in tables at 0x82C5ED08
+//             and 0x82C7F7E8 (28-byte records, the time at +0x14), so two installs extracted or copied at different
+//             moments desynced every real two-PC session at frame 2-3 (the first friend playtest, v1.0.4).
+//             Online sessions and replays of their recordings only (np_core.h SessionFixes): a record run and
+//             its replays run on one install and keep the real times. Set at Start, before guest code runs;
+//             the SDK reads it at every query, so entries made at mount time are covered.
 // DOA4_NP_FIX: "all" (the default), "none", a comma list, or "all-x-y" (all but
 // x and y); names and bits: np_core.h kFixNames.
 
@@ -58,6 +67,7 @@
 
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
+#include <rex/filesystem/entry.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/memory.h>
@@ -107,10 +117,11 @@ static_assert(FixIs(kSeed, 0, "seed") && FixIs(kClock, 1, "clock") && FixIs(kSdk
                   FixIs(kLoader, 6, "loader") && FixIs(kCri, 7, "cri") && FixIs(kCriJob, 8, "crijob") &&
                   FixIs(kWorkers, 9, "workers") && FixIs(kNotify, 10, "notify") &&
                   FixIs(kKeepAlive, 11, "keepalive") && FixIs(kReader, 12, "reader") &&
-                  FixIs(kPort1000, 13, "port1000") && kFixCount == 14,
+                  FixIs(kPort1000, 13, "port1000") && FixIs(kFileTimes, 14, "filetimes") && kFixCount == 15,
               "one Fix bit per kFixNames entry, in that order");
 
 std::atomic<uint32_t> g_fixes{0};
+bool g_allow_file_times = false;  // AllowFileTimes: online sessions and replays of their recordings
 std::atomic<uint32_t> g_frame{0};
 std::atomic<bool> g_stopped{false};
 std::string g_headless_before = "false";  // the headless cvar as Start found it; Stop puts it back
@@ -259,16 +270,23 @@ void ThreadCreated(uint32_t start, uint32_t tid) {
   MiddlewareThreadCreated(start);
 }
 
-std::string FixSetName() { return FixSetText(ParseFixSet(TestSwitch("DOA4_NP_FIX"))); }
+void AllowFileTimes(bool allow) { g_allow_file_times = allow; }
+
+std::string FixSetName() { return FixSetText(SessionFixes(ParseFixSet(TestSwitch("DOA4_NP_FIX")), g_allow_file_times)); }
 
 void Start(uint64_t seed, const std::filesystem::path& dir) {
   g_seed = seed;
   g_seeds.Reset();  // the series counts the seedings of this session
   TraceStart(dir);
-  const uint32_t fixes = ParseFixSet(TestSwitch("DOA4_NP_FIX"));
+  const uint32_t fixes = SessionFixes(ParseFixSet(TestSwitch("DOA4_NP_FIX")), g_allow_file_times);
   g_fixes.store(fixes, std::memory_order_release);
   LogLine("determinism fixes: " + FixSetName());
   if (fixes & kSdkClock) rex::chrono::Clock::set_guest_time_override(&GuestTime);
+  if (fixes & kFileTimes) rex::filesystem::Entry::set_fixed_timestamp(kSessionFileTime);
+  LogLine(fmt::format("file times: {}", (fixes & kFileTimes)
+                                            ? fmt::format("every file reports {:016X} (filetimes)",
+                                                          rex::filesystem::Entry::fixed_timestamp())
+                                            : std::string("the real ones (filetimes off)")));
   g_headless_before = rex::cvar::GetFlagByName("headless");
   if (fixes & kXam) {
     rex_overlapped_inline(1);
@@ -297,12 +315,13 @@ void Stop() {
     rex::cvar::SetFlagByName("headless", g_headless_before);
   }
   if (fixes & kSdkClock) rex::chrono::Clock::set_guest_time_override(nullptr);
+  if (fixes & kFileTimes) rex::filesystem::Entry::set_fixed_timestamp(0);
   const auto state = [&](uint32_t bit) { return (fixes & bit) ? "released" : "never held"; };
   LogLine(fmt::format(
       "determinism layer off: lockstep audio {}, inline completions and headless {} (headless is now '{}', was '{}'), "
-      "clock override {}, notification lockstep {}",
+      "clock override {}, notification lockstep {}, fixed file times {}",
       state(kAudio), state(kXam), rex::cvar::GetFlagByName("headless"), g_headless_before, state(kSdkClock),
-      state(kNotify)));
+      state(kNotify), state(kFileTimes)));
   // Host-timed counts (how often the 30 ms timeout fired depends on the host's speed): logged, never gated on.
   LogLine(fmt::format("keep-alive ({}): {} calls skipped on the D3D kick thread (sub_8275AD70 {}, sub_8275AEE0 {}), "
                       "{} from another site",

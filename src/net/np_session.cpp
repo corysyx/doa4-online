@@ -1451,6 +1451,7 @@ void StartOnline(Host host) {
   s.slot = s.ho.role == handoff::Role::kHost ? 0 : 1;
   s.seed = s.ho.seed;
   s.dir = s.host.session_dir;
+  det::AllowFileTimes(true);  // two installs: the fixed file times (np_det.cpp filetimes), unless DOA4_NP_FIX clears it
   std::error_code ec;
   std::filesystem::create_directories(s.dir / "shots", ec);
   OpenLog(s);
@@ -1692,12 +1693,12 @@ void Start(Host host) {
     if (s.guest_meta != "(none)") extra += "guest=" + s.guest_meta + "\n";
     if (s.unlock_meta != "(none)") extra += "unlock=" + s.unlock_meta + "\n";
   }
-  const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
 
   std::string error;
+  std::string note;                                      // a replay's decode note
+  const std::filesystem::path rec = Env("DOA4_NP_REC");  // a replay's recording
   if (s.mode == Mode::kReplay) {
-    std::string bytes, note;
-    const std::filesystem::path rec = Env("DOA4_NP_REC");
+    std::string bytes;
     if (!ReadFile(rec, &bytes) || !DecodeRecording(bytes, &s.replay, &error, &note)) {
       // A replay that cannot start ends the run like a refusal does: left running it would boot a normal
       // game and wait at the title for a test tool's timeout (or for a person).
@@ -1706,6 +1707,15 @@ void Start(Host host) {
       if (s.host.quit) s.host.quit();
       return;
     }
+    // fix-filetimes: a replay of an online session's recording (its fixes list filetimes) runs with the fixed file
+    // times that session had; a record run's recording keeps the real ones (np_core.h SessionFixes)
+    det::AllowFileTimes(MetaFileTimes(s.replay.meta));
+  } else {
+    det::AllowFileTimes(false);
+  }
+  const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
+
+  if (s.mode == Mode::kReplay) {
     s.seed = s.replay.seed;
     Log("replay " + rec.string() + ": " + std::to_string(s.replay.frames.size()) + " frames, seed " +
         std::to_string(s.seed) + (note.empty() ? "" : " (" + note + ")"));

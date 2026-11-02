@@ -407,6 +407,24 @@ uint32_t ParseFixSet(const char* text) {
   return bits;
 }
 
+uint32_t SessionFixes(uint32_t parsed, bool file_times) {
+  constexpr uint32_t kFileTimesBit = 1u << 14;  // kFixNames[14] = "filetimes" (np_det_internal.h kFileTimes)
+  static_assert(kFixCount == 15, "filetimes is fix 14");
+  return file_times ? parsed : (parsed & ~kFileTimesBit);
+}
+
+bool MetaFileTimes(std::string_view meta) {
+  const std::string fixes = MetaValue(meta, "fixes");
+  std::string_view s(fixes);
+  while (!s.empty()) {
+    const size_t at = s.find(',');
+    if (s.substr(0, at) == "filetimes") return true;
+    if (at == std::string_view::npos) break;
+    s.remove_prefix(at + 1);
+  }
+  return false;
+}
+
 std::string FixSetText(uint32_t bits) {
   std::string names;
   for (int i = 0; i < kFixCount; ++i) {

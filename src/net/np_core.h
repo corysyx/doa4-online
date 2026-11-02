@@ -150,7 +150,7 @@ std::string MetaValue(std::string_view meta, std::string_view key);
 // The determinism layer's fixes in bit order: fix i is bit 1u << i (np_det_internal.h Fix, pinned there).
 inline constexpr const char* kFixNames[] = {"seed",  "clock",  "sdkclock", "xam",    "audio",     "movie", "loader",
                                             "cri",   "crijob", "workers",  "notify", "keepalive", "reader",
-                                            "port1000"};
+                                            "port1000", "filetimes"};
 inline constexpr int kFixCount = int(sizeof(kFixNames) / sizeof(kFixNames[0]));
 // "all", empty or null: every bit (~0u); "none": 0; "a,b,c": those fixes; "all-a-b": all but a and b. Names that are
 // not fixes are ignored.
@@ -158,6 +158,15 @@ uint32_t ParseFixSet(const char* text);
 // The names of the fixes in `bits`, comma separated in fix order, or "none": the text the session logs and the
 // recording's meta holds ("fixes=" + this), so a recording made with another set is refused (MetaMismatch).
 std::string FixSetText(uint32_t bits);
+// fix-filetimes: the bit "filetimes" (every game and save file shows the guest kSessionFileTime as its times) is for
+// two installs: an online session, and a replay of an online session's recording. `parsed` (ParseFixSet) is returned
+// with that bit cleared unless `file_times`; a record run and its replays thus log and write the fix set every
+// recording before this fix holds, and keep the real times.
+uint32_t SessionFixes(uint32_t parsed, bool file_times);
+// True if the recording's meta (its "fixes" key, MetaValue) lists filetimes: a replay of that recording needs it.
+bool MetaFileTimes(std::string_view meta);
+// The one FILETIME a session's files report (2024-01-01 00:00 UTC: before the virtual clocks' kFileTimeBase).
+inline constexpr uint64_t kSessionFileTime = 0x01DA3C457689C000ull;
 
 // ---- Digest regions ----
 // A guest region hashed every frame, minus masked byte ranges (host-timing

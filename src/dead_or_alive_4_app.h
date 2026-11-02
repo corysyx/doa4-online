@@ -26,6 +26,7 @@
 #include <rex/filesystem.h>
 #include <rex/input/input_system.h>
 #include <rex/filesystem/devices/host_path_device.h>
+#include <rex/filesystem/entry.h>
 #include <rex/filesystem/vfs.h>
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/graphics_system.h>
@@ -428,6 +429,13 @@ class DeadOrAlive4App : public rex::ReXApp {
     SetUpExtras();  // before any guest code runs: the tweaks patch tables read at boot
     SetUpSnapshotWatcher();  // before the first guest swap, so the swap counts start together
     StartNetplaySession();   // DOA4_NP only: record / replay / hash from the first frame
+    // fix-filetimes: what the guest is shown as file times from here on (np_det.cpp filetimes; a [LIFE] line, so an
+    // offline run says so without any [NET]/[NP] line)
+    if (const uint64_t ft = rex::filesystem::Entry::fixed_timestamp()) {
+      REXLOG_INFO("[doa4][LIFE] file times: every file reports {:016X}", ft);
+    } else {
+      REXLOG_INFO("[doa4][LIFE] file times: the real ones");
+    }
   }
 
   // Netplay phase 0 (src/net/np_session.h): inert unless DOA4_NP is set; phase 1 (Task 12): the online session of a
