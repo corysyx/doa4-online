@@ -1,5 +1,7 @@
 # Dead or Alive 4 — Netplay PC recomp
 
+![Dead or Alive 4 title screen running on PC](docs/images/title-screen.jpg)
+
 A native Windows build of **Dead or Alive 4** (Xbox 360), statically recompiled with the
 [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). The game's code is translated ahead of time
 into C++ (`generated/`); the SDK supplies the Xbox 360 runtime (kernel, GPU, audio, input). This
@@ -8,10 +10,92 @@ own copy of the game.
 
 This is the `netplay` branch of [Dwreckgg/doa4-recomp](https://github.com/Dwreckgg/doa4-recomp), a fork
 of [parkerallan/doa4-recomp](https://github.com/parkerallan/doa4-recomp). On top of upstream it adds
-two-player **online play**, frame pacing, an Esc menu (Video / Controls / Photo / Extras / Game /
-Online tabs), graphics options, full-quality photos and a first-run setup that finds or extracts the
-game files. It builds against the `doa4-netplay` branch of
+two-player **online play**, frame pacing, an Esc menu (Video / Audio / Controls / Photo / Extras /
+Online / Game tabs), graphics options, full-quality photos and a first-run setup that finds or
+extracts the game files. It builds against the `doa4-netplay` branch of
 [Dwreckgg/rexglue-sdk](https://github.com/Dwreckgg/rexglue-sdk), pinned in `netplay_sdk.txt`.
+
+## Features
+
+### The Esc menu
+
+Press **Esc** at any time in the game to open the menu, and **Esc** again (or **Close (Esc)** at the
+bottom) to close it. Your choices are saved to `dead_or_alive_4.toml` next to the exe and come back on
+the next start. The menu has seven tabs:
+
+**Video**
+- **Display mode:** Windowed or Borderless fullscreen.
+- **Render scale:** x1 (1280x720), x2 (2560x1440), x3 (3840x2160) or x4 (5120x2880, supersampling).
+  It takes effect after a restart; **Restart now** restarts the game for you.
+- **Anti-aliasing:** Off, FXAA or FXAA Extreme. The game already uses 2x MSAA, and FXAA Extreme suits
+  it best (FXAA softens text a little).
+- **Texture filtering:** Off, 2x, 4x, 8x or 16x anisotropic filtering. You may see it after the next
+  screen loads.
+
+**Audio**
+- **Speakers:** Automatic (follows Windows: 5.1 when your speakers are set to 5.1 or more, stereo
+  otherwise), Stereo, or 5.1 surround. It takes effect after a restart (**Restart now**).
+- **Output device:** shows how many channels your device has and what the game is sending.
+
+**Controls**
+- **Controller:** pick **Player 1** to **Player 4**, then click a button in the list and press the
+  controller button you want for it (Esc cancels). **Reset Player N** restores the default layout.
+  Remapping needs the SDL input backend (`input_backend = sdl`).
+- **Keyboard:** **Use keyboard as controller** turns keyboard play on. Choose which player the
+  keyboard is (**P1** to **P4**), click an action and press the key you want for it; **Reset keyboard**
+  restores the defaults. Esc opens the menu, so the keyboard's Start is Enter.
+
+**Photo**
+- **F12** saves a photo of the game's own frame, without any overlay.
+- **Format:** PNG at monitor size (the default), PNG at full render size, or JPG at full render size.
+- **Folder:** where photos go (default `Pictures\DOA4`): **Choose folder...**, **Open folder**, and
+  **Use default** to go back to the default.
+- **In-game snapshots:** "Also save a full-quality copy when you save a snapshot to the in-game Album"
+  saves a full-quality copy of every snapshot you save in the game's own photo mode.
+
+**Extras**
+- **Unlocks:** Unlock all characters, Unlock all costumes, Unlock all system voices, Unlock all
+  stages, or Unlock everything. Load your profile first (reach the main menu). Before the first unlock
+  the game backs up your save, and the tab shows where.
+- **Game tweaks:** "All stages in Tag battle" and "Hidden characters in multiplayer select".
+
+**Online**
+- **Play with a friend:** **Host** shows **Your code** (**Copy** puts it on the clipboard); the other
+  player types it and presses **Join**. The tab then shows the connection and the ping. The host
+  presses **Start online session** to begin, and **Leave online session** ends it. **Disconnect**
+  stops hosting or drops the connection before a session starts.
+- **Input delay:** **Auto**, or **Manual** with a slider from 1 to 8 frames. The host's choice applies
+  to both players.
+- **Strict router?:** if the other player cannot connect, type the code their game shows and press
+  **Reach out**.
+- **Show ping and input delay over the game (F9).**
+- **Check for Updates** downloads the newest release, and **Open session logs** opens the folder of
+  online session logs. **About** shows which version you run.
+
+**Game**
+- **Game files:** the folder the game runs from, with **Change...** to pick another (used from the
+  next start) and **Open folder**.
+- **Saves:** the folder that holds your saves and shader cache.
+
+During an online session some options are locked so both games stay identical: the Extras tab, options
+that need a restart, and changing the game folder.
+
+### Hotkeys
+
+| Key | What it does |
+|---|---|
+| **Esc** | Opens and closes the menu |
+| **F12** | Saves a photo |
+| **F9** | Shows the online ping and input delay |
+| **F6** | Shows the diagnostics overlay |
+
+### Also in this build
+
+- **Online play** for two players over the internet, with join codes (no server or account needed).
+  See [Easy setup](#easy-setup-play-online-with-a-friend).
+- **Frame pacing:** a steady 60 fps.
+- **First-run setup:** point the game at your disc image (`.iso`) or an extracted folder once, and it
+  sets itself up.
 
 ## Easy setup: play online with a friend
 
@@ -287,7 +371,7 @@ can lock files the game is writing). The Esc menu's Game tab shows the folder in
 ![The Esc menu's Game tab: the game files folder (with Change... and Open folder) and the saves folder](docs/images/game-tab.png)
 
 - Settings live in `dead_or_alive_4.toml` next to the exe; the **Esc** menu edits them (tabs
-  Video, Controls, Photo, Extras, Game, Online).
+  Video, Audio, Controls, Photo, Extras, Online, Game; see [Features](#features)).
 - **F6** shows a diagnostics overlay.
 
 ### Photos
