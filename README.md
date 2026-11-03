@@ -120,6 +120,7 @@ that need a restart, and changing the game folder.
 | **F12** | Saves a photo |
 | **F9** | Shows the online ping and input delay |
 | **F6** | Shows the diagnostics overlay |
+| **F8** | Online: marks the moment of a sound or timing glitch in the session log (send the log with your report) |
 
 ### Also in this build
 
