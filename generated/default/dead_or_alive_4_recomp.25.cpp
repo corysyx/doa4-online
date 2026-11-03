@@ -47592,6 +47592,16 @@ DEFINE_REX_FUNC(sub_825B6840) {
 	return;
 }
 
+DEFINE_REX_FUNC(sub_825B6858) {
+	REX_FUNC_PROLOGUE();
+	// li r11,1
+	ctx.r11.s64 = 1;
+	// stw r11,28(r3)
+	REX_STORE_U32(ctx.r3.u32 + 28, ctx.r11.u32);
+	// blr 
+	return;
+}
+
 DEFINE_REX_FUNC(sub_825B6868) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};

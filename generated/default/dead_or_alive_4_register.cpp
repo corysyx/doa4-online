@@ -950,6 +950,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x8237EB98, sub_8237EB98);
   registrar->SetFunction(0x8237EBE0, sub_8237EBE0);
   registrar->SetFunction(0x8237EC98, sub_8237EC98);
+  registrar->SetFunction(0x8237F0A8, sub_8237F0A8);
   registrar->SetFunction(0x8237F0B0, sub_8237F0B0);
   registrar->SetFunction(0x8237F100, sub_8237F100);
   registrar->SetFunction(0x8237F110, sub_8237F110);
@@ -3643,7 +3644,9 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x824A4490, sub_824A4490);
   registrar->SetFunction(0x824A44F0, sub_824A44F0);
   registrar->SetFunction(0x824A4548, sub_824A4548);
+  registrar->SetFunction(0x824A4558, sub_824A4558);
   registrar->SetFunction(0x824A4570, sub_824A4570);
+  registrar->SetFunction(0x824A4580, sub_824A4580);
   registrar->SetFunction(0x824A4598, sub_824A4598);
   registrar->SetFunction(0x824A45E0, sub_824A45E0);
   registrar->SetFunction(0x824A4628, sub_824A4628);
@@ -6117,6 +6120,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x825B67A8, sub_825B67A8);
   registrar->SetFunction(0x825B67C0, sub_825B67C0);
   registrar->SetFunction(0x825B6840, sub_825B6840);
+  registrar->SetFunction(0x825B6858, sub_825B6858);
   registrar->SetFunction(0x825B6868, sub_825B6868);
   registrar->SetFunction(0x825B68E0, sub_825B68E0);
   registrar->SetFunction(0x825B69C0, sub_825B69C0);
@@ -6253,6 +6257,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x825D1E68, sub_825D1E68);
   registrar->SetFunction(0x825D1F58, sub_825D1F58);
   registrar->SetFunction(0x825D2060, sub_825D2060);
+  registrar->SetFunction(0x825D2068, sub_825D2068);
   registrar->SetFunction(0x825D2070, sub_825D2070);
   registrar->SetFunction(0x825D2158, sub_825D2158);
   registrar->SetFunction(0x825D21A0, sub_825D21A0);
@@ -8387,6 +8392,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x826F5468, sub_826F5468);
   registrar->SetFunction(0x826F5480, sub_826F5480);
   registrar->SetFunction(0x826F5498, sub_826F5498);
+  registrar->SetFunction(0x826F54A8, sub_826F54A8);
   registrar->SetFunction(0x826F54B8, sub_826F54B8);
   registrar->SetFunction(0x826F55D0, sub_826F55D0);
   registrar->SetFunction(0x826F5680, sub_826F5680);
@@ -8463,6 +8469,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x826FA2B8, sub_826FA2B8);
   registrar->SetFunction(0x826FA2D0, sub_826FA2D0);
   registrar->SetFunction(0x826FA320, sub_826FA320);
+  registrar->SetFunction(0x826FA330, sub_826FA330);
   registrar->SetFunction(0x826FA3B8, sub_826FA3B8);
   registrar->SetFunction(0x826FA4B0, sub_826FA4B0);
   registrar->SetFunction(0x826FA588, sub_826FA588);
@@ -9955,6 +9962,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x82784998, sub_82784998);
   registrar->SetFunction(0x82784A90, sub_82784A90);
   registrar->SetFunction(0x82784B88, sub_82784B88);
+  registrar->SetFunction(0x82784C60, sub_82784C60);
   registrar->SetFunction(0x82784C78, sub_82784C78);
   registrar->SetFunction(0x82784CD8, sub_82784CD8);
   registrar->SetFunction(0x82784CE8, sub_82784CE8);
@@ -11091,6 +11099,10 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x827F3FE0, sub_827F3FE0);
   registrar->SetFunction(0x827F4038, sub_827F4038);
   registrar->SetFunction(0x827F4100, sub_827F4100);
+  registrar->SetFunction(0x827F4128, sub_827F4128);
+  registrar->SetFunction(0x827F4150, sub_827F4150);
+  registrar->SetFunction(0x827F4178, sub_827F4178);
+  registrar->SetFunction(0x827F41A0, sub_827F41A0);
   registrar->SetFunction(0x827F41C8, sub_827F41C8);
   registrar->SetFunction(0x827F4348, sub_827F4348);
   registrar->SetFunction(0x827F4360, sub_827F4360);
@@ -11099,6 +11111,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x827F43A8, sub_827F43A8);
   registrar->SetFunction(0x827F45A8, sub_827F45A8);
   registrar->SetFunction(0x827F45B0, sub_827F45B0);
+  registrar->SetFunction(0x827F45D0, sub_827F45D0);
   registrar->SetFunction(0x827F4690, sub_827F4690);
   registrar->SetFunction(0x827F46E0, sub_827F46E0);
   registrar->SetFunction(0x827F4780, sub_827F4780);
@@ -13955,6 +13968,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x829463A8, sub_829463A8);
   registrar->SetFunction(0x829466B0, sub_829466B0);
   registrar->SetFunction(0x82946718, sub_82946718);
+  registrar->SetFunction(0x82946728, sub_82946728);
   registrar->SetFunction(0x82946740, sub_82946740);
   registrar->SetFunction(0x82946760, sub_82946760);
   registrar->SetFunction(0x82946778, sub_82946778);
@@ -14542,6 +14556,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x8296C008, sub_8296C008);
   registrar->SetFunction(0x8296C020, sub_8296C020);
   registrar->SetFunction(0x8296DBF8, sub_8296DBF8);
+  registrar->SetFunction(0x8296DC00, sub_8296DC00);
   registrar->SetFunction(0x8296DC10, sub_8296DC10);
   registrar->SetFunction(0x8296DC18, sub_8296DC18);
   registrar->SetFunction(0x8296DC20, sub_8296DC20);
@@ -14574,6 +14589,8 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x8296E4D0, sub_8296E4D0);
   registrar->SetFunction(0x8296E890, sub_8296E890);
   registrar->SetFunction(0x8296E898, sub_8296E898);
+  registrar->SetFunction(0x8296E8A0, sub_8296E8A0);
+  registrar->SetFunction(0x8296E8A8, sub_8296E8A8);
   registrar->SetFunction(0x8296E8B0, sub_8296E8B0);
   registrar->SetFunction(0x8296E918, sub_8296E918);
   registrar->SetFunction(0x8296E960, sub_8296E960);
@@ -14754,11 +14771,21 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x829777C8, sub_829777C8);
   registrar->SetFunction(0x82977888, sub_82977888);
   registrar->SetFunction(0x82977998, sub_82977998);
+  registrar->SetFunction(0x829779A0, sub_829779A0);
+  registrar->SetFunction(0x829779A8, sub_829779A8);
+  registrar->SetFunction(0x829779B0, sub_829779B0);
+  registrar->SetFunction(0x829779B8, sub_829779B8);
+  registrar->SetFunction(0x829779C0, sub_829779C0);
+  registrar->SetFunction(0x829779C8, sub_829779C8);
   registrar->SetFunction(0x829779D0, sub_829779D0);
   registrar->SetFunction(0x829779D8, sub_829779D8);
   registrar->SetFunction(0x829779E0, sub_829779E0);
+  registrar->SetFunction(0x829779E8, sub_829779E8);
+  registrar->SetFunction(0x829779F0, sub_829779F0);
   registrar->SetFunction(0x829779F8, sub_829779F8);
+  registrar->SetFunction(0x82977A00, sub_82977A00);
   registrar->SetFunction(0x82977A08, sub_82977A08);
+  registrar->SetFunction(0x82977A10, sub_82977A10);
   registrar->SetFunction(0x82977A18, sub_82977A18);
   registrar->SetFunction(0x82977B18, sub_82977B18);
   registrar->SetFunction(0x82977C48, sub_82977C48);
@@ -15023,6 +15050,7 @@ void dead_or_alive_4_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar
   registrar->SetFunction(0x8298D050, sub_8298D050);
   registrar->SetFunction(0x8298D058, sub_8298D058);
   registrar->SetFunction(0x8298D0D0, sub_8298D0D0);
+  registrar->SetFunction(0x8298D0E8, sub_8298D0E8);
   registrar->SetFunction(0x8298D100, sub_8298D100);
   registrar->SetFunction(0x8298D108, sub_8298D108);
   registrar->SetFunction(0x8298D170, sub_8298D170);

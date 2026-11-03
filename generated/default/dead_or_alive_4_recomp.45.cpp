@@ -1756,6 +1756,23 @@ loc_82784C50:
 	goto loc_82784C1C;
 }
 
+DEFINE_REX_FUNC(sub_82784C60) {
+	REX_FUNC_PROLOGUE();
+	PPCRegister temp{};
+	// li r10,1
+	ctx.r10.s64 = 1;
+	// lis r11,-32232
+	ctx.r11.s64 = -2112356352;
+	// stb r10,0(r5)
+	REX_STORE_U8(ctx.r5.u32 + 0, ctx.r10.u8);
+	// lfs f1,-11580(r11)
+	ctx.fpscr.disableFlushMode();
+	temp.u32 = REX_LOAD_U32(ctx.r11.u32 + -11580);
+	ctx.f1.f64 = double(temp.f32);
+	// blr 
+	return;
+}
+
 DEFINE_REX_FUNC(sub_82784C78) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};

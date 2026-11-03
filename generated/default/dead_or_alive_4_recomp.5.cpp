@@ -42779,6 +42779,13 @@ loc_8237F090:
 	goto loc_8237EF90;
 }
 
+DEFINE_REX_FUNC(sub_8237F0A8) {
+	REX_FUNC_PROLOGUE();
+	// b 0x8237f0b0
+	sub_8237F0B0(ctx, base);
+	return;
+}
+
 DEFINE_REX_FUNC(sub_8237F0B0) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,28(r3)

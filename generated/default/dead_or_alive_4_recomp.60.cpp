@@ -48452,6 +48452,16 @@ DEFINE_REX_FUNC(sub_8296DBF8) {
 	return;
 }
 
+DEFINE_REX_FUNC(sub_8296DC00) {
+	REX_FUNC_PROLOGUE();
+	// addi r11,r3,-4
+	ctx.r11.s64 = ctx.r3.s64 + -4;
+	// stw r11,0(r4)
+	REX_STORE_U32(ctx.r4.u32 + 0, ctx.r11.u32);
+	// blr 
+	return;
+}
+
 DEFINE_REX_FUNC(sub_8296DC10) {
 	REX_FUNC_PROLOGUE();
 	// addi r3,r3,-4
@@ -50352,6 +50362,24 @@ DEFINE_REX_FUNC(sub_8296E898) {
 	ctx.r3.s64 = ctx.r3.s64 + -16;
 	// b 0x8296e4b8
 	sub_8296E4B8(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_8296E8A0) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x8296e4c0
+	sub_8296E4C0(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_8296E8A8) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x8296e4c8
+	sub_8296E4C8(ctx, base);
 	return;
 }
 
@@ -72087,6 +72115,60 @@ DEFINE_REX_FUNC(sub_82977998) {
 	return;
 }
 
+DEFINE_REX_FUNC(sub_829779A0) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-4
+	ctx.r3.s64 = ctx.r3.s64 + -4;
+	// b 0x82975598
+	sub_82975598(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_829779A8) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-4
+	ctx.r3.s64 = ctx.r3.s64 + -4;
+	// b 0x82977700
+	sub_82977700(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_829779B0) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-4
+	ctx.r3.s64 = ctx.r3.s64 + -4;
+	// b 0x82977708
+	sub_82977708(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_829779B8) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x82977618
+	sub_82977618(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_829779C0) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x82977620
+	sub_82977620(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_829779C8) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x829755c0
+	sub_829755C0(ctx, base);
+	return;
+}
+
 DEFINE_REX_FUNC(sub_829779D0) {
 	REX_FUNC_PROLOGUE();
 	// addi r3,r3,-16
@@ -72114,6 +72196,24 @@ DEFINE_REX_FUNC(sub_829779E0) {
 	return;
 }
 
+DEFINE_REX_FUNC(sub_829779E8) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x82975670
+	sub_82975670(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_829779F0) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x82977768
+	sub_82977768(ctx, base);
+	return;
+}
+
 DEFINE_REX_FUNC(sub_829779F8) {
 	REX_FUNC_PROLOGUE();
 	// addi r3,r3,-16
@@ -72123,12 +72223,30 @@ DEFINE_REX_FUNC(sub_829779F8) {
 	return;
 }
 
+DEFINE_REX_FUNC(sub_82977A00) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x829777c8
+	sub_829777C8(ctx, base);
+	return;
+}
+
 DEFINE_REX_FUNC(sub_82977A08) {
 	REX_FUNC_PROLOGUE();
 	// addi r3,r3,-16
 	ctx.r3.s64 = ctx.r3.s64 + -16;
 	// b 0x82977648
 	sub_82977648(ctx, base);
+	return;
+}
+
+DEFINE_REX_FUNC(sub_82977A10) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x82977888
+	sub_82977888(ctx, base);
 	return;
 }
 

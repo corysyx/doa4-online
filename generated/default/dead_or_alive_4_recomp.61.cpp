@@ -47412,6 +47412,21 @@ DEFINE_REX_FUNC(sub_8298D0D0) {
 	return;
 }
 
+DEFINE_REX_FUNC(sub_8298D0E8) {
+	REX_FUNC_PROLOGUE();
+	// lwz r11,0(r3)
+	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 0);
+	// stw r4,324(r3)
+	REX_STORE_U32(ctx.r3.u32 + 324, ctx.r4.u32);
+	// lwz r10,0(r11)
+	ctx.r10.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
+	// mtctr r10
+	ctx.ctr.u64 = ctx.r10.u64;
+	// bctr 
+	REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+	return;
+}
+
 DEFINE_REX_FUNC(sub_8298D100) {
 	REX_FUNC_PROLOGUE();
 	// lwz r3,324(r3)

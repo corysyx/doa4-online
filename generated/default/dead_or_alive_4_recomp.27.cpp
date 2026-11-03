@@ -4410,6 +4410,15 @@ DEFINE_REX_FUNC(sub_825D2060) {
 	return;
 }
 
+DEFINE_REX_FUNC(sub_825D2068) {
+	REX_FUNC_PROLOGUE();
+	// addi r3,r3,-16
+	ctx.r3.s64 = ctx.r3.s64 + -16;
+	// b 0x825bcc58
+	sub_825BCC58(ctx, base);
+	return;
+}
+
 DEFINE_REX_FUNC(sub_825D2070) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};

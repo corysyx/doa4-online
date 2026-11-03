@@ -39,3 +39,38 @@
 0x82550820 = {}
 0x825B4A68 = {}
 0x827F3F80 = {}
+# Call to invalid/unregistered function at runtime (netplay v1.0.5 online, logs 004/006/008 on 2026-11-03):
+# a 3-instruction thunk (r3 = 0x831A76A4, b 0x826F55D0), the write half of a handler pair in the table at
+# 0x822A0B7C (its read half 0x826F5498 was registered); only reached through that table.
+0x826F54A8 = {}
+# Census for the same class: code addresses stored in pointer tables beside registered functions that are
+# not registered themselves, each in a gap between registered functions (none inside one; exception-scope
+# tables excluded). Left out: 0x8299D474 (inside sub_8299D448); 0x8290C4D0 and 0x8299E8B0 (codegen
+# merged the registered functions after them, 0x8290C4E8 and 0x8299E8C0, into the new entry).
+0x8237F0A8 = {}
+0x824A4558 = {}
+0x824A4580 = {}
+0x825B6858 = {}
+0x825D2068 = {}
+0x826FA330 = {}
+0x82784C60 = {}
+0x827F4128 = {}
+0x827F4150 = {}
+0x827F4178 = {}
+0x827F41A0 = {}
+0x827F45D0 = {}
+0x82946728 = {}
+0x8296DC00 = {}
+0x8296E8A0 = {}
+0x8296E8A8 = {}
+0x829779A0 = {}
+0x829779A8 = {}
+0x829779B0 = {}
+0x829779B8 = {}
+0x829779C0 = {}
+0x829779C8 = {}
+0x829779E8 = {}
+0x829779F0 = {}
+0x82977A00 = {}
+0x82977A10 = {}
+0x8298D0E8 = {}
