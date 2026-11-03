@@ -38,6 +38,8 @@ bool Stopped();                // the session has ended
 struct BoundaryTimes {
   double loader_ms = 0, cri_ms = 0, audio_ms = 0;
   uint32_t spin_steps = 0;
+  double spin_ms = 0;    // time in those spin steps' CRI passes
+  uint32_t spin_lr = 0;  // the tick-read site of the first spin step
 };
 BoundaryTimes LastBoundaryTimes();
 uint32_t Frame();              // the frame being run (set at the frame hook)

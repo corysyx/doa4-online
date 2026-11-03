@@ -54,6 +54,7 @@ REX_EXTERN(__imp__sub_829BC7F0);
 REX_EXTERN(__imp__sub_829BF498);
 REX_EXTERN(__imp__sub_829C9958);
 REX_EXTERN(__imp__sub_8296DFE8);
+REX_EXTERN(__imp__sub_824F1360);
 // SDK netplay exports (sdk-np0 src/audio/audio_system.cpp, src/system/xnotifylistener.cpp).
 __declspec(dllimport) void rex_audio_lockstep(int on);
 __declspec(dllimport) int rex_audio_advance(uint32_t n, int timeout_ms);
@@ -78,9 +79,47 @@ uint32_t g_notify_seen = 0;  // notifications the guest had dequeued at the last
 uint32_t g_audio_late = 0;
 bool g_audio_started = false;
 
-void AudioStep(uint32_t f) {
+// The game's slow motion (the KO camera, e.g. a KO into a danger zone): a frame normally lasts one vblank; the
+// game asks for longer frames by writing N into the word 0x831A6364, and sub_824F1360 (hooked below, main thread)
+// then waits on the vblank counter *(0x831A7AC0) so that the frame lasts N vblanks in all, and writes 0 back. In the
+// scripted Single match the game asked for 3 at each KO: those frames took 3 vblanks (50 ms) each and the output ran
+// dry, because the audio budget was 800 samples per frame.
+// The budget follows the frame's length instead: 800 samples (1/60 s at 48 kHz) per vblank. The frame boundary
+// grants the first vblank's 800 as before; the hook grants the extra vblanks' share when the wait STARTS (so the
+// worker renders them while the game waits, at the output's real-time pace) and waits for them when it returns,
+// before the game goes on. During the wait the main thread only polls the vblank counter, so the callbacks see the
+// sound state the frame left, as they do at the boundary. The word is game state written by the main thread: both
+// sides grant the same budget at the same points.
+constexpr uint32_t kExtraVblanksWord = 0x831A6364;
+constexpr uint32_t kMaxExtraVblanks = 8;   // a larger request counts as this many (none seen; a guard)
+uint32_t g_extra_vblanks = 0;              // requested in the current frame (main thread only; for the log)
+uint64_t g_audio_units = 0;  // 1/60 s units of audio granted so far (starts at the first step's frame number)
+bool g_audio_units_init = false;
+uint32_t g_audio_vblanks_last = 1, g_audio_vblank_logs = 0;
+
+// Callbacks for `units` more 1/60 s of audio (the 800 * units / 256 rounding carried across calls).
+uint32_t AudioUnitsToCallbacks(uint32_t units) {
+  const uint32_t n = uint32_t((g_audio_units + units) * 800 / 256 - g_audio_units * 800 / 256);
+  g_audio_units += units;
+  return n;
+}
+
+void AudioStep(uint32_t f, const uint8_t* base) {
+  const uint32_t vblanks = 1 + g_extra_vblanks;
+  g_extra_vblanks = 0;  // the frame that ran is accounted for (also before the audio client exists)
   if (rex_audio_registrations() == 0) return;
-  const uint32_t n = uint32_t((uint64_t(f) + 1) * 800 / 256 - uint64_t(f) * 800 / 256);
+  if (!g_audio_units_init) {
+    g_audio_units_init = true;
+    g_audio_units = f;  // with 1 vblank per frame the counts equal the former (f + 1) * 800 / 256 - f * 800 / 256
+  }
+  if (vblanks != g_audio_vblanks_last) {
+    if (g_audio_vblank_logs++ < 200) {
+      LogLine(fmt::format("audio: frame {}: the frame limiter waited {} vblank{} a frame (was {}): {} samples a frame",
+                          f, vblanks, vblanks == 1 ? "" : "s", g_audio_vblanks_last, 800 * vblanks));
+    }
+    g_audio_vblanks_last = vblanks;
+  }
+  const uint32_t n = AudioUnitsToCallbacks(1);
   if (rex_audio_advance(n, 250)) {
     if (!g_audio_started) LogLine("audio: callbacks start at frame " + std::to_string(f));
     g_audio_started = true;
@@ -166,6 +205,8 @@ std::mutex g_cri_mu;
 std::condition_variable g_cri_cv;
 thread_local bool t_on_main_pass = false;
 uint32_t g_spin_steps_frame = 0, g_spin_steps_window = 0, g_spin_steps_max = 0;
+double g_spin_ms_frame = 0;    // audio diagnostics: time in the spin steps' CRI passes this frame
+uint32_t g_spin_lr_frame = 0;  // audio diagnostics: the tick-read site of this frame's first spin step
 std::vector<std::pair<uint32_t, uint32_t>> g_spin_lrs;  // main thread: tick-read LR -> reads this frame
 
 // Called on the main thread before a pass. Before the game has created thread B nothing is waited for (the
@@ -260,6 +301,10 @@ void MiddlewareFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
   const auto ms_since = [](Clk::time_point t) { return std::chrono::duration<double, std::milli>(Clk::now() - t).count(); };
   g_boundary_times = BoundaryTimes{};
   g_boundary_times.spin_steps = g_spin_steps_frame;  // spin steps (CRI passes) inside the game's frame that just ran
+  g_boundary_times.spin_ms = g_spin_ms_frame;
+  g_boundary_times.spin_lr = g_spin_lr_frame;
+  g_spin_ms_frame = 0;
+  g_spin_lr_frame = 0;
   if (On(kNotify)) {
     const uint32_t delivered = rex_notify_delivered();  // dequeued by the guest up to this boundary
     Count(kPrNotify, delivered - g_notify_seen);
@@ -286,7 +331,7 @@ void MiddlewareFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
   }
   g_watch.Check(base, frame, "in the CRI pass");
   t = Clk::now();
-  if (On(kAudio)) AudioStep(frame);
+  if (On(kAudio)) AudioStep(frame, base);
   g_boundary_times.audio_ms = ms_since(t);
   g_watch.Check(base, frame, "in the audio step");
 }
@@ -305,7 +350,10 @@ void SpinRead(PPCContext& ctx, uint8_t* base, uint32_t lr) {
         ++g_spin_steps_window;
         g_spin_steps_max = std::max(g_spin_steps_max, g_spin_steps_frame);
         WaitCriReady(Frame());  // a spin step before the first boundary waits for thread B like the boundary does
+        const auto ts = std::chrono::steady_clock::now();
         CriPass(ctx, base);
+        g_spin_ms_frame += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts).count();
+        if (!g_spin_lr_frame) g_spin_lr_frame = lr;
       } else {
         Count(kFbSpinCap);
       }
@@ -326,6 +374,28 @@ using namespace doa4::np::det;
 namespace {
 bool MoviesSkipped() { return doa4::np::Active() && On(kMovie); }
 }  // namespace
+
+// The frame limiter's slow-motion wait (see AudioStep): note the extra vblanks this frame asks for, then run it.
+REX_HOOK_RAW(sub_824F1360) {
+  uint32_t extra = 0;
+  if (On(kAudio) && IsMainThread() && g_audio_units_init) {  // the audio client exists (the boundary started it)
+    // A request of N makes the frame last N vblanks in all (measured: N = 3 -> the vblank counter rose by 3 a frame
+    // without this fix), so N - 1 come on top of the boundary's one.
+    const uint32_t n = rex::memory::load_and_swap<uint32_t>(base + kExtraVblanksWord);
+    extra = std::min(n > 1 ? n - 1 : 0u, kMaxExtraVblanks - std::min(g_extra_vblanks, kMaxExtraVblanks));
+  }
+  if (extra) {
+    g_extra_vblanks += extra;
+    rex_audio_advance(AudioUnitsToCallbacks(extra), 0);  // grant only: the worker renders them during the wait
+  }
+  __imp__sub_824F1360(ctx, base);
+  if (extra && !rex_audio_advance(0, 250)) {  // every granted callback has run before the game goes on
+    Count(kFbAudioLate);
+    if (g_audio_late++ < 20) {
+      doa4::np::LogLine(fmt::format("audio: frame {}: slow-motion callbacks not done after 250 ms", Frame()));
+    }
+  }
+}
 
 REX_HOOK_RAW(sub_8242A168) {
   if (MoviesSkipped()) {
