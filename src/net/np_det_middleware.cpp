@@ -32,6 +32,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -102,6 +103,26 @@ uint32_t g_extra_vblanks = 0;              // extra vblanks granted in the curre
 uint32_t g_limiter_pending = 0;            // extra vblanks to grant at the loop's start (main thread only)
 bool g_limiter_granted = false;            // granted, not yet waited for (main thread only)
 uint32_t g_slowmo_late = 0;                // log lines for the slow-motion wait (its own cap)
+
+// The slow-motion schedule. The game's limiter waits N ticks of the vblank counter counted from a read it takes late
+// in the frame, so a PC whose frame work runs past one tick gets N + 1 ticks a frame, every frame, with no catch-up
+// (friend's PC, 2026-11-03: 66.7 ms slow-motion frames against 50 ms on the host, 10 frames -> the host waited
+// ~170 ms after the slow motion and both outputs ran dry). In a session the limiter's poll loop instead ends at a
+// schedule point: N/60 s after the previous slow-motion frame's point (catching up after a late frame), or after the
+// frame's start for the first one. The loop's exit is host-timed either way and its counter reads stay in the
+// limiter's stack frame, so both sides' game state is unchanged by this; what changes is that both PCs spend the
+// same time in the slow motion. Requests of 1 (a plain one-vblank wait) keep the game's own loop.
+using SteadyClock = std::chrono::steady_clock;
+constexpr uint32_t kLimiterPollLr = 0x824F13CC;  // sub_824F0C60 inside the poll loop
+constexpr double kVblankMs = 1000.0 / 60.0;
+uint32_t g_limiter_n = 0;                   // the request read at the limiter's entry (main thread only)
+bool g_limiter_sched = false;               // the poll loop in this call waits for g_sched_point
+uint32_t g_limiter_start = 0;               // the counter value the loop's start read returned
+SteadyClock::time_point g_sched_point{};    // the current slow-motion frame's end
+uint32_t g_sched_frame = ~0u;               // the frame g_sched_point belongs to
+SteadyClock::time_point g_frame_hook_time{};  // the last frame boundary (MiddlewareFrame)
+double g_test_slow_extra_ms = -1;           // test switch DOA4_NP_TEST_SLOWMO_MS (< 0: off)
+bool g_sched_off = false;                   // test switch DOA4_NP_SLOWMO_SCHED=0: the game's own loop
 uint64_t g_audio_units = 0;  // 1/60 s units of audio granted so far (starts at the first step's frame number)
 bool g_audio_units_init = false;
 uint32_t g_audio_vblanks_last = 1, g_audio_vblank_logs = 0;
@@ -300,6 +321,17 @@ void MiddlewareStart() {
   g_extra_vblanks = g_limiter_pending = 0;
   g_limiter_granted = false;
   g_audio_vblanks_last = 1;
+  g_limiter_n = 0;
+  g_limiter_sched = false;
+  g_sched_frame = ~0u;
+  const char* slow = TestSwitch("DOA4_NP_TEST_SLOWMO_MS");
+  g_test_slow_extra_ms = slow ? std::strtod(slow, nullptr) : -1;
+  const char* sched = TestSwitch("DOA4_NP_SLOWMO_SCHED");
+  g_sched_off = sched && sched[0] == '0';
+  if (g_test_slow_extra_ms > 0 || g_sched_off) {
+    LogLine(fmt::format("slow motion: test switches: extra frame work {:.1f} ms, schedule {}", g_test_slow_extra_ms,
+                        g_sched_off ? "off (the game's own loop)" : "on"));
+  }
   if (On(kAudio)) rex_audio_lockstep(1);
 }
 
@@ -328,6 +360,7 @@ void MiddlewareFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
   g_boundary_times.spin_lr = g_spin_lr_frame;
   g_spin_ms_frame = 0;
   g_spin_lr_frame = 0;
+  g_frame_hook_time = SteadyClock::now();
   if (On(kNotify)) {
     const uint32_t delivered = rex_notify_delivered();  // dequeued by the guest up to this boundary
     Count(kPrNotify, delivered - g_notify_seen);
@@ -408,26 +441,59 @@ REX_HOOK_RAW(sub_824F1360) {
     extra = std::min(n > 1 ? n - 1 : 0u, kMaxExtraVblanks - std::min(g_extra_vblanks, kMaxExtraVblanks));
   }
   g_limiter_pending = extra;  // granted at the poll loop's start read (sub_824F0C60 hook)
+  g_limiter_n = 0;
+  if (On(kAudio) && IsMainThread()) g_limiter_n = rex::memory::load_and_swap<uint32_t>(base + kExtraVblanksWord);
   __imp__sub_824F1360(ctx, base);
   g_limiter_pending = 0;
+  g_limiter_sched = false;
   if (g_limiter_granted) LimiterWait();  // a guard: the closing D3D call's hook normally waited already
 }
 
-// The limiter's poll loop starts: grant the pending slow-motion share (grant only; the worker renders it while the
-// loop waits). Every other call of sub_824F0C60 (a plain read of the vblank counter) passes straight through.
+// The limiter's poll loop: at its start read, grant the pending slow-motion share (grant only; the worker renders
+// it while the loop waits) and set the schedule point; its poll reads then report the request as reached exactly at
+// that point. Every other call of sub_824F0C60 (a plain read of the vblank counter) passes straight through.
 REX_HOOK_RAW(sub_824F0C60) {
-  if (g_limiter_pending && uint32_t(ctx.lr) == kLimiterLoopStartLr && IsMainThread()) {
-    g_extra_vblanks += g_limiter_pending;
-    rex_audio_advance(AudioUnitsToCallbacks(g_limiter_pending), 0);
-    g_limiter_pending = 0;
-    g_limiter_granted = true;
+  const uint32_t lr = uint32_t(ctx.lr);
+  if (lr == kLimiterLoopStartLr && g_limiter_n >= 2 && IsMainThread()) {
+    if (g_test_slow_extra_ms > 0) {  // test switch: this PC's slow-motion frame work runs longer
+      std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(g_test_slow_extra_ms));
+    }
+    if (g_limiter_pending) {
+      g_extra_vblanks += g_limiter_pending;
+      rex_audio_advance(AudioUnitsToCallbacks(g_limiter_pending), 0);
+      g_limiter_pending = 0;
+      g_limiter_granted = true;
+    }
+    __imp__sub_824F0C60(ctx, base);
+    if (!g_sched_off) {
+      const uint32_t f = Frame();
+      const auto step = std::chrono::duration_cast<SteadyClock::duration>(
+          std::chrono::duration<double, std::milli>(kVblankMs * std::min(g_limiter_n, kMaxExtraVblanks + 1)));
+      // The first slow-motion frame (or a resumed one) counts from its own start; later ones from the previous point,
+      // so a late frame is made up by the next ones.
+      const bool continued = g_sched_frame != ~0u && f == g_sched_frame + 1;
+      g_sched_point = (continued ? g_sched_point : g_frame_hook_time) + step;
+      g_sched_frame = f;
+      g_limiter_start = ctx.r3.u32;
+      g_limiter_sched = true;
+    }
+    return;
+  }
+  if (lr == kLimiterPollLr && g_limiter_sched && IsMainThread()) {
+    // The loop compares the read against start + the request word (re-read every pass, g_limiter_n until the loop
+    // clears it): report "reached" from the schedule point on.
+    ctx.r3.u64 = SteadyClock::now() >= g_sched_point ? uint64_t(g_limiter_start + g_limiter_n) : g_limiter_start;
+    return;
   }
   __imp__sub_824F0C60(ctx, base);
 }
 
 // The limiter's closing D3D call: the granted callbacks have run before it (and before the game goes on).
 REX_HOOK_RAW(sub_8275AAA8) {
-  if (g_limiter_granted && uint32_t(ctx.lr) == kLimiterLoopEndLr && IsMainThread()) LimiterWait();
+  if (uint32_t(ctx.lr) == kLimiterLoopEndLr && IsMainThread()) {
+    g_limiter_sched = false;
+    if (g_limiter_granted) LimiterWait();
+  }
   __imp__sub_8275AAA8(ctx, base);
 }
 
