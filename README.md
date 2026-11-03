@@ -15,6 +15,38 @@ Online / Game tabs), graphics options, full-quality photos and a first-run setup
 extracts the game files. It builds against the `doa4-netplay` branch of
 [Dwreckgg/rexglue-sdk](https://github.com/Dwreckgg/rexglue-sdk), pinned in `netplay_sdk.txt`.
 
+## Easy setup: play online with a friend
+
+You do not need to build anything. Each player does steps 1-3 once.
+
+1. **Download the game program.** Open the
+   [Releases page](https://github.com/Dwreckgg/doa4-recomp/releases), pick the newest
+   `netplay-v...` release and download `DOA4-netplay-v...-win64.zip`. Both players must use the
+   **same** release.
+2. **Unzip it** into a folder of its own, for example `C:\Games\DOA4 netplay` (plain letters, digits
+   and spaces only in the path).
+3. **Start `dead_or_alive_4.exe`.** The first time, the game asks for your own copy of
+   *Dead or Alive 4 (USA, Europe) (Rev 1)*: pick your disc image (`.iso`) or an already extracted
+   game folder, and it sets itself up. (No game data comes with the download.) If Windows asks for
+   the Microsoft Visual C++ 2015-2022 x64 runtime, install it.
+4. **Connect.** In the game press **Esc** and open the **Online** tab.
+   - The **host** presses **Host**, then **Copy** to copy the code, and sends it to the friend.
+   - The **friend** pastes the code and presses **Join**.
+   - **Windows Firewall:** when Windows asks, tick **both Private and Public** and allow the game
+     (both players). If the prompt is hidden behind the game, press **Alt+Tab**.
+5. **Play.** When both show *Connected*, the host presses **Start online session**. Both games
+   restart into the session (host = player 1). Pick **Versus**, your characters and a stage, and
+   fight. Everything is unlocked in a session and your own save is never changed.
+6. **Finish.** **Leave online session** in the Online tab; both games restart offline.
+
+**Can't connect?** On the host's router, turn on UPnP or forward **UDP port 7200** to the host's PC.
+If the friend's game shows its own code while connecting, the host can type it under
+**Strict router?** and press **Reach out**. More detail, and what each message means:
+[Online play](#online-play-netplay-releases). **Updating:** when a new release is out, press
+**Check for Updates** in the Online tab (or download the new zip) and restart; both players need the
+same release.
+
+
 ## Features
 
 ### The Esc menu
@@ -96,38 +128,6 @@ that need a restart, and changing the game folder.
 - **Frame pacing:** a steady 60 fps.
 - **First-run setup:** point the game at your disc image (`.iso`) or an extracted folder once, and it
   sets itself up.
-
-## Easy setup: play online with a friend
-
-You do not need to build anything. Each player does steps 1-3 once.
-
-1. **Download the game program.** Open the
-   [Releases page](https://github.com/Dwreckgg/doa4-recomp/releases), pick the newest
-   `netplay-v...` release and download `DOA4-netplay-v...-win64.zip`. Both players must use the
-   **same** release.
-2. **Unzip it** into a folder of its own, for example `C:\Games\DOA4 netplay` (plain letters, digits
-   and spaces only in the path).
-3. **Start `dead_or_alive_4.exe`.** The first time, the game asks for your own copy of
-   *Dead or Alive 4 (USA, Europe) (Rev 1)*: pick your disc image (`.iso`) or an already extracted
-   game folder, and it sets itself up. (No game data comes with the download.) If Windows asks for
-   the Microsoft Visual C++ 2015-2022 x64 runtime, install it.
-4. **Connect.** In the game press **Esc** and open the **Online** tab.
-   - The **host** presses **Host**, then **Copy** to copy the code, and sends it to the friend.
-   - The **friend** pastes the code and presses **Join**.
-   - **Windows Firewall:** when Windows asks, tick **both Private and Public** and allow the game
-     (both players). If the prompt is hidden behind the game, press **Alt+Tab**.
-5. **Play.** When both show *Connected*, the host presses **Start online session**. Both games
-   restart into the session (host = player 1). Pick **Versus**, your characters and a stage, and
-   fight. Everything is unlocked in a session and your own save is never changed.
-6. **Finish.** **Leave online session** in the Online tab; both games restart offline.
-
-**Can't connect?** On the host's router, turn on UPnP or forward **UDP port 7200** to the host's PC.
-If the friend's game shows its own code while connecting, the host can type it under
-**Strict router?** and press **Reach out**. More detail, and what each message means:
-[Online play](#online-play-netplay-releases). **Updating:** when a new release is out, press
-**Check for Updates** in the Online tab (or download the new zip) and restart; both players need the
-same release.
-
 
 ## Online play (netplay releases)
 
