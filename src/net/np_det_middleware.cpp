@@ -123,6 +123,9 @@ uint32_t g_sched_frame = ~0u;               // the frame g_sched_point belongs t
 SteadyClock::time_point g_frame_hook_time{};  // the last frame boundary (MiddlewareFrame)
 double g_test_slow_extra_ms = -1;           // test switch DOA4_NP_TEST_SLOWMO_MS (< 0: off)
 bool g_sched_off = false;                   // test switch DOA4_NP_SLOWMO_SCHED=0: the game's own loop
+uint32_t g_sched_frames = 0;                // slow-motion frames the schedule ended (since the last log line)
+double g_sched_worst_late_ms = 0;           // the latest a continued frame started after its point (same window)
+// A request above this many vblanks ends after this many (none seen; the game writes 3): kMaxExtraVblanks + 1.
 uint64_t g_audio_units = 0;  // 1/60 s units of audio granted so far (starts at the first step's frame number)
 bool g_audio_units_init = false;
 uint32_t g_audio_vblanks_last = 1, g_audio_vblank_logs = 0;
@@ -154,6 +157,12 @@ void AudioStep(uint32_t f, const uint8_t* base) {
     if (g_audio_vblank_logs++ < 200) {
       LogLine(fmt::format("audio: frame {}: the frame limiter waited {} vblank{} a frame (was {}): {} samples a frame",
                           f - 1, vblanks, vblanks == 1 ? "" : "s", g_audio_vblanks_last, 800 * vblanks));
+      if (vblanks == 1) {  // a slow motion ended: what the schedule did in it
+        LogLine(fmt::format("slow motion: the schedule ended {} frames{}, the latest start {:.1f} ms after its point",
+                            g_sched_frames, g_sched_off ? " (schedule off)" : "", g_sched_worst_late_ms));
+        g_sched_frames = 0;
+        g_sched_worst_late_ms = 0;
+      }
     }
     g_audio_vblanks_last = vblanks;
   }
@@ -324,6 +333,8 @@ void MiddlewareStart() {
   g_limiter_n = 0;
   g_limiter_sched = false;
   g_sched_frame = ~0u;
+  g_sched_frames = 0;
+  g_sched_worst_late_ms = 0;
   const char* slow = TestSwitch("DOA4_NP_TEST_SLOWMO_MS");
   g_test_slow_extra_ms = slow ? std::strtod(slow, nullptr) : -1;
   const char* sched = TestSwitch("DOA4_NP_SLOWMO_SCHED");
@@ -470,9 +481,16 @@ REX_HOOK_RAW(sub_824F0C60) {
       const auto step = std::chrono::duration_cast<SteadyClock::duration>(
           std::chrono::duration<double, std::milli>(kVblankMs * std::min(g_limiter_n, kMaxExtraVblanks + 1)));
       // The first slow-motion frame (or a resumed one) counts from its own start; later ones from the previous point,
-      // so a late frame is made up by the next ones.
+      // so a late frame is made up by the next ones, but by at most one step (a long stall in the slow motion, e.g. a
+      // wait for the other side, is not run off as a burst of unpaced frames).
       const bool continued = g_sched_frame != ~0u && f == g_sched_frame + 1;
-      g_sched_point = (continued ? g_sched_point : g_frame_hook_time) + step;
+      const auto now = SteadyClock::now();
+      if (continued && now > g_sched_point) {
+        g_sched_worst_late_ms = std::max(
+            g_sched_worst_late_ms, std::chrono::duration<double, std::milli>(now - g_sched_point).count());
+      }
+      g_sched_point = continued ? std::max(g_sched_point, now - step) + step : g_frame_hook_time + step;
+      ++g_sched_frames;
       g_sched_frame = f;
       g_limiter_start = ctx.r3.u32;
       g_limiter_sched = true;
@@ -480,9 +498,14 @@ REX_HOOK_RAW(sub_824F0C60) {
     return;
   }
   if (lr == kLimiterPollLr && g_limiter_sched && IsMainThread()) {
-    // The loop compares the read against start + the request word (re-read every pass, g_limiter_n until the loop
-    // clears it): report "reached" from the schedule point on.
-    ctx.r3.u64 = SteadyClock::now() >= g_sched_point ? uint64_t(g_limiter_start + g_limiter_n) : g_limiter_start;
+    // The loop compares the read against start + the request word, which it re-reads every pass: from the schedule
+    // point on, report a value that reaches the word as it is NOW (so a request raised mid-loop cannot hold it).
+    if (SteadyClock::now() >= g_sched_point) {
+      const uint32_t word = rex::memory::load_and_swap<uint32_t>(base + kExtraVblanksWord);
+      ctx.r3.u64 = uint64_t(uint32_t(g_limiter_start + std::max(word, g_limiter_n)));
+    } else {
+      ctx.r3.u64 = g_limiter_start;
+    }
     return;
   }
   __imp__sub_824F0C60(ctx, base);
