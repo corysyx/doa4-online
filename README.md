@@ -1,4 +1,4 @@
-# Dead or Alive 4 — PC recomp
+# Dead or Alive 4 — Netplay PC recomp
 
 A native Windows build of **Dead or Alive 4** (Xbox 360), statically recompiled with the
 [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). The game's code is translated ahead of time
@@ -44,58 +44,6 @@ If the friend's game shows its own code while connecting, the host can type it u
 **Check for Updates** in the Online tab (or download the new zip) and restart; both players need the
 same release.
 
-## Quick start: the one-click launcher
-
-The launcher gets the game, either by downloading the newest netplay release (the default) or by
-building it from source, and makes a desktop shortcut; afterwards it plays and updates. It is a small folder (`setup.bat` and a
-`launcher` folder) made from this repository by `launcher\make_zip.ps1` (it writes
-`DOA4-launcher.zip`, or `-Destination <folder>` writes the folder directly).
-
-1. Put the `DOA4` folder somewhere whose path has only plain letters, digits and spaces (for
-   example `C:\Games\DOA4`; the game cannot start from a path with accented or non-Latin letters).
-   Everything the launcher downloads and builds stays inside it (about 4 GB when building from
-   source; a release download is far smaller).
-2. Double-click `setup.bat`. **Get the game from:** chooses what Install and Update do, and the
-   choice is saved:
-   - **Releases (recommended)** is the default for a new `DOA4` folder. Install and Update download
-     the newest netplay release's three files, check each against the release's `SHA256SUMS.txt` and
-     swap the `release` folder in whole. **No build tools are installed** (no Git, LLVM or Visual
-     Studio) and nothing is built; the steps are Folder, Running game, Release, Download, Checksums,
-     Swap and Shortcut. Use this to play online: both players need the same release.
-   - **Build from source (advanced)** is what the rest of this section describes. A `DOA4` folder
-     that already holds a `doa4-recomp` clone stays on it.
-
-   Then press **Install**. In source mode it does:
-   - **Tools:** it checks for Git, LLVM 23.1.4 and Visual Studio 2026 Build Tools with the C++
-     workload, lists any that are missing with their size, and installs them with winget after
-     one confirmation (Visual Studio shows its own installer and asks for administrator rights).
-   - **Code:** it downloads the game port and the ReXGlue SDK (about 2 GB the first time).
-   - **Build:** it applies the two Windows fixes from step 4 and step 6 below and builds (a few
-     minutes on a recent PC). Progress and every step's status show in the window.
-   - **Shortcut:** a "Dead or Alive 4" shortcut on the desktop opens the launcher.
-3. Press **Play**. On the first start the game asks for your disc image or extracted folder
-   ([step 5](#5-the-game-files)).
-4. Later: **Update & rebuild** fetches new commits and rebuilds ("nothing new" when there are none);
-   in release mode **Update** downloads the newest release instead.
-   **Change game files**, **Open photos**, **Open saves** and **Open logs** do what they say.
-
-**Where the saves are:** the launcher always starts the game with its save folder set to
-`<DOA4 folder>\userdata`, so launcher installs keep their saves (and the shader cache) there. The zip
-route (below) starts the game by itself, and the game's default is `Documents\dead_or_alive_4` (the
-**Game** tab shows the folder in use). The two routes therefore see **different saves**: a save made
-with one does not appear in the other until you copy it across (**Open saves** in the launcher and the
-Game tab open the folders).
-
-![The launcher before Install](docs/images/launcher.png)
-
-- `setup.bat -DryRun` shows what Install would install and do, without doing it.
-- Which sources it builds is set in `launcher\config.ps1`: upstream `parkerallan/doa4-recomp`
-  (`main`) with the SDK at `e8ce24f` by default. To build another fork or branch, change
-  `GameRepoUrl` / `GameRef` (and `SdkRepoUrl` / `SdkRef`) and install into a new `DOA4` folder.
-- It never pushes, stashes or overwrites your changes: Update stops and lists any file you changed
-  by hand in its checkouts (other than its own two fixes).
-
-The rest of this README is the same process by hand.
 
 ## Online play (netplay releases)
 
@@ -107,15 +55,11 @@ exe and its two DLLs, never game data: you still need your own Dead or Alive 4 (
 ([step 5](#5-the-game-files)). It needs Windows 10/11 64-bit, a CPU with AVX2 and at least two cores,
 and the Microsoft Visual C++ 2015-2022 x64 runtime.
 
-**Getting the release** (any one of these):
+**Getting the release**:
 
 - **Zip:** download `DOA4-netplay-vX.Y.Z-win64.zip`, unzip it into a folder of its own and start
   `dead_or_alive_4.exe`. On the first start it asks for your disc image or extracted folder.
   `SHA256SUMS.txt` (in the zip and on the page) holds the SHA-256 of the three files.
-- **Launcher:** `DOA4-launcher.zip` (on the same page) installs and updates the newest release
-  instead of building from source. A push that changes only the launcher (or the tests, tools or
-  README) publishes no release; such a change reaches players when a `netplay-publish-<n>` tag is
-  pushed, which publishes a new release.
 - **In the game:** **Check for Updates** in the Esc menu's **Online** tab downloads the newest
   release's three files, checks each against its `SHA256SUMS.txt` and swaps them in; restart the
   game afterwards. It is off while you are online.
@@ -430,5 +374,4 @@ The upstream build has none of the `perf-pacing` features (Esc menu, pacing fixe
 
 ## AI disclosure
 
-AI tools were used to help write and test the code and documentation of this branch, including the
-online play. The changes were tested before they were published.
+AI tools were used to help write and test the code and documentation of this branch, changes were tested before they were published.
