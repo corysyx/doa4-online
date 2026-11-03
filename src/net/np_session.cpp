@@ -79,6 +79,8 @@ extern "C" {
 REX_EXTERN(__imp__sub_824F4498);
 REX_EXTERN(__imp__sub_82792040);
 REX_EXTERN(__imp__sub_82792038);
+// SDK netplay diagnostics export (sdk-np1 src/audio/sdl/sdl_audio_driver.cpp)
+__declspec(dllimport) void rex_audio_out_stats(uint64_t* silence_fills, uint32_t* queue_depth);
 }
 
 namespace doa4::np {
@@ -161,6 +163,13 @@ struct State {
   double sum_det_us = 0, max_det_us = 0;
   double sum_net_us = 0, max_net_us = 0, sum_wait_us = 0, max_wait_us = 0, sum_pacer_us = 0, sum_ahead = 0;
   uint32_t window = 0;
+  // audio diagnostics (read-only telemetry): a line per slow frame or audio dropout, capped
+  bool adiag_init = false;
+  uint64_t adiag_fills = 0;          // rex_audio_out_stats silence chunks at the last frame hook
+  uint64_t adiag_window_fills = 0;   // in the current 600-frame window
+  uint32_t adiag_window_min_depth = UINT32_MAX;
+  double adiag_prev_hook_us = 0;     // the previous frame hook's own duration (t1 - t0)
+  uint32_t adiag_lines = 0;
 
   // writer thread
   std::thread writer;
@@ -1236,6 +1245,35 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     s.sum_period_us += period;
     s.max_period_us = std::max(s.max_period_us, period);
   }
+  // Audio diagnostics: a line for every frame slower than 30 ms or with an output dropout since the last hook.
+  {
+    uint64_t fills = 0;
+    uint32_t depth = 0;
+    rex_audio_out_stats(&fills, &depth);
+    if (!s.adiag_init) {
+      s.adiag_init = true;
+      s.adiag_fills = fills;
+    }
+    const uint64_t new_fills = fills - s.adiag_fills;
+    s.adiag_fills = fills;
+    s.adiag_window_fills += new_fills;
+    s.adiag_window_min_depth = std::min(s.adiag_window_min_depth, depth);
+    const double period_ms = s.last_frame_qpc ? (t0 - double(s.last_frame_qpc)) / 1000 : 0;
+    if ((period_ms > 30 || new_fills) && s.adiag_lines < 4000) {
+      ++s.adiag_lines;
+      const det::BoundaryTimes bt = det::LastBoundaryTimes();
+      char line[400];
+      std::snprintf(line, sizeof(line),
+                    "adiag: frame %u period %.1f ms (game between hooks %.1f, previous hook %.1f) | this hook %.1f ms: "
+                    "det %.1f (loader %.1f cri %.1f audio %.1f) wait %.1f net %.1f pacer %.1f | spin %u | "
+                    "out silence +%llu depth %u",
+                    f, period_ms, std::max(0.0, period_ms - s.adiag_prev_hook_us / 1000), s.adiag_prev_hook_us / 1000,
+                    (t1 - t0) / 1000, det_us / 1000, bt.loader_ms, bt.cri_ms, bt.audio_ms, wait / 1000, net / 1000,
+                    pacer / 1000, bt.spin_steps, static_cast<unsigned long long>(new_fills), depth);
+      Log(line);
+    }
+    s.adiag_prev_hook_us = t1 - t0;
+  }
   s.last_frame_qpc = int64_t(t0);
   {
     std::lock_guard lk(s.timing_mu);
@@ -1261,6 +1299,15 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
                   s.max_period_us / 1000, s.sum_net_us / 600, s.max_net_us, s.sum_wait_us / 600, s.max_wait_us,
                   s.sum_pacer_us / 600, unsigned(r.holds), s.sum_ahead / 600);
     Log(line);
+    {
+      char a[160];
+      std::snprintf(a, sizeof a, "adiag: frames %u-%u: %llu output silence chunks, min queue depth %u (%u lines so far)",
+                    f - 599, f, static_cast<unsigned long long>(s.adiag_window_fills),
+                    s.adiag_window_min_depth == UINT32_MAX ? 0u : s.adiag_window_min_depth, s.adiag_lines);
+      Log(a);
+      s.adiag_window_fills = 0;
+      s.adiag_window_min_depth = UINT32_MAX;
+    }
     LogNetStats(s, "at frame " + std::to_string(f));
     // R10: the MXCSR control bits against the value at the session's start, logged once per change
     const uint32_t now_csr = _mm_getcsr() & 0xFFC0;

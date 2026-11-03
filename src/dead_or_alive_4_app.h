@@ -916,6 +916,16 @@ class DeadOrAlive4App : public rex::ReXApp {
     if (env && env[0] == '1') ToggleDiagOverlay(drawer);
     rex::ui::RegisterBind("bind_doa4_netstats", "F9", "Show the online ping and input delay",
                           [this] { ToggleNetStats(); });
+    // Audio diagnostics: the player presses F8 when they hear the glitch; the line carries the session frame,
+    // so it lines up with the 'adiag:' lines in np_log.txt.
+    rex::ui::RegisterBind("bind_doa4_audiomark", "F8", "Mark an audio glitch in the netplay log", [] {
+      const int32_t f = doa4::np::SessionFrame();
+      if (f >= 0) {
+        doa4::np::LogLine("adiag: MARK - the player pressed F8 at frame " + std::to_string(f));
+      } else {
+        REXLOG_INFO("[doa4][NP] adiag: MARK - F8 pressed outside an online session");
+      }
+    });
 
     // Escape opens the menu, so it cannot also be the keyboard's Start (the
     // SDK default for keyboard-as-controller); applies whether or not

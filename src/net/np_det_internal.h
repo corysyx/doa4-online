@@ -32,6 +32,14 @@ enum Fix : uint32_t {
 
 bool On(uint32_t fix);
 bool Stopped();                // the session has ended
+
+// Audio diagnostics: how long the last frame boundary's steps took (np_det_middleware.cpp), and the CRI spin
+// steps (passes run inside the game's own frame) of the frame before it. Game thread only.
+struct BoundaryTimes {
+  double loader_ms = 0, cri_ms = 0, audio_ms = 0;
+  uint32_t spin_steps = 0;
+};
+BoundaryTimes LastBoundaryTimes();
 uint32_t Frame();              // the frame being run (set at the frame hook)
 uint32_t ThreadStart();        // the calling thread's guest entry point (0: none)
 bool IsMainThread();

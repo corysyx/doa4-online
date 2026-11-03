@@ -251,7 +251,15 @@ void MiddlewareStop() {
   g_cri_cv.notify_all();
 }
 
+// Audio diagnostics: the boundary's step times (game thread only, read by the session's frame hook after det::OnFrame).
+BoundaryTimes g_boundary_times;
+BoundaryTimes LastBoundaryTimes() { return g_boundary_times; }
+
 void MiddlewareFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
+  using Clk = std::chrono::steady_clock;
+  const auto ms_since = [](Clk::time_point t) { return std::chrono::duration<double, std::milli>(Clk::now() - t).count(); };
+  g_boundary_times = BoundaryTimes{};
+  g_boundary_times.spin_steps = g_spin_steps_frame;  // spin steps (CRI passes) inside the game's frame that just ran
   if (On(kNotify)) {
     const uint32_t delivered = rex_notify_delivered();  // dequeued by the guest up to this boundary
     Count(kPrNotify, delivered - g_notify_seen);
@@ -259,7 +267,9 @@ void MiddlewareFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
     rex_notify_frame();
   }
   g_watch.Check(base, frame, nullptr);  // the frame's own changes: not reported
+  auto t = Clk::now();
   if (On(kLoader)) LoaderBoundary(base, frame);
+  g_boundary_times.loader_ms = ms_since(t);
   g_watch.Check(base, frame, "in the loader boundary");
   g_spin_lrs.clear();
   if (On(kCri)) {
@@ -270,10 +280,14 @@ void MiddlewareFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
     }
     g_spin_steps_frame = 0;
     WaitCriReady(frame);  // thread B was created by the game at a fixed point: the first pass waits for it
+    t = Clk::now();
     CriPass(ctx, base);
+    g_boundary_times.cri_ms = ms_since(t);
   }
   g_watch.Check(base, frame, "in the CRI pass");
+  t = Clk::now();
   if (On(kAudio)) AudioStep(frame);
+  g_boundary_times.audio_ms = ms_since(t);
   g_watch.Check(base, frame, "in the audio step");
 }
 
