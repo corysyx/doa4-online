@@ -55,6 +55,8 @@ REX_EXTERN(__imp__sub_829BF498);
 REX_EXTERN(__imp__sub_829C9958);
 REX_EXTERN(__imp__sub_8296DFE8);
 REX_EXTERN(__imp__sub_824F1360);
+REX_EXTERN(__imp__sub_824F0C60);
+REX_EXTERN(__imp__sub_8275AAA8);
 // SDK netplay exports (sdk-np0 src/audio/audio_system.cpp, src/system/xnotifylistener.cpp).
 __declspec(dllimport) void rex_audio_lockstep(int on);
 __declspec(dllimport) int rex_audio_advance(uint32_t n, int timeout_ms);
@@ -85,17 +87,32 @@ bool g_audio_started = false;
 // scripted Single match the game asked for 3 at each KO: those frames took 3 vblanks (50 ms) each and the output ran
 // dry, because the audio budget was 800 samples per frame.
 // The budget follows the frame's length instead: 800 samples (1/60 s at 48 kHz) per vblank. The frame boundary
-// grants the first vblank's 800 as before; the hook grants the extra vblanks' share when the wait STARTS (so the
-// worker renders them while the game waits, at the output's real-time pace) and waits for them when it returns,
-// before the game goes on. During the wait the main thread only polls the vblank counter, so the callbacks see the
-// sound state the frame left, as they do at the boundary. The word is game state written by the main thread: both
-// sides grant the same budget at the same points.
+// grants the first vblank's 800 as before; the extra vblanks' share is granted inside the limiter only for its poll
+// loop: at the loop's start read (sub_824F0C60 called from lr 0x824F13B8, after the limiter's D3D call
+// sub_8275AA10) and waited for before its closing D3D call (sub_8275AAA8 from lr 0x824F141C). Between the two the
+// main thread only reads the vblank counter (sub_824F0C60) and writes 0 to the request word, neither of which the
+// audio callbacks touch, so the callbacks see the sound state the frame left, as at the boundary, and render at the
+// output's real-time pace while the game waits. The word is game state (written by sub_824F1360 and sub_823B7DA0,
+// values 3 or 0): both sides grant the same budget at the same points.
 constexpr uint32_t kExtraVblanksWord = 0x831A6364;
+constexpr uint32_t kLimiterLoopStartLr = 0x824F13B8;  // sub_824F0C60: the loop's start read
+constexpr uint32_t kLimiterLoopEndLr = 0x824F141C;    // sub_8275AAA8: the D3D call after the loop
 constexpr uint32_t kMaxExtraVblanks = 8;   // a larger request counts as this many (none seen; a guard)
-uint32_t g_extra_vblanks = 0;              // requested in the current frame (main thread only; for the log)
+uint32_t g_extra_vblanks = 0;              // extra vblanks granted in the current frame (main thread only; the log)
+uint32_t g_limiter_pending = 0;            // extra vblanks to grant at the loop's start (main thread only)
+bool g_limiter_granted = false;            // granted, not yet waited for (main thread only)
+uint32_t g_slowmo_late = 0;                // log lines for the slow-motion wait (its own cap)
 uint64_t g_audio_units = 0;  // 1/60 s units of audio granted so far (starts at the first step's frame number)
 bool g_audio_units_init = false;
 uint32_t g_audio_vblanks_last = 1, g_audio_vblank_logs = 0;
+
+// The slow-motion grant's wait: every granted callback has run before the main thread goes on.
+void LimiterWait() {
+  g_limiter_granted = false;
+  if (rex_audio_advance(0, 250)) return;
+  Count(kFbAudioLate);
+  if (g_slowmo_late++ < 20) LogLine(fmt::format("audio: frame {}: slow-motion callbacks not done after 250 ms", Frame()));
+}
 
 // Callbacks for `units` more 1/60 s of audio (the 800 * units / 256 rounding carried across calls).
 uint32_t AudioUnitsToCallbacks(uint32_t units) {
@@ -115,7 +132,7 @@ void AudioStep(uint32_t f, const uint8_t* base) {
   if (vblanks != g_audio_vblanks_last) {
     if (g_audio_vblank_logs++ < 200) {
       LogLine(fmt::format("audio: frame {}: the frame limiter waited {} vblank{} a frame (was {}): {} samples a frame",
-                          f, vblanks, vblanks == 1 ? "" : "s", g_audio_vblanks_last, 800 * vblanks));
+                          f - 1, vblanks, vblanks == 1 ? "" : "s", g_audio_vblanks_last, 800 * vblanks));
     }
     g_audio_vblanks_last = vblanks;
   }
@@ -277,6 +294,12 @@ void MiddlewareThreadCreated(uint32_t start) {
 
 void MiddlewareStart() {
   g_watch.Init();
+  // The audio budget's latches start afresh with the session (host memory, outside the digest).
+  g_audio_units_init = false;
+  g_audio_units = 0;
+  g_extra_vblanks = g_limiter_pending = 0;
+  g_limiter_granted = false;
+  g_audio_vblanks_last = 1;
   if (On(kAudio)) rex_audio_lockstep(1);
 }
 
@@ -384,17 +407,28 @@ REX_HOOK_RAW(sub_824F1360) {
     const uint32_t n = rex::memory::load_and_swap<uint32_t>(base + kExtraVblanksWord);
     extra = std::min(n > 1 ? n - 1 : 0u, kMaxExtraVblanks - std::min(g_extra_vblanks, kMaxExtraVblanks));
   }
-  if (extra) {
-    g_extra_vblanks += extra;
-    rex_audio_advance(AudioUnitsToCallbacks(extra), 0);  // grant only: the worker renders them during the wait
-  }
+  g_limiter_pending = extra;  // granted at the poll loop's start read (sub_824F0C60 hook)
   __imp__sub_824F1360(ctx, base);
-  if (extra && !rex_audio_advance(0, 250)) {  // every granted callback has run before the game goes on
-    Count(kFbAudioLate);
-    if (g_audio_late++ < 20) {
-      doa4::np::LogLine(fmt::format("audio: frame {}: slow-motion callbacks not done after 250 ms", Frame()));
-    }
+  g_limiter_pending = 0;
+  if (g_limiter_granted) LimiterWait();  // a guard: the closing D3D call's hook normally waited already
+}
+
+// The limiter's poll loop starts: grant the pending slow-motion share (grant only; the worker renders it while the
+// loop waits). Every other call of sub_824F0C60 (a plain read of the vblank counter) passes straight through.
+REX_HOOK_RAW(sub_824F0C60) {
+  if (g_limiter_pending && uint32_t(ctx.lr) == kLimiterLoopStartLr && IsMainThread()) {
+    g_extra_vblanks += g_limiter_pending;
+    rex_audio_advance(AudioUnitsToCallbacks(g_limiter_pending), 0);
+    g_limiter_pending = 0;
+    g_limiter_granted = true;
   }
+  __imp__sub_824F0C60(ctx, base);
+}
+
+// The limiter's closing D3D call: the granted callbacks have run before it (and before the game goes on).
+REX_HOOK_RAW(sub_8275AAA8) {
+  if (g_limiter_granted && uint32_t(ctx.lr) == kLimiterLoopEndLr && IsMainThread()) LimiterWait();
+  __imp__sub_8275AAA8(ctx, base);
 }
 
 REX_HOOK_RAW(sub_8242A168) {

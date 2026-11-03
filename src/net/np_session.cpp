@@ -1266,12 +1266,11 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
       std::snprintf(line, sizeof(line),
                     "adiag: frame %u period %.1f ms (game between hooks %.1f, previous hook %.1f) | this hook %.1f ms: "
                     "det %.1f (loader %.1f cri %.1f audio %.1f) wait %.1f net %.1f pacer %.1f | spin %u (%.1f ms, "
-                    "lr %08X) | out silence +%llu depth %u | limiter word %08X vblank counter %08X",
+                    "lr %08X) | out silence +%llu depth %u | vblank counter %08X",
                     f, period_ms, std::max(0.0, period_ms - s.adiag_prev_hook_us / 1000), s.adiag_prev_hook_us / 1000,
                     (t1 - t0) / 1000, det_us / 1000, bt.loader_ms, bt.cri_ms, bt.audio_ms, wait / 1000, net / 1000,
                     pacer / 1000, bt.spin_steps, bt.spin_ms, bt.spin_lr, static_cast<unsigned long long>(new_fills),
-                    depth, rex::memory::load_and_swap<uint32_t>(base + 0x831A6364),
-                    rex::memory::load_and_swap<uint32_t>(base + 0x831A7AC0));
+                    depth, rex::memory::load_and_swap<uint32_t>(base + 0x831A7AC0));
       Log(line);
     }
     s.adiag_prev_hook_us = t1 - t0;
@@ -1304,11 +1303,10 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     {
       char a[260];
       std::snprintf(a, sizeof a,
-                    "adiag: frames %u-%u: %llu output silence chunks, min queue depth %u (%u lines so far); limiter word "
-                    "%08X vblank counter %08X",
+                    "adiag: frames %u-%u: %llu output silence chunks, min queue depth %u (%u lines so far); vblank counter "
+                    "%08X",
                     f - 599, f, static_cast<unsigned long long>(s.adiag_window_fills),
                     s.adiag_window_min_depth == UINT32_MAX ? 0u : s.adiag_window_min_depth, s.adiag_lines,
-                    rex::memory::load_and_swap<uint32_t>(base + 0x831A6364),
                     rex::memory::load_and_swap<uint32_t>(base + 0x831A7AC0));
       Log(a);
       s.adiag_window_fills = 0;
