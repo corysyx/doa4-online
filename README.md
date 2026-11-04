@@ -84,6 +84,7 @@ the next start. The menu has seven tabs:
   **Use default** to go back to the default.
 - **In-game snapshots:** "Also save a full-quality copy when you save a snapshot to the in-game Album"
   saves a full-quality copy of every snapshot you save in the game's own photo mode.
+  ![A snapshot from the game's photo mode, saved as a full-quality copy (shown here reduced)](docs/images/photo-mode.jpg)
 
 **Extras**
 - **Unlocks:** Unlock all characters, Unlock all costumes, Unlock all system voices, Unlock all
@@ -384,7 +385,7 @@ can lock files the game is writing). The Esc menu's Game tab shows the folder in
   snapshot in the game's own photo mode also writes that photo at full quality to the same folder
   (the game's Album keeps a small, compressed copy). Only snapshots you save to the Album are copied.
 
-![A snapshot from the game's photo mode, saved as a full-quality copy (shown here reduced)](docs/images/photo-mode.jpg)
+
 - Logs: `out\build\win-amd64-release\logs\dead_or_alive_4_NNN.log`.
 
 ## 8. Regenerating the recompiled code
