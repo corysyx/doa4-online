@@ -440,6 +440,7 @@ Studio's `VsDevCmd.bat` from `DOA4_VSDEVCMD` and LLVM's `bin` folder from `DOA4_
 |---|---|
 | Choosing **Ryu Hayabusa** (or **Brad Wong**, first reported as Zack) as player 1 crashed the game; Ryu also crashed the attract demo (Ryu vs Christie). | Fixed: the runtime put the game's data pool at guest address 0x00010000, so low that the game's "already relocated?" test (a table entry above the buffer address counts as a pointer) skipped Ryu's move-script table; Brad Wong's character-select model read a bad motion record from the same low pool (gone with the fix, not traced to its table). The game now keeps guest 0x00010000-0x0FFFFFFF unused (`src/doa4_lowmem.cpp`; the log says `[doa4][MEM] reserved guest ...`). |
 | A rare crash with `Call to invalid or unregistered function at guest address 0x...` in the log, at one particular move or moment. | A function the recompiler missed. Add the address to `hints.toml` and regenerate (step 8). |
+| In game Sound slider volume settings (sound effects, music, etc) are bugged and not functioning correctly | Planned to be fixed next update patch |
 
 ## Building from a fresh GitHub clone
 
