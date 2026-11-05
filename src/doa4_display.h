@@ -7,6 +7,8 @@
 
 namespace doa4::display {
 
+inline constexpr const char* kWindowTitle = "Dead or Alive 4 Online";
+
 // Frames per second from the GPU's guest-swap counter: one value per window of at least half a second.
 class FpsMeter {
  public:

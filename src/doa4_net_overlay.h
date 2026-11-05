@@ -18,7 +18,8 @@ class NetOverlay : public rex::ui::ImGuiDialog {
  public:
   struct Content {
     std::string banner;                  // "" = none
-    std::vector<std::string> stats;      // the F9 box lines; empty = no box
+    std::string fps;                     // the F7 line, drawn larger at the top of the box; "" = none
+    std::vector<std::string> stats;      // the F9 box lines; no line and no fps = no box
   };
   // `poll` runs on the UI thread every frame the overlay draws.
   NetOverlay(rex::ui::ImGuiDrawer* drawer, std::function<Content()> poll);

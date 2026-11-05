@@ -82,7 +82,11 @@ static void TestCursor() {
   CHECK(DecideCursor(menu) == CursorAction::kShow);
 }
 
+// The name the user chose for the window (rebrand 2026-11-05); the exe keeps its name.
+static void TestWindowTitle() { CHECK(std::string(kWindowTitle) == "Dead or Alive 4 Online"); }
+
 int main() {
+  TestWindowTitle();
   TestFpsMeter();
   TestCursor();
   if (g_failures) {

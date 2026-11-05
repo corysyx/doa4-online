@@ -1,8 +1,9 @@
-# Dead or Alive 4 — Netplay PC recomp
+# Dead or Alive 4 Online
 
 ![Dead or Alive 4 title screen running on PC](docs/images/title-screen.jpg)
 
-A native Windows build of **Dead or Alive 4** (Xbox 360), statically recompiled with the
+**Dead or Alive 4 Online** is a native Windows build of **Dead or Alive 4** (Xbox 360) with two-player
+online play, statically recompiled with the
 [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). The game's code is translated ahead of time
 into C++ (`generated/`); the SDK supplies the Xbox 360 runtime (kernel, GPU, audio, input). This
 repository contains **no game data**: you build it, then run it against files extracted from your
@@ -23,7 +24,7 @@ You do not need to build anything. Each player does steps 1-3 once.
    [Releases page](https://github.com/Dwreckgg/doa4-recomp/releases), pick the newest
    `netplay-v...` release and download `DOA4-netplay-v...-win64.zip`. Both players must use the
    **same** release.
-2. **Unzip it** into a folder of its own, for example `C:\Games\DOA4 netplay` (plain letters, digits
+2. **Unzip it** into a folder of its own, for example `C:\Games\Dead or Alive 4 Online` (plain letters, digits
    and spaces only in the path).
 3. **Start `dead_or_alive_4.exe`.** The first time, the game asks for your own copy of
    *Dead or Alive 4 (USA, Europe) (Rev 1)*: pick your disc image (`.iso`) or an already extracted

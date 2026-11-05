@@ -58,7 +58,10 @@
 #include "doa4_photo_win.h"
 #include "doa4_menu.h"
 #include "doa4_setup_dialog.h"
+#include "doa4_afs_overlay.h"
+#include "doa4_afs_vfs.h"
 #include "doa4_display.h"
+#include "doa4_title_word.h"
 #include "doa4_tweaks.h"
 #include "doa4_unlocks.h"
 #include "doa4_updater.h"
@@ -93,6 +96,8 @@ class DeadOrAlive4App : public rex::ReXApp {
   // notes/specs/2026-10-28-first-run-setup-design.md.
   std::optional<rex::PathConfig> OnFinalizePaths(
       const rex::PathConfig& sdk_defaults, std::function<void(rex::PathConfig)> resume) override {
+    // The SDK has just titled the window with the exe's name and its build stamp; this is the first app code after that.
+    if (window()) window()->SetTitle(doa4::display::kWindowTitle);
     const rex::PathConfig defaults = WithUserData(sdk_defaults);
     if (launch_refused_) {  // fix round I1: a session start that failed after a host setting was applied
       REXLOG_WARN("[doa4][NET] the runtime is not built: this process quits (the offline relaunch runs instead)");
@@ -398,6 +403,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     // a no-op at the relwithdebinfo log level (info) anyway.
     MountDiscRoot();
     MountCacheDevice();
+    SetUpTitleWord();  // after the mounts, before any guest code runs: the game reads spr.afs and sheet 3's sprite records
     StartThreadSnapshotter();
     StartTestLobbyWatch();  // netplay: DOA4_NP_TEST_DIR only (np_ctl.on creates the lobby)
 
@@ -437,6 +443,29 @@ class DeadOrAlive4App : public rex::ReXApp {
     } else {
       REXLOG_INFO("[doa4][LIFE] file times: the real ones");
     }
+  }
+
+  // "ONLINE" under the title logo (doa4_title_word.h). Any check that fails leaves the game's own title and says why here.
+  void SetUpTitleWord() {
+    if (!runtime()) return;
+    const std::filesystem::path game_root = std::filesystem::absolute(runtime()->game_data_root());
+    uint32_t width = 0, height = 0;
+    std::string error;
+    const std::shared_ptr<const doa4::afs::Overlay> spr = doa4::title_word::BuildOverlay(game_root, &width, &height, &error);
+    if (spr) {
+      error = doa4::afs::InstallOverlays(
+          *runtime()->file_system(), {{doa4::title_word::kSprArchive, spr}},
+          {{doa4::title_word::kSprArchive,
+            {{doa4::title_word::kSprLogoN, "spLogoN.xpr (title word)"}, {doa4::title_word::kSprLogoW, "spLogoW.xpr (title word)"}}}});
+    }
+    if (error.empty()) error = doa4::title_word::InstallRecord(guest_, width, height);
+    if (!error.empty()) {
+      REXLOG_WARN("[doa4][TITLE] no ONLINE under the logo: {}", error);
+      return;
+    }
+    doa4::title_word::EnableWordDraw();
+    REXLOG_INFO("[doa4][TITLE] ONLINE under the logo: {}x{} composed into spr.afs entries {} and {}", width, height,
+                doa4::title_word::kSprLogoN, doa4::title_word::kSprLogoW);
   }
 
   // Netplay phase 0 (src/net/np_session.h): inert unless DOA4_NP is set; phase 1 (Task 12): the online session of a
@@ -789,7 +818,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     doa4::NetOverlay::Content c;
     c.banner = ov::BannerText(in.in_session && doa4::np::BannerWaiting(), ending);
     c.stats = ov::Describe(in).stats_lines;
-    if (rex::cvar::Query<bool>("doa4_show_fps")) c.stats.insert(c.stats.begin(), fps_meter_.Text());
+    if (rex::cvar::Query<bool>("doa4_show_fps")) c.fps = fps_meter_.Text();
     return c;
   }
 

@@ -11,6 +11,9 @@ namespace doa4 {
 NetOverlay::NetOverlay(rex::ui::ImGuiDrawer* drawer, std::function<Content()> poll)
     : rex::ui::ImGuiDialog(drawer), poll_(std::move(poll)) {}
 
+// "A touch larger" than the F9 lines (user request): the FPS count alone, not the whole box.
+static constexpr float kFpsFontScale = 1.35f;
+
 void NetOverlay::OnDraw(ImGuiIO& io) {
   const Content content = poll_ ? poll_() : Content{};
   const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
@@ -24,10 +27,15 @@ void NetOverlay::OnDraw(ImGuiIO& io) {
     }
     ImGui::End();
   }
-  if (!content.stats.empty()) {
+  if (!content.fps.empty() || !content.stats.empty()) {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16.0f, 16.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
     ImGui::SetNextWindowBgAlpha(0.6f);
     if (ImGui::Begin("##doa4_net_stats", nullptr, flags)) {
+      if (!content.fps.empty()) {
+        ImGui::SetWindowFontScale(kFpsFontScale);
+        ImGui::TextUnformatted(content.fps.c_str());
+        ImGui::SetWindowFontScale(1.0f);
+      }
       for (const std::string& line : content.stats) ImGui::TextUnformatted(line.c_str());
     }
     ImGui::End();

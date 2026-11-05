@@ -21,6 +21,7 @@
 #include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
 
+#include "doa4_title_word.h"
 #include "generated/default/dead_or_alive_4_init.h"
 
 
@@ -48,6 +49,55 @@ uint32_t LoadU32(uint8_t* base, uint32_t guest_addr) {
 // ===========================================================================
 extern "C" {
 REX_EXTERN(__imp__sub_82790420);
+REX_EXTERN(__imp__sub_823BB470);
+}
+
+// "ONLINE" under the title logo (doa4_title_word.h): sub_823BB470(r3 = draw description) reserves a new 2D command and fills it
+// from the description, which it only reads. Right after the logo's draw it runs once more for the word: the same description,
+// so the same fade and scale, with the id and the centre changed for that one call and put back after, on the game's own
+// thread. (Not one level down, in the resolver sub_823BF210: that is handed the command, so a second call overwrites the
+// logo.) Both players' builds do this, so their guest memory stays equal.
+namespace {
+std::atomic<bool> g_title_word{false};
+
+float LoadFloat(uint8_t* base, uint32_t address) {
+  const uint32_t bits = rex::memory::load_and_swap<uint32_t>(base + address);
+  float value;
+  std::memcpy(&value, &bits, sizeof value);
+  return value;
+}
+void StoreFloat(uint8_t* base, uint32_t address, float value) {
+  uint32_t bits;
+  std::memcpy(&bits, &value, sizeof bits);
+  rex::memory::store_and_swap<uint32_t>(base + address, bits);
+}
+}  // namespace
+
+void doa4::title_word::EnableWordDraw() { g_title_word.store(true, std::memory_order_release); }
+
+REX_HOOK_RAW(sub_823BB470) {
+  const uint32_t draw = ctx.r3.u32;
+  if (!g_title_word.load(std::memory_order_acquire) ||
+      rex::memory::load_and_swap<uint32_t>(base + draw + 4) != doa4::title_word::kLogoSprite) {
+    __imp__sub_823BB470(ctx, base);
+    return;
+  }
+  const uint64_t lr = ctx.lr;
+  const float x = LoadFloat(base, draw + 12), y = LoadFloat(base, draw + 16);
+  __imp__sub_823BB470(ctx, base);
+  const uint64_t result = ctx.r3.u64;
+  const doa4::title_word::WordDraw word =
+      doa4::title_word::WordDrawFor(x, y, LoadFloat(base, draw + 24), LoadFloat(base, draw + 28));
+  rex::memory::store_and_swap<uint32_t>(base + draw + 4, word.id);
+  StoreFloat(base, draw + 12, word.x);
+  StoreFloat(base, draw + 16, word.y);
+  ctx.r3.u64 = draw;
+  __imp__sub_823BB470(ctx, base);
+  rex::memory::store_and_swap<uint32_t>(base + draw + 4, doa4::title_word::kLogoSprite);
+  StoreFloat(base, draw + 12, x);
+  StoreFloat(base, draw + 16, y);
+  ctx.r3.u64 = result;
+  ctx.lr = lr;
 }
 
 REX_HOOK_RAW(sub_82790420) {

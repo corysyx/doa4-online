@@ -22,7 +22,10 @@ set(DEADORALIVE4_SOURCES
     src/doa4_online_tab.cpp
     src/doa4_updater.cpp
     src/doa4_net_overlay.cpp
+    src/doa4_afs_overlay.cpp
+    src/doa4_afs_vfs.cpp
     src/doa4_display.cpp
+    src/doa4_title_word.cpp
     src/doa4_unlocks.cpp
     src/doa4_tweaks.cpp
     src/doa4_backup.cpp
