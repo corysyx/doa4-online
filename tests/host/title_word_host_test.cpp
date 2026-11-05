@@ -257,9 +257,8 @@ static void TestNoLeftovers() {
   const uint32_t row = w.height / 2;
   uint32_t x = 0;
   while (x < w.width && w.pixels[size_t(row) * w.width + x].a < 200) ++x;
-  while (x < w.width && w.pixels[size_t(row) * w.width + x].a >= 200) ++x;  // the O's left stroke
-  while (x < w.width && w.pixels[size_t(row) * w.width + x].a < 200) ++x;   // its hole
-  while (x < w.width && w.pixels[size_t(row) * w.width + x].a >= 200) ++x;  // its right stroke
+  while (x < w.width && w.pixels[size_t(row) * w.width + x].a >= 200) ++x;  // this logo's O: a solid shape, no hole
+  CHECK(x < 100);  // still at the O, the word's first letter
   int biggest_fall = 0, peak = 0;
   uint32_t walked = 0;
   // From the pixel after the letter's own soft edge. Only falls count: a chopped shadow drops suddenly, while the walk may end
