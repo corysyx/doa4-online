@@ -33,9 +33,11 @@ class OnlineTab {
  public:
   // `save_then_set(name, value, quote)`: the menu's SaveThenSet (saves to the toml first, then sets the cvar; false =
   // failed, the menu's status line says why). `open_logs`: closes the menu and opens <user data>/netplay/sessions.
+  // `restart`: restarts the game, once an update waits for that; `restart_warning`: shown beside the button, or nullptr.
   void Draw(const OnlineHost& host, const online_view::In& in, const online_view::View& view,
             const std::function<bool(std::string_view, std::string_view, bool)>& save_then_set,
-            const std::function<void()>& open_logs);
+            const std::function<void()>& open_logs, const std::function<void()>& restart,
+            const char* restart_warning);
 
  private:
   char join_[64] = {};

@@ -215,6 +215,15 @@ void MenuDialog::DrawVideoTab() {
     SetAndSave("fullscreen", want ? "true" : "false", false);
   }
 
+  bool show_fps = rex::cvar::Query<bool>("doa4_show_fps");
+  if (ImGui::Checkbox("Show FPS over the game (F7)", &show_fps)) {
+    // Near a session nothing is written to the config (it is restored at the session's end): only in memory, as F7 does.
+    const char* value = show_fps ? "true" : "false";
+    const bool ok = SessionLocked() ? rex::cvar::SetFlagByName("doa4_show_fps", value)
+                                    : SaveThenSet("doa4_show_fps", value, false);
+    if (ok && host_.online.shown_changed) host_.online.shown_changed();
+  }
+
   ImGui::SeparatorText("Render scale");
   int& saved_scale = *host_.saved_scale;
   for (int scale = 1; scale <= int(graphics::kRenderScales.size()); ++scale) {
@@ -482,6 +491,8 @@ void MenuDialog::DrawExtrasTab() {
     }
   }
 
+  DrawWipeUnlocks(profile, extras_locked);
+
   ExtrasState& state = *host_.extras;
   if (ImGui::GetTime() >= next_save_poll_) {
     if (host_.guest) PollSaved(*host_.guest, host_.save_dir, &state);
@@ -505,16 +516,74 @@ void MenuDialog::DrawExtrasTab() {
   } else if (!state.backup_note.empty()) {
     ImGui::TextWrapped("%s", state.backup_note.c_str());
   }
+  if (!state.wipe_backup.empty()) {
+    ImGui::TextWrapped("Backup of your save from just before the wipe: %s", Utf8(state.wipe_backup).c_str());
+  }
 
   ImGui::SeparatorText("Game tweaks");
   for (size_t i = 0; i < tweaks::AllTweaks().size(); ++i) {
     const tweaks::Tweak& tweak = tweaks::AllTweaks()[i];
+    if (i == tweaks::kHelenaOpera) {
+      ImGui::SeparatorText("Extra costumes");
+      ImGui::TextWrapped(
+          "Added after each character's own costumes. Turning one on also unlocks that character's other costumes. "
+          "Re-enter character select to see the change.");
+    }
     bool on = rex::cvar::Query<bool>(tweak.cvar);
     ImGui::BeginDisabled(!host_.guest || extras_locked);  // a tweak is applied to guest memory
     if (ImGui::Checkbox(tweak.label, &on)) {
       SetTweak(i, on);
     }
     ImGui::EndDisabled();
+  }
+}
+
+void MenuDialog::DrawWipeUnlocks(const std::optional<uint32_t>& profile, bool locked) {
+  ImGui::Spacing();
+  ImGui::BeginDisabled(!profile || locked);
+  if (!wipe_armed_) {
+    if (ImGui::Button("Wipe unlocks...", ImVec2(220.0f, 0.0f))) wipe_armed_ = true;
+  } else {
+    ImGui::TextColored(kErrorColor, "Lock everything again, as in a new save?");
+    ImGui::TextWrapped(
+        "Characters, costumes, voices, stages and Story clears go back to a new save's, including ones you earned, and "
+        "the extra costumes turn off. A backup is made first. Album, settings and other records stay.");
+    if (ImGui::Button("Yes, wipe unlocks") && profile) {
+      wipe_armed_ = false;
+      WipeNow(*profile);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) wipe_armed_ = false;
+  }
+  ImGui::EndDisabled();
+}
+
+void MenuDialog::WipeNow(uint32_t profile) {
+  if (host_.refuse && host_.refuse("wipe unlocks", &status_)) return;
+  std::string error;
+  if (!WipeWithBackup(*host_.guest, profile, host_.save_dir, host_.backup_root, BackupStamp(), host_.extras, &error)) {
+    status_ = error;
+    REXLOG_ERROR("[doa4][EXTRAS] wipe unlocks: {}", error);
+    return;
+  }
+  status_.clear();
+  REXLOG_INFO("[doa4][EXTRAS] wipe unlocks: {}", host_.extras->last_change);
+  // While a costume box is on its character is held unlocked at her maximum, which would undo this for her.
+  for (const size_t i : {tweaks::kHelenaOpera, tweaks::kKokoroKimonos, tweaks::kChristieCostume}) {
+    if (rex::cvar::Query<bool>(tweaks::AllTweaks()[i].cvar)) SetTweak(i, false);
+  }
+}
+
+void MenuDialog::TestAction(std::string_view action) {
+  REXLOG_INFO("[doa4][EXTRAS] test action: {}", action);
+  if (action == "wipe") {
+    if (const std::optional<uint32_t> profile = host_.guest ? unlocks::FindProfile(*host_.guest) : std::nullopt) {
+      WipeNow(*profile);
+    }
+  } else if (action == "restart") {
+    Restart(online_view::Control::kUpdateRestart);
+  } else if (action.rfind("tweak", 0) == 0 && action.size() == 8) {  // tweak<index><0|1>, as "tweak 21"
+    SetTweak(size_t(action[6] - '0'), action[7] == '1');
   }
 }
 
@@ -536,7 +605,8 @@ void MenuDialog::DrawOnlineTab() {
           std::filesystem::create_directories(dir, ec);
           photo::OpenInExplorer(dir);
         });
-      });
+      },
+      [this] { Restart(online_view::Control::kUpdateRestart); }, UnsavedUnlocksWarning(*host_.extras));
 }
 
 void MenuDialog::DrawGameTab() {

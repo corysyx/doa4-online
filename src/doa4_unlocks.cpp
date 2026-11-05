@@ -86,6 +86,16 @@ bool AllStoryCleared(const GuestBytes& guest, uint32_t profile) {
 }  // namespace
 
 std::optional<uint32_t> FindProfile(const GuestBytes& guest) {
+  const std::optional<uint32_t> profile = FindLoadedRecord(guest);
+  if (!profile) return std::nullopt;
+  for (int i = 0; i < kCharacterCount; ++i) {
+    const uint8_t count = ProfileByte(guest, *profile, kCostumeCount, i);
+    if (count < kStartingCostumes || count > MaxCostumes(guest, i)) return std::nullopt;
+  }
+  return profile;
+}
+
+std::optional<uint32_t> FindLoadedRecord(const GuestBytes& guest) {
   const uint32_t profile = guest.ReadBe32(kProfilePointer);
   const uint32_t slot = guest.ReadBe32(kProfileSlot);
   if (slot > 3) return std::nullopt;
@@ -93,15 +103,74 @@ std::optional<uint32_t> FindProfile(const GuestBytes& guest) {
   // The game fills the record with defaults at boot (costume counts 2) and
   // reads the save over it only after Start; the name is empty until then.
   const uint32_t record = profile - kRecordToProfile;
-  if (guest.Read(record + kRecordName) == 0 && guest.Read(record + kRecordName + 1) == 0) {
-    return std::nullopt;
-  }
+  if (guest.Read(record + kRecordName) == 0 && guest.Read(record + kRecordName + 1) == 0) return std::nullopt;
   for (int i = 0; i < kCharacterCount; ++i) {
     if (CharId(guest, i) >= kCharIdCount) return std::nullopt;
-    const uint8_t count = ProfileByte(guest, profile, kCostumeCount, i);
-    if (count < kStartingCostumes || count > MaxCostumes(guest, i)) return std::nullopt;
   }
   return profile;
+}
+
+int ClampCostumeCounts(const GuestBytes& guest, uint32_t profile) {
+  int changed = 0;
+  for (int i = 0; i < kCharacterCount; ++i) {
+    const uint32_t address = profile + kCostumeCount + uint32_t(i);
+    const uint8_t max = MaxCostumes(guest, i);
+    if (guest.Read(address) > max) {
+      guest.Write(address, max);
+      ++changed;
+    }
+  }
+  return changed;
+}
+
+bool RaiseCostumes(const GuestBytes& guest, uint32_t profile, uint8_t char_id) {
+  for (int i = 0; i < kCharacterCount; ++i) {
+    if (CharId(guest, i) != char_id) continue;
+    const uint32_t address = profile + kCostumeCount + uint32_t(i);
+    const uint8_t max = MaxCostumes(guest, i);
+    bool wrote = SetByte(guest, profile + kCharacterUnlocked + uint32_t(i), 1);
+    if (guest.Read(address) < max) {
+      guest.Write(address, max);
+      wrote = true;
+    }
+    return wrote;
+  }
+  return false;
+}
+
+namespace {
+
+// The value of each unlock field in a new save (tests/host/doa4_unlock_fixtures.h kFreshProfile).
+bool StartsHidden(int index) {
+  return index == kEinIndex || index == 6 || index == 7 || index == 8 || index == 12 || index == kAlphaIndex ||
+         index == kSpartanIndex;
+}
+
+template <typename Visit>
+void ForEachUnlockByte(uint32_t profile, const Visit& visit) {
+  visit(profile + kFirstStoryClear, uint8_t(0));
+  for (int i = 0; i < kCharacterCount; ++i) {
+    const uint32_t index = uint32_t(i);
+    visit(profile + kCostumeCount + index, kStartingCostumes);
+    visit(profile + kCharacterUnlocked + index, uint8_t(StartsHidden(i) ? 0 : 1));
+    visit(profile + kStoryClears + index, uint8_t(0));
+    visit(profile + kStoryClearedNormal + index, uint8_t(0));
+    visit(profile + kVoiceUnlocked + index, uint8_t(0));
+  }
+}
+
+}  // namespace
+
+int WipeUnlocks(const GuestBytes& guest, uint32_t profile) {
+  int changed = 0;
+  ForEachUnlockByte(profile, [&](uint32_t address, uint8_t value) { changed += SetByte(guest, address, value); });
+  return changed;
+}
+
+bool IsWiped(const GuestBytes& guest, uint32_t profile) {
+  bool wiped = true;
+  ForEachUnlockByte(profile, [&](uint32_t address, uint8_t value) { wiped = wiped && guest.Read(address) == value; });
+  return wiped;
 }
 
 bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what) {

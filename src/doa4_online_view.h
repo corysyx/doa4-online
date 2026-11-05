@@ -42,6 +42,8 @@ struct View {
   // was never opened), no session runs and no check is running; update_note is updater::kOnlineText when online.
   bool update_enabled = false;
   std::string update_note;
+  // The Restart button beside it: a check swapped files in this process and no session is near.
+  bool show_restart = false;
   // Join and Host (review fix round I-1): disabled while a check downloads (updater::kBusyText) and once a check swapped
   // files in this process (updater::kRestartText, which wins); join_host_note says which, else "".
   bool join_host_enabled = false;
@@ -58,9 +60,9 @@ bool SessionLocks(const In& in);
 // or a lobby / a session exists. An offline game that never opened the tab never computes it (spec 4, fix round I2).
 bool NeedsBuildId(bool tab_shown, bool lobby_open, bool in_session);
 
-// The four game-state controls a session locks (spec 6): every one of them reads its disabled state from here, and the
+// The game-state controls a session locks (spec 6): every one of them reads its disabled state from here, and the
 // refusal behind them (Refuse) reads the same answer, so the UI and the refusal cannot disagree.
-enum class Control : uint8_t { kExtras, kVideoRestart, kAudioRestart, kGameChange };
+enum class Control : uint8_t { kExtras, kVideoRestart, kAudioRestart, kGameChange, kUpdateRestart };
 bool LockedInSession(Control control, bool in_session);
 inline constexpr const char* kLockedText = "Not during an online session";
 // True = refused: *status (may be null) gets kLockedText and `log` (may be empty) gets

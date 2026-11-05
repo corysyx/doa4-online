@@ -120,6 +120,7 @@ View Describe(const In& in) {
   // that path (DOA2U's reason, doa2u_ui.cpp 435-437); `open` is true in every lobby state but Offline and in a session.
   v.update_enabled = !open && !in.update_busy;
   if (open) v.update_note = updater::kOnlineText;
+  v.show_restart = in.restart_pending && !SessionLocks(in);
   // Review fix round I-1: no online play while a check downloads or once it swapped files in this process (the
   // relaunch into a session would start the new exe, whose hand-off build check refuses the session).
   v.join_host_enabled = !in.update_busy && !in.restart_pending;

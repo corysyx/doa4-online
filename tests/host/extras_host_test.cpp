@@ -215,7 +215,102 @@ static void TestUnsavedWarning() {
   CHECK(doa4::UnsavedUnlocksWarning(state) == nullptr);
 }
 
+static void TestWipeWithBackup() {
+  const fs::path root = fs::temp_directory_path() / "doa4_extras_wipe_test_data";
+  fs::remove_all(root);
+  const fs::path save = root / "00000001" / "ups.dat";
+  const fs::path backups = root / "doa4_save_backups";
+  fs::create_directories(save);
+  FakeGuest g;
+  std::string error;
+  doa4::ExtrasState state;
+
+  // Unlocked and saved: the state a wipe starts from.
+  WriteFile(save / "ups.dat", SaveFileFrom(g));
+  CHECK(doa4::UnlockWithBackup(g.guest, kP, Unlock::kEverything, save, backups, "u1", &state, &error));
+  WriteFile(save / "ups.dat", SaveFileFrom(g));
+  const std::string unlocked_file = SaveFileFrom(g);
+  Touch(save / "ups.dat");
+  doa4::PollSaved(g.guest, save, &state);
+  CHECK(state.saved);
+
+  // The copy holds the save from just before the wipe, in the game's memory the wipe has happened, waiting for a save.
+  CHECK(doa4::WipeWithBackup(g.guest, kP, save, backups, "w1", &state, &error));
+  CHECK(error.empty());
+  CHECK(state.wipe_backup == backups / "ups.dat.wipe-w1");
+  {
+    std::ifstream in(state.wipe_backup / "ups.dat", std::ios::binary);
+    const std::string copy((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(copy == unlocked_file);
+  }
+  CHECK(IsWiped(g.guest, kP));
+  CHECK(state.last_change == "Wiped: characters, costumes, voices, stages and Story clears are back to a new save's.");
+  CHECK(state.waiting_for_save && !state.saved && state.pending_wipe);
+  CHECK(state.pending_unlocks == 0);
+  const char* warning = doa4::UnsavedUnlocksWarning(state);
+  CHECK(warning != nullptr && std::string(warning).find("wipe") != std::string::npos);
+
+  // A newer file that still holds the unlocks (a save from before the wipe) is not "saved"; the wiped one is.
+  WriteFile(save / "ups.dat", unlocked_file);
+  Touch(save / "ups.dat");
+  doa4::PollSaved(g.guest, save, &state);
+  CHECK(state.waiting_for_save && !state.saved);
+  WriteFile(save / "ups.dat", SaveFileFrom(g));
+  Touch(save / "ups.dat");
+  doa4::PollSaved(g.guest, save, &state);
+  CHECK(!state.waiting_for_save && state.saved && !state.pending_wipe);
+
+  // Already wiped: no copy, nothing written, "saved" left alone.
+  g.writes = 0;
+  CHECK(doa4::WipeWithBackup(g.guest, kP, save, backups, "w2", &state, &error));
+  CHECK(!fs::exists(backups / "ups.dat.wipe-w2"));
+  CHECK(g.writes == 0);
+  CHECK(state.saved && !state.waiting_for_save);
+  CHECK(state.last_change == "Nothing to wipe: the unlocks are already a new save's.");
+
+  // An unlock after a wipe replaces it: "saved" then looks for the unlock (and the other way round).
+  CHECK(doa4::UnlockWithBackup(g.guest, kP, Unlock::kVoices, save, backups, "u2", &state, &error));
+  CHECK(!state.pending_wipe && state.pending_unlocks != 0);
+  CHECK(doa4::WipeWithBackup(g.guest, kP, save, backups, "w3", &state, &error));
+  CHECK(state.pending_wipe && state.pending_unlocks == 0);
+
+  // No copy possible (its name is taken): nothing written, the state unchanged.
+  FakeGuest g2;
+  ApplyUnlock(g2.guest, kP, Unlock::kEverything);
+  const fs::path save2 = root / "00000002" / "ups.dat";
+  fs::create_directories(save2);
+  WriteFile(save2 / "ups.dat", SaveFileFrom(g2));
+  fs::create_directories(root / "b2" / "ups.dat.wipe-w4");
+  g2.writes = 0;
+  doa4::ExtrasState state2;
+  error.clear();
+  CHECK(!doa4::WipeWithBackup(g2.guest, kP, save2, root / "b2", "w4", &state2, &error));
+  CHECK(error.rfind("Nothing wiped: ", 0) == 0);
+  CHECK(g2.writes == 0);
+  CHECK(state2.last_change.empty() && !state2.waiting_for_save);
+
+  // Unknown save folder: nothing written.
+  error.clear();
+  CHECK(!doa4::WipeWithBackup(g2.guest, kP, fs::path(), root / "b3", "w5", &state2, &error));
+  CHECK(error.rfind("Nothing wiped: ", 0) == 0);
+  CHECK(g2.writes == 0);
+
+  // No save yet: wiped without a copy, with a note.
+  const fs::path save3 = root / "00000003" / "ups.dat";
+  doa4::ExtrasState state3;
+  CHECK(doa4::WipeWithBackup(g2.guest, kP, save3, root / "b4", "w6", &state3, &error));
+  CHECK(state3.wipe_backup.empty() && !state3.backup_note.empty());
+  CHECK(IsWiped(g2.guest, kP));
+  fs::remove_all(root);
+}
+
 int main() {
+  try {
+    TestWipeWithBackup();
+  } catch (const std::exception& e) {
+    std::printf("FAIL TestWipeWithBackup threw: %s\n", e.what());
+    ++g_failures;
+  }
   TestSaveDir();
   TestBackupStamp();
   TestDescribe();

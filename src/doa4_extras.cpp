@@ -80,7 +80,38 @@ bool UnlockWithBackup(const GuestBytes& guest, uint32_t profile, unlocks::Unlock
     state->save_time_at_click = before;
     state->profile = profile;
     state->pending_unlocks |= 1u << static_cast<int>(what);
+    state->pending_wipe = false;
   }
+  return true;
+}
+
+bool WipeWithBackup(const GuestBytes& guest, uint32_t profile, const std::filesystem::path& save_dir,
+                    const std::filesystem::path& backup_root, std::string_view stamp, ExtrasState* state,
+                    std::string* error) {
+  if (save_dir.empty()) {
+    *error = "Nothing wiped: the save folder is unknown, so it could not be backed up.";
+    return false;
+  }
+  if (unlocks::IsWiped(guest, profile)) {
+    state->last_change = "Nothing to wipe: the unlocks are already a new save's.";
+    return true;
+  }
+  BackupResult backup = MakeWipeBackup(save_dir, backup_root, stamp);
+  if (!backup.ok) {
+    *error = "Nothing wiped: " + backup.message;
+    return false;
+  }
+  state->wipe_backup = backup.backup;
+  if (!backup.message.empty()) state->backup_note = backup.message;
+  const std::optional<std::filesystem::file_time_type> before = SaveFileTime(save_dir);
+  unlocks::WipeUnlocks(guest, profile);
+  state->last_change = "Wiped: characters, costumes, voices, stages and Story clears are back to a new save's.";
+  state->waiting_for_save = true;
+  state->saved = false;
+  state->save_time_at_click = before;
+  state->profile = profile;
+  state->pending_unlocks = 0;
+  state->pending_wipe = true;
   return true;
 }
 
@@ -104,6 +135,7 @@ void PollSaved(const GuestBytes& guest, const std::filesystem::path& save_dir,
                                                          : guest.Read(address);
                            },
                            [](uint32_t, uint8_t) {}};
+  if (state->pending_wipe && !unlocks::IsWiped(in_file, state->profile)) return;  // a newer file with the unlocks still in it
   for (int kind = 0; kind <= static_cast<int>(unlocks::Unlock::kEverything); ++kind) {
     if ((state->pending_unlocks & (1u << kind)) &&
         !unlocks::IsUnlocked(in_file, state->profile, static_cast<unlocks::Unlock>(kind))) {
@@ -113,9 +145,13 @@ void PollSaved(const GuestBytes& guest, const std::filesystem::path& save_dir,
   state->waiting_for_save = false;
   state->saved = true;
   state->pending_unlocks = 0;
+  state->pending_wipe = false;
 }
 
 const char* UnsavedUnlocksWarning(const ExtrasState& state) {
+  if (state.waiting_for_save && state.pending_wipe) {
+    return "The wipe is not saved yet: restarting now undoes it. Change any Options setting first so the game saves.";
+  }
   return state.waiting_for_save
              ? "Unlocks are not saved yet: restarting now loses them. Change any Options "
                "setting first so the game saves."

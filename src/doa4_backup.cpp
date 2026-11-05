@@ -69,4 +69,38 @@ BackupResult EnsureSaveBackup(const std::filesystem::path& save_dir,
   return result;
 }
 
+BackupResult MakeWipeBackup(const std::filesystem::path& save_dir, const std::filesystem::path& backup_root,
+                            std::string_view stamp) {
+  namespace fs = std::filesystem;
+  BackupResult result;
+  std::error_code ec;
+  if (!fs::is_directory(save_dir, ec)) {
+    result.ok = true;
+    result.message = "No save existed yet, so there was nothing to back up.";
+    return result;
+  }
+  if (!HoldsCompleteSave(save_dir)) {
+    result.message = "the save file is incomplete (the game may be saving right now); try again in a moment";
+    return result;
+  }
+  const fs::path backup =
+      backup_root / (save_dir.filename().u8string() + u8".wipe-" + std::u8string(stamp.begin(), stamp.end()));
+  if (fs::exists(backup, ec)) {
+    result.message = "cannot back up the save: " + Utf8(backup) + " is in the way";
+    return result;
+  }
+  fs::create_directories(backup_root, ec);
+  if (!ec) fs::copy(save_dir, backup, fs::copy_options::recursive, ec);
+  if (ec || !HoldsCompleteSave(backup)) {
+    result.message =
+        "cannot back up the save to " + Utf8(backup) + (ec ? ": " + ec.message() : ": the copy is incomplete");
+    std::error_code ignored;
+    fs::remove_all(backup, ignored);
+    return result;
+  }
+  result.ok = true;
+  result.backup = backup;
+  return result;
+}
+
 }  // namespace doa4

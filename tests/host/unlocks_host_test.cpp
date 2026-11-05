@@ -280,7 +280,156 @@ static void TestTatamiRule() {
   CHECK(OpenStageCount(g3.guest, kP) == 2);
 }
 
+// A save written while a costume tweak raised a maximum, loaded with the tweak off: FindProfile refuses it, and only the
+// clamp can bring it back.
+static void TestClampCostumeCounts() {
+  FakeGuest g;
+  Setup(g, fx::kFullProfile);
+  constexpr int kHelena = 7;
+  g.bytes[kP + kCostumeCount + kHelena] = 6;  // her maximum is 5
+  CHECK(!FindProfile(g.guest));
+  CHECK(FindLoadedRecord(g.guest) == std::optional<uint32_t>(kP));
+  CHECK(ClampCostumeCounts(g.guest, kP) == 1);
+  CHECK(At(g, kCostumeCount, kHelena) == 5);
+  CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
+  // Nothing past a maximum: nothing written, the counts below the maximum stay below it.
+  g.writes = 0;
+  CHECK(ClampCostumeCounts(g.guest, kP) == 0);
+  CHECK(g.writes == 0);
+  FakeGuest fresh;
+  Setup(fresh, fx::kFreshProfile);
+  CHECK(ClampCostumeCounts(fresh.guest, kP) == 0);
+  CHECK(At(fresh, kCostumeCount, kHelena) == 2);
+}
+
+// FindLoadedRecord keeps every check but the count ranges.
+static void TestFindLoadedRecord() {
+  FakeGuest wrong_slot;
+  Setup(wrong_slot, fx::kFreshProfile, 2, kP);
+  CHECK(!FindLoadedRecord(wrong_slot.guest));
+  FakeGuest past_slots;
+  Setup(past_slots, fx::kFreshProfile, 4, kRecordBase + 4 * kRecordStride + kRecordToProfile);
+  CHECK(!FindLoadedRecord(past_slots.guest));
+  // The game's boot defaults, before the save is read: no name, so nothing may be written yet.
+  FakeGuest boot;
+  Setup(boot, fx::kFreshProfile);
+  for (uint32_t i = 0; i < 32; ++i) boot.bytes[kP - kRecordToProfile + kRecordName + i] = 0;
+  CHECK(!FindLoadedRecord(boot.guest));
+  FakeGuest bad_table;
+  Setup(bad_table, fx::kFreshProfile);
+  bad_table.bytes[kProfileIndexToChar + 3] = kCharIdCount;
+  CHECK(!FindLoadedRecord(bad_table.guest));
+  FakeGuest fine;
+  Setup(fine, fx::kFreshProfile);
+  CHECK(FindLoadedRecord(fine.guest) == std::optional<uint32_t>(kP));
+}
+
+// The charId is mapped through the game's table: Kokoro is charId 0x0A, profile index 18.
+static void TestRaiseCostumes() {
+  FakeGuest g;
+  Setup(g, fx::kFreshProfile);
+  CHECK(RaiseCostumes(g.guest, kP, 0x0A));
+  CHECK(At(g, kCostumeCount, 18) == 7);
+  CHECK(At(g, kCostumeCount, 0x0A) == 2);  // profile index 10 is Lei Fang: not the charId's index
+  CHECK(g.writes == 1);
+  CHECK(!RaiseCostumes(g.guest, kP, 0x0A));  // already there
+  CHECK(g.writes == 1);
+  // A character still locked becomes selectable: Helena (charId 7, profile index 7) is locked in a new save, and an
+  // added costume she cannot be picked in would be no costume at all.
+  FakeGuest h;
+  Setup(h, fx::kFreshProfile);
+  CHECK(At(h, kCharacterUnlocked, 7) == 0);
+  CHECK(RaiseCostumes(h.guest, kP, 0x07));
+  CHECK(At(h, kCostumeCount, 7) == 5);
+  CHECK(At(h, kCharacterUnlocked, 7) == 1);
+  CHECK(At(h, kCharacterUnlocked, 3) == 0);  // Ein stays locked
+  // Only the flag missing (costumes already at the maximum): it still writes it, and says so.
+  FakeGuest flag_only;
+  Setup(flag_only, fx::kFreshProfile);
+  flag_only.bytes[kP + kCostumeCount + 7] = 5;
+  CHECK(RaiseCostumes(flag_only.guest, kP, 0x07));
+  CHECK(At(flag_only, kCharacterUnlocked, 7) == 1);
+  CHECK(!RaiseCostumes(flag_only.guest, kP, 0x07));
+  // A raised maximum is what it raises to.
+  g.bytes[kMaxCostumes + 0x0A] = 9;
+  CHECK(RaiseCostumes(g.guest, kP, 0x0A));
+  CHECK(At(g, kCostumeCount, 18) == 9);
+  // A charId with no profile index (the unused RTM, 0x16): nothing.
+  g.writes = 0;
+  CHECK(!RaiseCostumes(g.guest, kP, 0x16));
+  CHECK(g.writes == 0);
+}
+
+// The real 100% save wiped: every unlock field equals the real fresh save's; every other byte stays the 100% save's
+// (it has Time Attack clears, which the fresh save has not, so "copy the fresh fixture" would fail here).
+static void TestWipe() {
+  FakeGuest g;
+  Setup(g, fx::kFullProfile);
+  CHECK(!IsWiped(g.guest, kP));
+  CHECK(WipeUnlocks(g.guest, kP) > 0);
+  const auto in_unlock_field = [](uint32_t offset) {
+    return offset == kFirstStoryClear ||
+           (offset >= kCostumeCount && offset < kCostumeCount + kCharacterCount) ||
+           (offset >= kCharacterUnlocked && offset < kCharacterUnlocked + kCharacterCount) ||
+           (offset >= kStoryClears && offset < kStoryClears + kCharacterCount) ||
+           (offset >= kStoryClearedNormal && offset < kStoryClearedNormal + kCharacterCount) ||
+           (offset >= kVoiceUnlocked && offset < kVoiceUnlocked + kCharacterCount);
+  };
+  int kept_differs_from_fresh = 0;
+  for (uint32_t offset = kFixtureStart; offset < kFixtureStart + 0x8C; ++offset) {
+    if (in_unlock_field(offset)) {
+      CHECK(At(g, offset) == Fresh(offset));
+    } else {
+      CHECK(At(g, offset) == Full(offset));
+      if (Full(offset) != Fresh(offset)) ++kept_differs_from_fresh;
+    }
+  }
+  CHECK(kept_differs_from_fresh > 0);  // the fixture can tell "kept" from "reset"
+  CHECK(IsWiped(g.guest, kP));
+  CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
+  CHECK(OpenStageCount(g.guest, kP) == 0);
+  for (const Unlock what :
+       {Unlock::kCharacters, Unlock::kCostumes, Unlock::kVoices, Unlock::kStages, Unlock::kEverything}) {
+    CHECK(!IsUnlocked(g.guest, kP, what));
+  }
+  // A second wipe, and a wipe of a really fresh save, change nothing.
+  g.writes = 0;
+  CHECK(WipeUnlocks(g.guest, kP) == 0);
+  CHECK(g.writes == 0);
+  FakeGuest fresh;
+  Setup(fresh, fx::kFreshProfile);
+  CHECK(IsWiped(fresh.guest, kP));
+  CHECK(WipeUnlocks(fresh.guest, kP) == 0);
+  CHECK(fresh.writes == 0);
+  // After a wipe the buttons work again.
+  ApplyUnlock(g.guest, kP, Unlock::kEverything);
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kEverything));
+}
+
+// IsWiped looks at every field: one byte unlocked anywhere is not wiped.
+static void TestIsWipedSeesEveryField() {
+  const auto one_changed = [](uint32_t offset, uint8_t value) {
+    FakeGuest g;
+    Setup(g, fx::kFreshProfile);
+    g.bytes[kP + offset] = value;
+    return IsWiped(g.guest, kP);
+  };
+  CHECK(!one_changed(kFirstStoryClear, 1));
+  for (int i = 0; i < kCharacterCount; ++i) {
+    CHECK(!one_changed(kCostumeCount + uint32_t(i), 3));
+    CHECK(!one_changed(kCharacterUnlocked + uint32_t(i), Fresh(kCharacterUnlocked, i) ? 0 : 1));
+    CHECK(!one_changed(kStoryClears + uint32_t(i), 1));
+    CHECK(!one_changed(kStoryClearedNormal + uint32_t(i), 1));
+    CHECK(!one_changed(kVoiceUnlocked + uint32_t(i), 1));
+  }
+}
+
 int main() {
+  TestClampCostumeCounts();
+  TestFindLoadedRecord();
+  TestRaiseCostumes();
+  TestWipe();
+  TestIsWipedSeesEveryField();
   TestFixturesAreWhatTheResearchSays();
   TestFindProfile();
   TestEverythingMatchesTheFullSave();

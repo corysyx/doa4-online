@@ -21,7 +21,8 @@ constexpr ImVec4 kDoneColor(0.45f, 0.9f, 0.5f, 1.0f);
 
 void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const online_view::View& view,
                      const std::function<bool(std::string_view, std::string_view, bool)>& save_then_set,
-                     const std::function<void()>& open_logs) {
+                     const std::function<void()>& open_logs, const std::function<void()>& restart,
+                     const char* restart_warning) {
   if (!host.state) {
     ImGui::TextDisabled("Online play is not available in this build.");
     return;
@@ -150,11 +151,16 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
   ImGui::BeginDisabled(!view.update_enabled || !host.check_updates);
   if (ImGui::Button("Check for Updates") && host.check_updates) host.check_updates();
   ImGui::EndDisabled();
+  if (view.show_restart && restart) {
+    ImGui::SameLine();
+    if (ImGui::Button("Restart game")) restart();
+  }
   if (!view.update_note.empty()) {
     ImGui::SameLine();
     ImGui::TextDisabled("%s", view.update_note.c_str());
   }
   if (const std::string msg = updater::Message(); !msg.empty()) ImGui::TextWrapped("%s", msg.c_str());
+  if (view.show_restart && restart_warning) ImGui::TextColored(kErrorColor, "%s", restart_warning);
   if (open_logs && ImGui::Button("Open session logs")) open_logs();
 }
 

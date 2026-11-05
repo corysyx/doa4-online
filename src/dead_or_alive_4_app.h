@@ -58,6 +58,7 @@
 #include "doa4_photo_win.h"
 #include "doa4_menu.h"
 #include "doa4_setup_dialog.h"
+#include "doa4_display.h"
 #include "doa4_tweaks.h"
 #include "doa4_unlocks.h"
 #include "doa4_updater.h"
@@ -788,15 +789,16 @@ class DeadOrAlive4App : public rex::ReXApp {
     doa4::NetOverlay::Content c;
     c.banner = ov::BannerText(in.in_session && doa4::np::BannerWaiting(), ending);
     c.stats = ov::Describe(in).stats_lines;
+    if (rex::cvar::Query<bool>("doa4_show_fps")) c.stats.insert(c.stats.begin(), fps_meter_.Text());
     return c;
   }
 
-  // The overlay exists only while the banner is up or the F9 box can show (it is on and there is a lobby or a session):
-  // while any ImGui dialog exists the presenter paints from the UI thread. UI thread only.
+  // The overlay exists only while the banner is up or the F9 box can show (it is on and there is a lobby or a session)
+  // or the FPS line is on: while any ImGui dialog exists the presenter paints from the UI thread. UI thread only.
   void UpdateNetOverlay() {
     if (net_closing_.load(std::memory_order_acquire) || !drawer_) return;
     const doa4::online_view::In in = OnlineViewIn(false);
-    bool want = in.show_stats && (in.in_session || in.lobby_open);
+    bool want = (in.show_stats && (in.in_session || in.lobby_open)) || rex::cvar::Query<bool>("doa4_show_fps");
     if (!want && in.in_session) {
       want = !NetOverlayContent().banner.empty();
     }
@@ -833,6 +835,100 @@ class DeadOrAlive4App : public rex::ReXApp {
     REXLOG_INFO("[doa4][NET] F9: ping and delay box {}", now ? "on" : "off");
     UpdateNetOverlay();
   }
+
+  // F7: the FPS line (in memory only; the Video tab checkbox saves the setting).
+  void ToggleFps() {
+    const bool now = !rex::cvar::Query<bool>("doa4_show_fps");
+    rex::cvar::SetFlagByName("doa4_show_fps", now ? "true" : "false");
+    REXLOG_INFO("[doa4][UI] F7: FPS line {}", now ? "on" : "off");
+    UpdateNetOverlay();
+  }
+
+  uint32_t GpuSwaps() {
+    rex::Runtime* rt = runtime();
+    auto* graphics = rt ? dynamic_cast<rex::graphics::GraphicsSystem*>(rt->graphics_system()) : nullptr;
+    rex::graphics::CommandProcessor* processor = graphics ? graphics->command_processor() : nullptr;
+    return processor ? processor->swap_count() : 0;
+  }
+
+  // Ten times a second on the UI thread: everything that follows state other parts of the game change.
+  void UiTick() {
+    if (net_closing_.load(std::memory_order_acquire)) return;
+    UpdateCursor();
+    SyncCostumeCounts();
+    PollExtrasRequest();
+    if (rex::cvar::Query<bool>("doa4_show_fps")) {
+      const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      fps_meter_.Sample(GpuSwaps(), now);
+      if (now >= fps_next_log_) {  // the harness's evidence: a minimized window never paints the box
+        fps_next_log_ = now + 10.0;
+        REXLOG_INFO("[doa4][UI] fps: {}", fps_meter_.Text());
+      }
+    }
+  }
+
+  // Test switch: DOA4_EXTRAS_REQUEST=<file>: the file's text goes to MenuDialog::TestAction, once (a minimized window
+  // never paints the menu, and a test never clicks in front of the user).
+  void PollExtrasRequest() {
+    static const char* const path = std::getenv("DOA4_EXTRAS_REQUEST");
+    if (!path || !path[0]) return;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return;
+    std::string action;
+    {
+      std::ifstream in(path);
+      std::getline(in, action);
+    }
+    std::filesystem::remove(path, ec);
+    const bool was_open = menu_ != nullptr;
+    if (!was_open) ToggleMenu();
+    if (menu_) menu_->TestAction(action);
+    if (!was_open && menu_) CloseMenu();
+  }
+
+  void UpdateCursor() {
+    rex::ui::Window* w = window();
+    if (!w) return;
+    doa4::display::CursorInputs in;
+    in.focused = w->HasFocus();
+    in.menu_open = menu_open_.load(std::memory_order_acquire);
+    in.setup_open = setup_open_.load(std::memory_order_acquire);
+    in.sdk_overlay_open = HasSdkOverlayOpen();
+    in.mnk_mode = rex::cvar::Query<bool>("mnk_mode");
+    const doa4::display::CursorAction action = doa4::display::DecideCursor(in);
+    if (action == cursor_action_) return;
+    cursor_action_ = action;
+    if (action == doa4::display::CursorAction::kLeave) {
+      REXLOG_INFO("[doa4][UI] cursor: left to the keyboard and mouse driver");
+      return;
+    }
+    const bool hide = action == doa4::display::CursorAction::kHide;
+    w->SetCursorVisibility(hide ? rex::ui::Window::CursorVisibility::kHidden
+                                : rex::ui::Window::CursorVisibility::kVisible);
+    REXLOG_INFO("[doa4][UI] cursor: {}", hide ? "hidden" : "shown");
+  }
+
+  // Keeps the save's costume counts in line with the costume tweaks: a count above a maximum (a save from while a box
+  // was on) comes down, and a character with a box on stays at her maximum, since the added costumes come last. Writes
+  // guest memory off the game thread, so never near a session (UnlockStep does the same at a frame boundary there).
+  void SyncCostumeCounts() {
+    if (!guest_ready_ || SessionLocked()) return;
+    const std::optional<uint32_t> loaded = doa4::unlocks::FindLoadedRecord(guest_);
+    if (!loaded) return;
+    if (int n = doa4::unlocks::ClampCostumeCounts(guest_, *loaded)) {
+      REXLOG_INFO("[doa4][EXTRAS] {} costume count(s) above the maximum lowered", n);
+    }
+    if (!doa4::unlocks::FindProfile(guest_)) return;
+    for (const doa4::tweaks::Tweak& tweak : doa4::tweaks::AllTweaks()) {
+      if (tweak.additions.empty() || !rex::cvar::Query<bool>(tweak.cvar)) continue;
+      for (const doa4::tweaks::CostumeAddition& addition : tweak.additions) {
+        if (doa4::unlocks::RaiseCostumes(guest_, *loaded, addition.character)) {
+          REXLOG_INFO("[doa4][EXTRAS] {}: costumes raised to the maximum for charId {:#x}", tweak.cvar,
+                      addition.character);
+        }
+      }
+    }
+  }
   void OnPreLaunchModule() override {
     if (launch_refused_) {  // fix round I2: the guest never runs on the wrong user data (the module is not launched)
       REXLOG_WARN("[doa4][NET] module launch refused: the session start was aborted; this process ends now");
@@ -859,6 +955,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     // the lobby stop and the UPnP removal spend the 5 s watchdog's budget
     menu_tick_stop_.store(true, std::memory_order_release);
     if (menu_tick_.joinable()) menu_tick_.join();
+    if (ui_tick_.joinable()) ui_tick_.join();  // the same flag; it sleeps 25 ms at a time
     if (session_ || guest_touched_) CheckConfigUnchanged();  // carry 2b, while np_log is still open
     // first: the session's writer captures frames through the presenter; np::Shutdown stops the session's transport
     // before anything else (Stop is bounded by 200 ms, Task 7)
@@ -874,6 +971,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     rex::ui::UnregisterBind("bind_doa4_menu");
     rex::ui::UnregisterBind("bind_doa4_photo");
     rex::ui::UnregisterBind("bind_doa4_netstats");
+    rex::ui::UnregisterBind("bind_doa4_fps");
     net_closing_.store(true, std::memory_order_release);
     photo_closing_.store(true, std::memory_order_release);
     doa4::photo::InstallSnapshotWatcher(nullptr);  // the watcher itself lives until exit
@@ -916,6 +1014,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     if (env && env[0] == '1') ToggleDiagOverlay(drawer);
     rex::ui::RegisterBind("bind_doa4_netstats", "F9", "Show the online ping and input delay",
                           [this] { ToggleNetStats(); });
+    rex::ui::RegisterBind("bind_doa4_fps", "F7", "Show frames per second", [this] { ToggleFps(); });
     // Audio diagnostics: the player presses F8 when they hear the glitch; the line carries the session frame,
     // so it lines up with the 'adiag:' lines in np_log.txt.
     rex::ui::RegisterBind("bind_doa4_audiomark", "F8", "Mark an audio glitch in the netplay log", [] {
@@ -965,6 +1064,15 @@ class DeadOrAlive4App : public rex::ReXApp {
       });
     }
     UpdateNetOverlay();  // a session process whose netplay_show_stats is on shows the box from the start
+    ui_tick_ = std::thread([this] {
+      using namespace std::chrono_literals;
+      while (!menu_tick_stop_.load(std::memory_order_acquire)) {
+        app_context().CallInUIThreadDeferred([this] { UiTick(); });
+        for (int i = 0; i < 4 && !menu_tick_stop_.load(std::memory_order_acquire); ++i) {
+          std::this_thread::sleep_for(25ms);
+        }
+      }
+    });
     StartGfxTest();
     SetUpPhotos();
   }
@@ -1006,12 +1114,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   void SetUpSnapshotWatcher() {
     doa4::photo::SnapshotWatcher::Hooks hooks;
     hooks.gpu_swaps = [this]() -> uint32_t {
-      rex::Runtime* rt = runtime();
-      auto* graphics = rt ? dynamic_cast<rex::graphics::GraphicsSystem*>(rt->graphics_system())
-                          : nullptr;
-      rex::graphics::CommandProcessor* processor =
-          graphics ? graphics->command_processor() : nullptr;
-      return processor ? processor->swap_count() : 0;
+      return GpuSwaps();
     };
     hooks.capture = [this](doa4::photo::Image* image) { return CaptureFrame(image); };
     hooks.auto_enabled = [] { return rex::cvar::Query<bool>("doa4_photo_auto"); };
@@ -1302,6 +1405,11 @@ class DeadOrAlive4App : public rex::ReXApp {
   uint32_t net_build_hashes_ = 0;                  // how many times the build id was hashed (UI thread)
   std::thread menu_tick_;                          // DOA4_MENU_OPEN=1 only: polls the menu's net state
   std::atomic<bool> menu_tick_stop_{false};
+  std::thread ui_tick_;                            // posts UiTick to the UI thread; stops with menu_tick_stop_
+  doa4::display::FpsMeter fps_meter_;              // UI thread
+  double fps_next_log_ = 0;                        // UI thread
+  // The cursor's last decision; none of the three values at first, so the first tick applies its answer.
+  doa4::display::CursorAction cursor_action_ = static_cast<doa4::display::CursorAction>(-1);
   uint64_t net_build_id_ = 0;                      // np::BuildIdValue(), hashed on first use (UI thread)
   std::unique_ptr<doa4::MenuDialog> menu_;
   std::atomic<bool> menu_open_{false};
@@ -1353,13 +1461,13 @@ class DeadOrAlive4App : public rex::ReXApp {
                    : rex::memory::kMemoryProtectRead;
       return heap && heap->Protect(address, size, access);
     };
-    patcher_.CaptureOriginals(guest_);
+    patcher_.CaptureOriginals(guest_, [memory](uint32_t size) { return memory->SystemHeapAlloc(size); });
     guest_ready_ = true;
     const auto& tweaks = doa4::tweaks::AllTweaks();
     for (size_t i = 0; i < tweaks.size(); ++i) {
       if (!rex::cvar::Query<bool>(tweaks[i].cvar)) continue;
       std::string error = patcher_.Apply(guest_, i, true, protect_);
-      const bool in_memory = doa4::tweaks::TweakPatcher::IsOn(guest_, i);
+      const bool in_memory = patcher_.IsOn(guest_, i);
       if (error.empty() && in_memory) {
         REXLOG_INFO("[doa4][EXTRAS] {} applied at load", tweaks[i].cvar);
       } else {

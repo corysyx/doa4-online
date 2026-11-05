@@ -105,6 +105,9 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   // Logs the Online tab's state and the session locks if they changed (the same call OnDraw makes every frame). The
   // app calls it from a timer when DOA4_MENU_OPEN=1: a minimized window never paints, so OnDraw alone would not log.
   void PollNetState();
+  // Test switch DOA4_EXTRAS_REQUEST: what a click would do, without drawing. "wipe", "restart" or "tweak NB" (tweak N,
+  // B = 0 or 1).
+  void TestAction(std::string_view action);
 
  protected:
   void OnDraw(ImGuiIO& io) override;
@@ -137,8 +140,11 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   void PollPadListen(const rex::input::X_INPUT_GAMEPAD& pad);
   void AssignPad(size_t target, size_t source);
   void AssignKey(size_t row, const std::string& key_name);
-  // `control` is the Restart now button's own (kVideoRestart / kAudioRestart): refused in an online session.
+  // `control` is the button's own (kVideoRestart / kAudioRestart / kUpdateRestart): refused in an online session.
   void Restart(online_view::Control control);
+  // The Extras tab's wipe: a button, then a confirmation with the second press.
+  void DrawWipeUnlocks(const std::optional<uint32_t>& profile, bool locked);
+  void WipeNow(uint32_t profile);
   // Sets the cvar and saves it; `quote` writes the value as a TOML string.
   // Failures go to status_.
   void SetAndSave(std::string_view name, std::string_view value, bool quote);
@@ -150,6 +156,7 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   uint32_t pad_held_ = 0;  // PadControl bits held since pad listening started
   bool pad_connected_ = false;  // last non-busy GetRawState answer for slot_
   double next_save_poll_ = 0.0;  // ImGui time of the next "has the game saved?" check
+  bool wipe_armed_ = false;      // the first press of "Wipe unlocks..." happened
   std::string status_;     // last error, shown in red
   OnlineTab online_tab_;
   std::string logged_tab_line_;  // the last "[doa4][NET] tab: ..." line written

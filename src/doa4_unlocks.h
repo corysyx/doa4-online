@@ -58,6 +58,24 @@ struct UnlockResult {
 // be written.
 std::optional<uint32_t> FindProfile(const GuestBytes& guest);
 
+// P when the save has been loaded (the same pointer, slot and name checks), whatever its costume counts say: the one
+// use is correcting them (ClampCostumeCounts), since a count past its maximum is what FindProfile refuses.
+std::optional<uint32_t> FindLoadedRecord(const GuestBytes& guest);
+
+// Lowers every costume count above its character's maximum to that maximum: a save written while a costume tweak was
+// on, loaded with it off. Returns how many counts changed.
+int ClampCostumeCounts(const GuestBytes& guest, uint32_t profile);
+
+// Raises the character's costume count (by charId) to her maximum, as a costume tweak needs: the game offers costumes
+// in order, so the added ones come last. A character still locked (Helena, in a new save) is unlocked too. Returns
+// whether it wrote.
+bool RaiseCostumes(const GuestBytes& guest, uint32_t profile, uint8_t char_id);
+
+// Back to a new save's unlocks: costume counts 2, the 7 hidden characters locked, no voices, no Story clears. The
+// other records (Time Attack clears and the rest of the profile) stay. Returns how many bytes changed.
+int WipeUnlocks(const GuestBytes& guest, uint32_t profile);
+bool IsWiped(const GuestBytes& guest, uint32_t profile);
+
 bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what);
 
 // How many of the three unlockable stages are open, by the game's own rules

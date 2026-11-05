@@ -28,6 +28,8 @@ struct ExtrasState {
   // per kind unlocked since the last confirmed save.
   uint32_t profile = 0;
   uint32_t pending_unlocks = 0;
+  bool pending_wipe = false;          // "saved" must find the wipe in ups.dat instead
+  std::filesystem::path wipe_backup;  // the copy taken just before the last wipe
   // ups.dat's modified time at the last click that changed something;
   // nullopt when ups.dat did not exist then.
   std::optional<std::filesystem::file_time_type> save_time_at_click;
@@ -51,6 +53,13 @@ bool UnlockWithBackup(const GuestBytes& guest, uint32_t profile, unlocks::Unlock
                       const std::filesystem::path& save_dir,
                       const std::filesystem::path& backup_root, std::string_view stamp,
                       ExtrasState* state, std::string* error);
+
+// A new dated copy of the save (MakeWipeBackup), then unlocks::WipeUnlocks. Returns false with *error set, having written
+// nothing, when the copy could not be made or `save_dir` is empty. A profile already wiped: true, no copy, nothing
+// written. A wipe replaces whatever unlocks were waiting to be saved.
+bool WipeWithBackup(const GuestBytes& guest, uint32_t profile, const std::filesystem::path& save_dir,
+                    const std::filesystem::path& backup_root, std::string_view stamp, ExtrasState* state,
+                    std::string* error);
 
 // While waiting, marks the state saved once ups.dat has changed since the
 // click AND holds every pending unlock (read through the game's tables in

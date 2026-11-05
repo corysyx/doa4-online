@@ -264,7 +264,8 @@ static void TestEventLine() {
 }
 
 static void TestLocks() {
-  const Control all[] = {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kGameChange};
+  const Control all[] = {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kGameChange,
+                         Control::kUpdateRestart};
   for (const Control c : all) {
     CHECK(LockedInSession(c, true));
     CHECK(!LockedInSession(c, false));
@@ -306,7 +307,8 @@ static void TestSessionLocks() {
         CHECK(SessionLocks(in) == want);
         // the input delay and the controls read the same answer
         CHECK(Describe(in).delay_enabled == !SessionLocks(in));
-        for (const Control c : {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kGameChange}) {
+        for (const Control c : {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kGameChange,
+                                Control::kUpdateRestart}) {
           CHECK(LockedInSession(c, SessionLocks(in)) == want);
         }
         locked_states += want;
@@ -392,7 +394,33 @@ static void TestTabLogLine() {
 
 // Plan 1b Task 4: Check for Updates is enabled only when the lobby is Offline (or was never opened) and no session runs
 // (spec 3.1 "disabled while online"); the note beside the disabled button is the updater's kOnlineText.
+// The Restart button beside Check for Updates: only once a check has swapped a release in, and never while the game is
+// in a session or about to start one (the swap is refused then, so only a bug could reach this).
+static void TestRestartButton() {
+  CHECK(!Describe(In{}).show_restart);
+  In swapped;
+  swapped.restart_pending = true;
+  CHECK(Describe(swapped).show_restart);
+  In busy;
+  busy.update_busy = true;  // a check still downloading has swapped nothing yet
+  CHECK(!Describe(busy).show_restart);
+  CHECK(Describe(busy).join_host_note == "An update is downloading.");
+  // A lobby that went back Offline does not hide it; one starting a session does.
+  In offline = Open(State::kOffline, false);
+  offline.restart_pending = true;
+  CHECK(Describe(offline).show_restart);
+  In starting = Open(State::kStarting, true);
+  starting.restart_pending = true;
+  CHECK(SessionLocks(starting));
+  CHECK(!Describe(starting).show_restart);
+  In session;
+  session.in_session = true;
+  session.restart_pending = true;
+  CHECK(!Describe(session).show_restart);
+}
+
 static void TestUpdateButton() {
+  TestRestartButton();
   const View none = Describe(In{});  // no lobby yet
   CHECK(none.update_enabled);
   CHECK_EQ(none.update_note, "");

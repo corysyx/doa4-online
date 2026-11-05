@@ -776,6 +776,11 @@ void HoldFrameTiming(uint8_t* base) {
 void UnlockStep(State& s, uint32_t f) {
   if (!s.unlock || !s.host.guest) return;
   const doa4::GuestBytes& g = *s.host.guest;
+  // A save written while a costume tweak was on, with the tweak off now: FindProfile refuses it, and this step would
+  // never unlock anything. Both players hold the same save and tweaks, and this runs at the same frame on both.
+  if (const std::optional<uint32_t> loaded = doa4::unlocks::FindLoadedRecord(g)) {
+    doa4::unlocks::ClampCostumeCounts(g, *loaded);
+  }
   const std::optional<uint32_t> p = doa4::unlocks::FindProfile(g);
   if (!p) return;
   if (doa4::unlocks::IsUnlocked(g, *p, doa4::unlocks::Unlock::kEverything)) {

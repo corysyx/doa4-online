@@ -41,6 +41,51 @@ static int CountBackups(const fs::path& dir) {
 // A complete save file: kSaveFileSize bytes.
 static std::string Save(char fill) { return std::string(doa4::kSaveFileSize, fill); }
 
+static void TestWipeBackup() {
+  const fs::path root = fs::temp_directory_path() / "doa4_wipe_backup_test_data";
+  fs::remove_all(root);
+  const fs::path save = root / "00000001" / "ups.dat";
+  const fs::path backups = root / "doa4_save_backups";
+  fs::create_directories(save);
+  WriteFile(save / "ups.dat", Save('a'));
+
+  // A new copy each time, of what the save holds then.
+  doa4::BackupResult first = doa4::MakeWipeBackup(save, backups, "s1");
+  CHECK(first.ok);
+  CHECK(first.backup == backups / "ups.dat.wipe-s1");
+  CHECK(ReadAll(first.backup / "ups.dat") == Save('a'));
+  WriteFile(save / "ups.dat", Save('b'));
+  doa4::BackupResult second = doa4::MakeWipeBackup(save, backups, "s2");
+  CHECK(second.ok);
+  CHECK(second.backup == backups / "ups.dat.wipe-s2");
+  CHECK(ReadAll(second.backup / "ups.dat") == Save('b'));
+  CHECK(ReadAll(first.backup / "ups.dat") == Save('a'));
+
+  // A wipe copy is not the kept first backup: EnsureSaveBackup still makes its own, and later finds only that.
+  CHECK(CountBackups(backups) == 0);
+  doa4::BackupResult kept = doa4::EnsureSaveBackup(save, backups, "s3");
+  CHECK(kept.ok && kept.backup == backups / "ups.dat.backup-s3");
+  CHECK(CountBackups(backups) == 1);
+
+  // The same stamp again: refused, the older copy untouched.
+  WriteFile(save / "ups.dat", Save('c'));
+  doa4::BackupResult same = doa4::MakeWipeBackup(save, backups, "s2");
+  CHECK(!same.ok && !same.message.empty());
+  CHECK(ReadAll(second.backup / "ups.dat") == Save('b'));
+
+  // A save being written: refused, nothing left behind.
+  WriteFile(save / "ups.dat", "short");
+  doa4::BackupResult partial = doa4::MakeWipeBackup(save, backups, "s4");
+  CHECK(!partial.ok && !partial.message.empty());
+  CHECK(!fs::exists(backups / "ups.dat.wipe-s4"));
+
+  // No save: nothing to lose.
+  const fs::path none = root / "00000002" / "ups.dat";
+  doa4::BackupResult nothing = doa4::MakeWipeBackup(none, backups, "s5");
+  CHECK(nothing.ok && nothing.backup.empty() && !nothing.message.empty());
+  fs::remove_all(root);
+}
+
 static void TestBackup() {
   const fs::path root = fs::temp_directory_path() / "doa4_backup_test_data";
   fs::remove_all(root);
@@ -138,6 +183,7 @@ static void TestBackup() {
 int main() {
   try {
     TestBackup();
+    TestWipeBackup();
   } catch (const std::exception& e) {
     std::printf("FAIL TestBackup threw: %s\n", e.what());
     ++g_failures;
