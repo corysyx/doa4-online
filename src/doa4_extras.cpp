@@ -115,6 +115,28 @@ bool WipeWithBackup(const GuestBytes& guest, uint32_t profile, const std::filesy
   return true;
 }
 
+bool BackupBeforeCostumeBox(const std::filesystem::path& save_dir, const std::filesystem::path& backup_root,
+                            std::string_view stamp, ExtrasState* state, std::string* error) {
+  if (save_dir.empty()) {
+    *error = "Costume not added: the save folder is unknown, so it could not be backed up.";
+    return false;
+  }
+  BackupResult backup = EnsureSaveBackup(save_dir, backup_root, stamp);
+  if (!backup.ok) {
+    *error = "Costume not added: " + backup.message;
+    return false;
+  }
+  state->backup = backup.backup;
+  state->backup_note = backup.message;
+  return true;
+}
+
+void CostumeBoxOn(ExtrasState* state) {
+  if (!state->pending_wipe) return;
+  state->pending_wipe = false;
+  state->waiting_for_save = false;
+}
+
 void PollSaved(const GuestBytes& guest, const std::filesystem::path& save_dir,
                ExtrasState* state) {
   if (!state->waiting_for_save) return;

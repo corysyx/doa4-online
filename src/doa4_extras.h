@@ -61,6 +61,13 @@ bool WipeWithBackup(const GuestBytes& guest, uint32_t profile, const std::filesy
                     const std::filesystem::path& backup_root, std::string_view stamp, ExtrasState* state,
                     std::string* error);
 
+// The first backup (EnsureSaveBackup), for a costume box about to change the save. False with *error set when it could
+// not be made or `save_dir` is empty: the box stays off.
+bool BackupBeforeCostumeBox(const std::filesystem::path& save_dir, const std::filesystem::path& backup_root,
+                            std::string_view stamp, ExtrasState* state, std::string* error);
+// A box turned on: its character is no longer as a wipe left her, so a wipe still waiting to be saved stops waiting.
+void CostumeBoxOn(ExtrasState* state);
+
 // While waiting, marks the state saved once ups.dat has changed since the
 // click AND holds every pending unlock (read through the game's tables in
 // `guest`). A newer file without them - a save that copied the record before

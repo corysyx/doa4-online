@@ -268,11 +268,23 @@ static void TestWipeWithBackup() {
   CHECK(state.saved && !state.waiting_for_save);
   CHECK(state.last_change == "Nothing to wipe: the unlocks are already a new save's.");
 
-  // An unlock after a wipe replaces it: "saved" then looks for the unlock (and the other way round).
+  // An unlock after an unsaved wipe replaces it: "saved" then looks for the unlock (and the other way round).
   CHECK(doa4::UnlockWithBackup(g.guest, kP, Unlock::kVoices, save, backups, "u2", &state, &error));
-  CHECK(!state.pending_wipe && state.pending_unlocks != 0);
   CHECK(doa4::WipeWithBackup(g.guest, kP, save, backups, "w3", &state, &error));
   CHECK(state.pending_wipe && state.pending_unlocks == 0);
+  CHECK(doa4::UnlockWithBackup(g.guest, kP, Unlock::kVoices, save, backups, "u3", &state, &error));
+  CHECK(!state.pending_wipe && state.pending_unlocks != 0);
+  CHECK(doa4::WipeWithBackup(g.guest, kP, save, backups, "w3b", &state, &error));
+
+  // A costume box turned on after an unsaved wipe: the save can no longer become "wiped", so nothing waits for that.
+  doa4::CostumeBoxOn(&state);
+  CHECK(!state.pending_wipe && !state.waiting_for_save);
+  CHECK(doa4::UnsavedUnlocksWarning(state) == nullptr);
+  // Unsaved unlocks stay awaited: the box says nothing about them.
+  CHECK(doa4::UnlockWithBackup(g.guest, kP, Unlock::kCharacters, save, backups, "u4", &state, &error));
+  CHECK(state.waiting_for_save);
+  doa4::CostumeBoxOn(&state);
+  CHECK(state.waiting_for_save && state.pending_unlocks != 0);
 
   // No copy possible (its name is taken): nothing written, the state unchanged.
   FakeGuest g2;
@@ -304,8 +316,45 @@ static void TestWipeWithBackup() {
   fs::remove_all(root);
 }
 
+// A costume box writes to the save (the character's count), so it takes the same first backup as an unlock.
+static void TestBackupBeforeCostumeBox() {
+  const fs::path root = fs::temp_directory_path() / "doa4_extras_box_test_data";
+  fs::remove_all(root);
+  const fs::path save = root / "00000001" / "ups.dat";
+  const fs::path backups = root / "doa4_save_backups";
+  fs::create_directories(save);
+  FakeGuest g;
+  const std::string file = SaveFileFrom(g);
+  WriteFile(save / "ups.dat", file);
+  doa4::ExtrasState state;
+  std::string error;
+  CHECK(doa4::BackupBeforeCostumeBox(save, backups, "b1", &state, &error));
+  CHECK(error.empty());
+  CHECK(state.backup == backups / "ups.dat.backup-b1");
+  CHECK(fs::exists(state.backup / "ups.dat"));
+  // The first backup is kept.
+  CHECK(doa4::BackupBeforeCostumeBox(save, backups, "b2", &state, &error));
+  CHECK(state.backup == backups / "ups.dat.backup-b1");
+  // No backup possible: refused, with the reason.
+  WriteFile(save / "ups.dat", "short");
+  doa4::ExtrasState state2;
+  error.clear();
+  CHECK(!doa4::BackupBeforeCostumeBox(save, root / "b2", "b3", &state2, &error));
+  CHECK(error.rfind("Costume not added: ", 0) == 0);
+  error.clear();
+  CHECK(!doa4::BackupBeforeCostumeBox(fs::path(), root / "b2", "b4", &state2, &error));
+  CHECK(error.rfind("Costume not added: ", 0) == 0);
+  // No save yet: nothing to lose, with a note.
+  doa4::ExtrasState state3;
+  error.clear();
+  CHECK(doa4::BackupBeforeCostumeBox(root / "none" / "ups.dat", root / "b3", "b5", &state3, &error));
+  CHECK(state3.backup.empty() && !state3.backup_note.empty());
+  fs::remove_all(root);
+}
+
 int main() {
   try {
+    TestBackupBeforeCostumeBox();
     TestWipeWithBackup();
   } catch (const std::exception& e) {
     std::printf("FAIL TestWipeWithBackup threw: %s\n", e.what());

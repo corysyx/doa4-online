@@ -864,6 +864,8 @@ class DeadOrAlive4App : public rex::ReXApp {
         fps_next_log_ = now + 10.0;
         REXLOG_INFO("[doa4][UI] fps: {}", fps_meter_.Text());
       }
+    } else {
+      fps_meter_ = {};  // on again later: a new window, not an average over the time it was off
     }
   }
 
@@ -910,9 +912,13 @@ class DeadOrAlive4App : public rex::ReXApp {
 
   // Keeps the save's costume counts in line with the costume tweaks: a count above a maximum (a save from while a box
   // was on) comes down, and a character with a box on stays at her maximum, since the added costumes come last. Writes
-  // guest memory off the game thread, so never near a session (UnlockStep does the same at a frame boundary there).
+  // guest memory off the game thread, so never near a session (UnlockStep does the same at a frame boundary there) nor
+  // in a record or replay run, whose guest must not change at a wall-clock moment; DOA4_EXTRAS_REQUEST is the one
+  // exception, a record run standing in for an offline game because only it can take scripted pad input.
   void SyncCostumeCounts() {
     if (!guest_ready_ || SessionLocked()) return;
+    static const bool offline_stand_in = std::getenv("DOA4_EXTRAS_REQUEST") != nullptr;
+    if (doa4::np::Active() && !offline_stand_in) return;
     const std::optional<uint32_t> loaded = doa4::unlocks::FindLoadedRecord(guest_);
     if (!loaded) return;
     if (int n = doa4::unlocks::ClampCostumeCounts(guest_, *loaded)) {
@@ -1453,6 +1459,9 @@ class DeadOrAlive4App : public rex::ReXApp {
     };
     guest_.write = [memory](uint32_t address, uint8_t value) {
       *memory->TranslateVirtual<uint8_t*>(address) = value;
+    };
+    guest_.write_be32 = [memory](uint32_t address, uint32_t value) {
+      *memory->TranslateVirtual<uint32_t*>(address) = _byteswap_ulong(value);
     };
     protect_ = [memory](uint32_t address, uint32_t size, bool writable) {
       rex::memory::BaseHeap* heap = memory->LookupHeap(address);

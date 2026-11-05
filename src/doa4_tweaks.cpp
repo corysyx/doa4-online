@@ -131,8 +131,16 @@ std::string TweakPatcher::Apply(const GuestBytes& guest, size_t tweak, bool on,
     unprotected.push_back(&patch);
   }
 
-  for (size_t p = 0; p < patches.size(); ++p) {
+  // In list order on, in reverse off: a costume tweak's lists move before the counts grow, and the counts shrink before
+  // the lists move back, so the game reading them meanwhile never indexes past a list.
+  for (size_t n = 0; n < patches.size(); ++n) {
+    const size_t p = on ? n : patches.size() - 1 - n;
     const std::vector<uint8_t>& bytes = on ? patches[p].bytes : originals_[tweak][p];
+    if (bytes.size() == 4 && guest.write_be32) {
+      guest.write_be32(patches[p].address, (uint32_t(bytes[0]) << 24) | (uint32_t(bytes[1]) << 16) |
+                                               (uint32_t(bytes[2]) << 8) | uint32_t(bytes[3]));
+      continue;
+    }
     for (size_t i = 0; i < bytes.size(); ++i) {
       guest.Write(patches[p].address + uint32_t(i), bytes[i]);
     }

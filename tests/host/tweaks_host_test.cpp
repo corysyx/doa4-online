@@ -350,6 +350,59 @@ static void TestCostumeTweaksAddSlots() {
   }
 }
 
+// The game reads these tables on its own thread while the menu changes them. On, the list and variants move first (to
+// blocks holding her old costumes too) and the length and maximum grow after; off, the reverse. So a read between two
+// writes never indexes past a list. Pointer words go in one store where the guest offers one.
+static void TestCostumeTablesChangeInASafeOrder() {
+  for (const CostumeCase& c : kCostumeCases) {
+    CostumeGuest g;
+    std::vector<uint32_t> order;
+    std::vector<uint32_t> words;
+    doa4::GuestBytes recording = g.guest;
+    recording.write = [&](uint32_t a, uint8_t v) {
+      order.push_back(a);
+      g.guest.Write(a, v);
+    };
+    recording.write_be32 = [&](uint32_t a, uint32_t v) {
+      words.push_back(a);
+      order.push_back(a);
+      g.SetBe32(a, v);
+    };
+    TweakPatcher patcher;
+    patcher.CaptureOriginals(g.guest, g.alloc);
+    const uint32_t list = kCostumeList + 4 * c.character, variants = kCostumeVariants + 4 * c.character;
+    const uint32_t length = kCostumeLength + c.character, maximum = kCostumeMax + c.character;
+    const auto at = [&](uint32_t a) { return std::find(order.begin(), order.end(), a) - order.begin(); };
+    CHECK(patcher.Apply(recording, c.tweak, true, [](uint32_t, uint32_t, bool) { return true; }).empty());
+    CHECK(words.size() == 2);
+    CHECK(order.size() == 4);  // two whole words and two bytes: nothing byte by byte
+    CHECK(at(list) < at(length) && at(variants) < at(length) && at(list) < at(maximum) && at(variants) < at(maximum));
+    order.clear();
+    words.clear();
+    CHECK(patcher.Apply(recording, c.tweak, false, [](uint32_t, uint32_t, bool) { return true; }).empty());
+    CHECK(words.size() == 2);
+    CHECK(at(length) < at(list) && at(length) < at(variants) && at(maximum) < at(list) && at(maximum) < at(variants));
+    CHECK(g.Be32(list) == fx::kCostumeTables[c.character].list_pointer);
+  }
+}
+
+// Past her entries a block holds zeros: a reader that walks on finds no more variants or models.
+static void TestCostumeBlocksAreZeroPadded() {
+  for (const CostumeCase& c : kCostumeCases) {
+    const fx::CostumeTables& t = fx::kCostumeTables[c.character];
+    CostumeGuest g;
+    TweakPatcher patcher;
+    patcher.CaptureOriginals(g.guest, g.alloc);
+    CHECK(patcher.Apply(g.guest, c.tweak, true, [](uint32_t, uint32_t, bool) { return true; }).empty());
+    const uint32_t list = g.Be32(kCostumeList + 4 * c.character);
+    const uint32_t variants = g.Be32(kCostumeVariants + 4 * c.character);
+    const uint32_t k = uint32_t(c.models.size());
+    CHECK(g.blocks.count(list) == 1 && g.blocks.count(variants) == 1);
+    for (uint32_t i = t.length + k; i < g.blocks[list]; ++i) CHECK(g.guest.Read(list + i) == 0);
+    for (uint32_t i = t.maximum + k; i < g.blocks[variants]; ++i) CHECK(g.guest.Read(variants + i) == 0);
+  }
+}
+
 // All on together: Kokoro's two and the others' one each, each character on her own blocks.
 static void TestCostumeTweaksTogether() {
   CostumeGuest g;
@@ -407,6 +460,8 @@ static void TestCostumeBlockFailure() {
 
 int main() {
   TestCostumeTweaksAddSlots();
+  TestCostumeTablesChangeInASafeOrder();
+  TestCostumeBlocksAreZeroPadded();
   TestCostumeTweaksTogether();
   TestCostumeBlocksAreAllocatedOnceUpFront();
   TestCostumeBlockFailure();

@@ -13,6 +13,8 @@ namespace doa4 {
 struct GuestBytes {
   std::function<uint8_t(uint32_t address)> read;
   std::function<void(uint32_t address, uint8_t value)> write;
+  // A big-endian word in one store, for a pointer the game may read meanwhile. Optional: byte writes without it.
+  std::function<void(uint32_t address, uint32_t value)> write_be32 = {};
 
   uint8_t Read(uint32_t address) const { return read(address); }
   void Write(uint32_t address, uint8_t value) const { write(address, value); }

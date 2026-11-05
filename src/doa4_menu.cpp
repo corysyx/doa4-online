@@ -154,6 +154,11 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   // The Online tab's state and the session locks are logged whichever tab is shown (the log is the test hook:
   // the session's shots never hold the menu).
   PollNetState();
+  // On every tab: the Video and Online tabs show the unsaved warning too.
+  if (ImGui::GetTime() >= next_save_poll_) {
+    if (host_.guest && host_.extras) PollSaved(*host_.guest, host_.save_dir, host_.extras);
+    next_save_poll_ = ImGui::GetTime() + 1.0;
+  }
   ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                           ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
@@ -494,10 +499,6 @@ void MenuDialog::DrawExtrasTab() {
   DrawWipeUnlocks(profile, extras_locked);
 
   ExtrasState& state = *host_.extras;
-  if (ImGui::GetTime() >= next_save_poll_) {
-    if (host_.guest) PollSaved(*host_.guest, host_.save_dir, &state);
-    next_save_poll_ = ImGui::GetTime() + 1.0;
-  }
   if (!state.last_change.empty()) {
     ImGui::Spacing();
     ImGui::TextWrapped("%s", state.last_change.c_str());
@@ -560,6 +561,14 @@ void MenuDialog::DrawWipeUnlocks(const std::optional<uint32_t>& profile, bool lo
 
 void MenuDialog::WipeNow(uint32_t profile) {
   if (host_.refuse && host_.refuse("wipe unlocks", &status_)) return;
+  // First: while a costume box is on its character is held unlocked at her maximum, which would undo the wipe for her.
+  // A box that cannot go off (the settings file cannot be written) stops the wipe, with SetTweak's reason showing.
+  for (const size_t i : {tweaks::kHelenaOpera, tweaks::kKokoroKimonos, tweaks::kChristieCostume}) {
+    if (rex::cvar::Query<bool>(tweaks::AllTweaks()[i].cvar) && !SetTweak(i, false)) {
+      REXLOG_ERROR("[doa4][EXTRAS] wipe unlocks: not done, {} stays on: {}", tweaks::AllTweaks()[i].cvar, status_);
+      return;
+    }
+  }
   std::string error;
   if (!WipeWithBackup(*host_.guest, profile, host_.save_dir, host_.backup_root, BackupStamp(), host_.extras, &error)) {
     status_ = error;
@@ -568,10 +577,6 @@ void MenuDialog::WipeNow(uint32_t profile) {
   }
   status_.clear();
   REXLOG_INFO("[doa4][EXTRAS] wipe unlocks: {}", host_.extras->last_change);
-  // While a costume box is on its character is held unlocked at her maximum, which would undo this for her.
-  for (const size_t i : {tweaks::kHelenaOpera, tweaks::kKokoroKimonos, tweaks::kChristieCostume}) {
-    if (rex::cvar::Query<bool>(tweaks::AllTweaks()[i].cvar)) SetTweak(i, false);
-  }
 }
 
 void MenuDialog::TestAction(std::string_view action) {
@@ -582,8 +587,9 @@ void MenuDialog::TestAction(std::string_view action) {
     }
   } else if (action == "restart") {
     Restart(online_view::Control::kUpdateRestart);
-  } else if (action.rfind("tweak", 0) == 0 && action.size() == 8) {  // tweak<index><0|1>, as "tweak 21"
-    SetTweak(size_t(action[6] - '0'), action[7] == '1');
+  } else if (action.rfind("tweak", 0) == 0 && action.size() == 8 && host_.guest) {  // tweak<index><0|1>, as "tweak 21"
+    const size_t index = size_t(action[6] - '0');
+    if (index < tweaks::AllTweaks().size()) SetTweak(index, action[7] == '1');
   }
 }
 
@@ -721,17 +727,27 @@ void MenuDialog::DrawPhotoTab() {
   }
 }
 
-void MenuDialog::SetTweak(size_t index, bool on) {
+bool MenuDialog::SetTweak(size_t index, bool on) {
   const tweaks::Tweak& tweak = tweaks::AllTweaks()[index];
-  if (host_.refuse && host_.refuse(std::string("tweak ") + tweak.cvar, &status_)) return;
+  if (host_.refuse && host_.refuse(std::string("tweak ") + tweak.cvar, &status_)) return false;
   const char* value = on ? "true" : "false";
+  // A costume box changes the save: the first backup comes before anything else.
+  if (on && !tweak.additions.empty()) {
+    std::string backup_error;
+    if (!BackupBeforeCostumeBox(host_.save_dir, host_.backup_root, BackupStamp(), host_.extras, &backup_error)) {
+      status_ = backup_error;
+      REXLOG_ERROR("[doa4][EXTRAS] {}: {}", tweak.cvar, backup_error);
+      return false;
+    }
+  }
   // Saved first: when the save fails the running game keeps its state.
   std::string error = SaveTomlKey(host_.config_path, tweak.cvar, value);
   if (!error.empty()) {
     status_ = "Could not save settings: " + error;
-    return;
+    return false;
   }
   status_.clear();
+  if (on && !tweak.additions.empty()) CostumeBoxOn(host_.extras);
   rex::cvar::SetFlagByName(tweak.cvar, value);
   std::string apply_error = host_.patcher->Apply(*host_.guest, index, on, host_.protect);
   if (!apply_error.empty()) {
@@ -739,6 +755,7 @@ void MenuDialog::SetTweak(size_t index, bool on) {
   }
   REXLOG_INFO("[doa4][EXTRAS] {} = {}: {}", tweak.cvar, value,
               apply_error.empty() ? "applied" : apply_error);
+  return true;
 }
 
 void MenuDialog::StartPadListen(size_t row, const rex::input::X_INPUT_GAMEPAD* pad) {
@@ -833,6 +850,13 @@ void MenuDialog::Restart(online_view::Control control) {
   std::wstring command_line = GetCommandLineW();
   STARTUPINFOW startup_info{};
   startup_info.cb = sizeof(startup_info);
+  STARTUPINFOW parent{};  // the new instance starts the way this one did (a test's hidden game stays hidden)
+  parent.cb = sizeof(parent);
+  GetStartupInfoW(&parent);
+  if (parent.dwFlags & STARTF_USESHOWWINDOW) {
+    startup_info.dwFlags = STARTF_USESHOWWINDOW;
+    startup_info.wShowWindow = parent.wShowWindow;
+  }
   PROCESS_INFORMATION process{};
   // The new instance waits for this one to exit (DeadOrAlive4App::OnPreSetup)
   // before it opens the save data and the shader cache.

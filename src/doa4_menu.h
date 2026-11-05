@@ -131,8 +131,8 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   // Logs the Online tab's state and the locks once per change (every frame the menu draws, whichever tab is shown).
   void LogNetState(const online_view::In& in, const online_view::View& view);
   // Saves the tweak's cvar; on success sets it and, for a live tweak, writes
-  // or reverts its bytes. Failures go to status_.
-  void SetTweak(size_t tweak, bool on);
+  // or reverts its bytes. Failures go to status_; false when the setting did not change.
+  bool SetTweak(size_t tweak, bool on);
   // Saves `name` first; only on success sets the cvar. Failures go to
   // status_ and leave the running game as it was. Returns whether it saved.
   bool SaveThenSet(std::string_view name, std::string_view value, bool quote);
