@@ -282,12 +282,13 @@ struct CostumeCase {
   size_t tweak;
   uint32_t character;
   std::vector<uint8_t> models;  // the Xenia Rev 1 patch file's values (Helena 0x82C34758 = 03; Kokoro 0x82C34768 = 08,
-                                // 0x82C34769 = 03; Christie 0x82C347F0 = 05), as extra costumes after her own
+                                // 0x82C34769 = 03; Christie 0x82C347F0 = 05), as extra costumes after her own. Kokoro's
+                                // m12 (hak12, the school uniform) is in no Xenia patch: seen in a Versus fight 2026-11-05.
   const char* cvar;
 };
 static const std::vector<CostumeCase> kCostumeCases = {
     {kHelenaOpera, 0x07, {0x03}, "doa4_helena_opera"},
-    {kKokoroKimonos, 0x0A, {0x08, 0x03}, "doa4_kokoro_kimonos"},
+    {kKokoroKimonos, 0x0A, {0x08, 0x03, 0x0C}, "doa4_kokoro_kimonos"},
     {kChristieCostume, 0x14, {0x05}, "doa4_christie_costume"},
 };
 
@@ -403,7 +404,14 @@ static void TestCostumeBlocksAreZeroPadded() {
   }
 }
 
-// All on together: Kokoro's two and the others' one each, each character on her own blocks.
+// The box says what it adds: the kimonos were its whole label before the uniform joined them.
+static void TestKokoroBoxNamesTheUniform() {
+  const std::string label = AllTweaks()[kKokoroKimonos].label;
+  CHECK(label.find("kimonos") != std::string::npos);
+  CHECK(label.find("school uniform") != std::string::npos);
+}
+
+// All on together: Kokoro's three and the others' one each, each character on her own blocks.
 static void TestCostumeTweaksTogether() {
   CostumeGuest g;
   TweakPatcher patcher;
@@ -462,6 +470,7 @@ int main() {
   TestCostumeTweaksAddSlots();
   TestCostumeTablesChangeInASafeOrder();
   TestCostumeBlocksAreZeroPadded();
+  TestKokoroBoxNamesTheUniform();
   TestCostumeTweaksTogether();
   TestCostumeBlocksAreAllocatedOnceUpFront();
   TestCostumeBlockFailure();
