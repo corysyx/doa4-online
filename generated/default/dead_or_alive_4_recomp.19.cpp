@@ -17699,7 +17699,7 @@ loc_8251D3C4:
 	// mtctr r0
 	ctx.ctr.u64 = ctx.r0.u64;
 	// bctr 
-	switch (ctx.r3.u32) {
+	switch (ctx.r11.u32) {
 	case 0:
 		goto loc_8251D408;
 	case 1:
@@ -18841,7 +18841,7 @@ loc_8251DBB4:
 	// mtctr r0
 	ctx.ctr.u64 = ctx.r0.u64;
 	// bctr 
-	switch (ctx.r3.u32) {
+	switch (ctx.r11.u32) {
 	case 0:
 		goto loc_8251DC24;
 	case 1:

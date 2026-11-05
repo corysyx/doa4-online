@@ -74,3 +74,19 @@
 0x82977A00 = {}
 0x82977A10 = {}
 0x8298D0E8 = {}
+
+# Settings pages: the analyzer traces the switch index back through "rlwinm r0,r11,2", does not count
+# "extsh r11,r10" as a write of r11, and continues through the earlier "rlwinm r11,r3,1" of the lookup that
+# produced the row, so it reports r3 (the menu depth) instead of r11 (the highlighted row). Left and right
+# then always changed one row: S.E. on Audio, Match Point (Tag Match) on the mode page.
+# Audio page, sub_8251D328: Music, S.E., Voice, Sound Test.
+[[switch_tables]]
+address = 0x8251D3F4
+register = 11
+labels = [0x8251D408, 0x8251D418, 0x8251D428, 0x8251D438]
+
+# Mode settings page, sub_8251DA10: Difficulty, Match Point (Single Match), Match Point (Tag Match), Life Gauge, Round Time.
+[[switch_tables]]
+address = 0x8251DC0C
+register = 11
+labels = [0x8251DC24, 0x8251DC38, 0x8251DC44, 0x8251DC50, 0x8251DC64]
