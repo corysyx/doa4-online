@@ -451,7 +451,10 @@ class DeadOrAlive4App : public rex::ReXApp {
     const std::filesystem::path game_root = std::filesystem::absolute(runtime()->game_data_root());
     uint32_t width = 0, height = 0;
     std::string error;
-    const std::shared_ptr<const doa4::afs::Overlay> spr = doa4::title_word::BuildOverlay(game_root, &width, &height, &error);
+    // The record first: if it is not what was measured, nothing is installed at all.
+    error = doa4::title_word::CheckRecord(guest_);
+    std::shared_ptr<const doa4::afs::Overlay> spr;
+    if (error.empty()) spr = doa4::title_word::BuildOverlay(game_root, &width, &height, &error);
     if (spr) {
       error = doa4::afs::InstallOverlays(
           *runtime()->file_system(), {{doa4::title_word::kSprArchive, spr}},
@@ -464,8 +467,10 @@ class DeadOrAlive4App : public rex::ReXApp {
       return;
     }
     doa4::title_word::EnableWordDraw();
-    REXLOG_INFO("[doa4][TITLE] ONLINE under the logo: {}x{} composed into spr.afs entries {} and {}", width, height,
-                doa4::title_word::kSprLogoN, doa4::title_word::kSprLogoW);
+    title_word_line_ = doa4::title_word::FilesLine(spr.get());
+    // The digest in the log lets two players' logs be compared by eye as well.
+    REXLOG_INFO("[doa4][TITLE] ONLINE under the logo: {}x{} composed into spr.afs entries {} and {}, {}", width, height,
+                doa4::title_word::kSprLogoN, doa4::title_word::kSprLogoW, title_word_line_.substr(0, title_word_line_.size() - 1));
   }
 
   // Netplay phase 0 (src/net/np_session.h): inert unless DOA4_NP is set; phase 1 (Task 12): the online session of a
@@ -624,7 +629,8 @@ class DeadOrAlive4App : public rex::ReXApp {
     p.build = [] { return doa4::np::BuildIdValue(); };
     p.release = DOA4_RELEASE_TAG;
     const std::filesystem::path files_dir = game_files_;
-    p.files = [files_dir] { return doa4::np::files::Text(doa4::np::files::Fingerprint(files_dir)); };
+    // title_word_line_ is set once, in OnPostSetup, before any lobby exists. The word sits in guest memory: compared here.
+    p.files = [files_dir, word = title_word_line_] { return doa4::np::files::Text(doa4::np::files::Fingerprint(files_dir)) + word; };
     p.guest_settings = [] {
       return doa4::np::handoff::CaptureGuestSettings(
           [](const std::string& name) { return rex::cvar::Query<std::string>(name); });
@@ -1455,6 +1461,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   int saved_scale_ = 1;  // what the menu last saved for the next start
   // Extras tab (doa4_unlocks.h, doa4_tweaks.h): set up at OnPostLoadXexImage.
   doa4::GuestBytes guest_;
+  std::string title_word_line_ = doa4::title_word::FilesLine(nullptr);  // np_files' extra line: doa4_title_word.h
   bool guest_ready_ = false;
   doa4::tweaks::TweakPatcher patcher_;
   doa4::tweaks::ProtectFn protect_;

@@ -82,6 +82,10 @@ REX_HOOK_RAW(sub_823BB470) {
     __imp__sub_823BB470(ctx, base);
     return;
   }
+  // Once, for the log's thread column: the word's brief change to the description has to be on the thread that hashes frames
+  // (the session's checksum sweep over .data must never see it half done).
+  static std::atomic<bool> s_logged{false};
+  if (!s_logged.exchange(true)) REXLOG_INFO("[doa4][TITLE] first word draw, description at {:#x}", draw);
   const uint64_t lr = ctx.lr;
   const float x = LoadFloat(base, draw + 12), y = LoadFloat(base, draw + 16);
   __imp__sub_823BB470(ctx, base);

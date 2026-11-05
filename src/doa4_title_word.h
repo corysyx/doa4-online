@@ -16,7 +16,8 @@
 // logo's own colour and scale.
 //
 // Two players must get identical bytes (the texture sits in guest memory), so the composition uses integer and IEEE
-// add/multiply/divide/sqrt arithmetic only, never exp, pow or sin, whose results depend on the C library.
+// add/multiply/divide/sqrt/floor arithmetic only, never exp, pow or sin, whose results depend on the C library. FilesLine
+// makes the players compare the result when they connect.
 // If anything does not look as measured, nothing changes: the game's own title, with a line in the log.
 //
 // Pure C++ over GuestBytes and afs::Source (no rex includes), so host tests build it.
@@ -68,7 +69,16 @@ std::string PutWordInLogoFile(std::vector<uint8_t>* xpr, uint32_t* width, uint32
 std::shared_ptr<const afs::Overlay> BuildOverlay(const std::filesystem::path& game_root, uint32_t* width,
                                                  uint32_t* height, std::string* error);
 
-// Points sprite record 4 at the word, if it is still the game's PRE-RELEASE VERSION record; "" or why not (nothing written).
+// The line two players compare when one joins the other (added to np_files' text, so rules::DifferingGroups names it):
+// "title-word=<16 hex digits>\n", a digest of both logo files as served, or "title-word=none\n" without the word. The texture
+// and the record sit in guest memory, and files::Fingerprint only samples spr.afs, missing both logo files. So one PC falling
+// back, or composing other bytes, is a refused join that says so, not a desync 40 frames into the session.
+std::string FilesLine(const afs::Overlay* overlay);
+
+// "" if sprite record 4 is still the game's PRE-RELEASE VERSION record, or why not. Called before anything is installed.
+std::string CheckRecord(const GuestBytes& guest);
+
+// Points sprite record 4 at the word, after the same check; "" or why not (nothing written).
 std::string InstallRecord(const GuestBytes& guest, uint32_t width, uint32_t height);
 
 // The draw struct of the word's extra draw: from the logo's fields, what to change. Follows the logo's scale.

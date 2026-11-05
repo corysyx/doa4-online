@@ -1390,6 +1390,10 @@ static void TestDifferingGroups() {
   CHECK(rules::DifferingGroups("a=1\nb=2\n", "a=1\nb=3\nc=4\n") == V({"b", "c"}));
   CHECK(rules::DifferingGroups("a=1\nb=2\n", "a=1\nb=2\n").empty());
   CHECK(rules::DifferingGroups("", "").empty());
+  // The title word's line: one player without the word, or with other bytes, is a named difference, not a later desync.
+  CHECK(rules::DifferingGroups("a=1\ntitle-word=0123456789abcdef\n", "a=1\ntitle-word=none\n") == V({"title-word"}));
+  CHECK(rules::DifferingGroups("title-word=0123456789abcdef\n", "title-word=0123456789abcdee\n") == V({"title-word"}));
+  CHECK(rules::DifferingGroups("title-word=none\n", "title-word=none\n").empty());
   CHECK(rules::DifferingGroups("a=1\n", "a=1\nb=2\n") == V({"b"}));   // missing on the first side
   CHECK(rules::DifferingGroups("a=1\nb=2\n", "a=1\n") == V({"b"}));   // missing on the second
   CHECK(rules::DifferingGroups("a=1\n", "") == V({"a"}));

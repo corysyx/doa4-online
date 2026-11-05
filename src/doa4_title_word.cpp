@@ -1,7 +1,7 @@
 // The word under the title logo. See doa4_title_word.h.
 //
 // The numbers below come from the approved mock-up (notes/mockups/2026-11-05-online-title/logo_mock3.py): cut lines read off
-// zoomed views of the logo, letter advances, the N's shape. Only + - * / and sqrt on doubles and integers (see the header).
+// zoomed views of the logo, letter advances, the N's shape. Only + - * / sqrt floor on doubles and integers (see the header).
 
 #include "doa4_title_word.h"
 
@@ -645,8 +645,25 @@ std::shared_ptr<const afs::Overlay> BuildOverlay(const std::filesystem::path& ga
   return overlay;
 }
 
-std::string InstallRecord(const GuestBytes& guest, uint32_t width, uint32_t height) {
-  if (width == 0 || width > kSlotWidth || height == 0 || height > kSlotHeight) return "the word does not fit its image";
+std::string FilesLine(const afs::Overlay* overlay) {
+  const std::string none = "title-word=none\n";
+  if (!overlay) return none;
+  uint64_t hash = 0xCBF29CE484222325ull;  // FNV-1a 64 over both logo files as served
+  for (const uint32_t entry : {kSprLogoN, kSprLogoW}) {
+    std::vector<uint8_t> bytes(size_t(overlay->entry_size(entry)));
+    if (!overlay->Read(overlay->entry_offset(entry), bytes.data(), bytes.size())) return none;
+    for (const uint8_t b : bytes) {
+      hash ^= b;
+      hash *= 0x100000001B3ull;
+    }
+  }
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string line = "title-word=";
+  for (int shift = 60; shift >= 0; shift -= 4) line += kHex[(hash >> shift) & 15];
+  return line + "\n";
+}
+
+std::string CheckRecord(const GuestBytes& guest) {
   const uint32_t record = kSheet3Records + 12 * (kWordSprite & 0xFFFF);
   const uint16_t expected[6] = {170, 8, 854, 56, 3, 4};  // PRE-RELEASE VERSION in image 4 of sheet 3
   for (uint32_t i = 0; i < 6; ++i) {
@@ -656,6 +673,13 @@ std::string InstallRecord(const GuestBytes& guest, uint32_t width, uint32_t heig
              std::to_string(expected[i]);
     }
   }
+  return {};
+}
+
+std::string InstallRecord(const GuestBytes& guest, uint32_t width, uint32_t height) {
+  if (width == 0 || width > kSlotWidth || height == 0 || height > kSlotHeight) return "the word does not fit its image";
+  if (std::string why = CheckRecord(guest); !why.empty()) return why;
+  const uint32_t record = kSheet3Records + 12 * (kWordSprite & 0xFFFF);
   const uint16_t rect[4] = {0, 0, uint16_t(width), uint16_t(height)};
   for (uint32_t i = 0; i < 4; ++i) {
     guest.Write(record + 2 * i, uint8_t(rect[i] >> 8));

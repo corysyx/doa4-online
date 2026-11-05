@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
@@ -175,6 +176,17 @@ void PutRecord4(FakeGuest* g) {
 // The formula the tools and the suit labels use, pinned on values worked by hand from it at a tile boundary.
 static void TestTiling() {
   CHECK(TiledOffset(0, 0, 1024, 0) == 0);
+  // From another implementation of the formula (tex_png.py's tiled_offset, which decoded the real logo correctly), not this one.
+  CHECK(TiledOffset(1, 0, 1024, 0) == 1);
+  CHECK(TiledOffset(7, 3, 1024, 0) == 31);
+  CHECK(TiledOffset(100, 9, 1024, 0) == 1940);
+  CHECK(TiledOffset(33, 17, 1024, 0) == 2577);
+  CHECK(TiledOffset(300, 40, 1024, 0) == 41924);
+  CHECK(TiledOffset(1023, 63, 1024, 0) == 65407);
+  CHECK(TiledOffset(1, 0, 256, 2) == 4);
+  CHECK(TiledOffset(9, 0, 256, 2) == 68);
+  CHECK(TiledOffset(128, 0, 256, 2) == 16384);
+  CHECK(TiledOffset(255, 0, 256, 2) == 28908);
   std::set<uint32_t> seen;
   for (uint32_t y = 0; y < 64; ++y) {
     for (uint32_t x = 0; x < 1024; ++x) seen.insert(TiledOffset(x, y, 1024, 0));
@@ -363,6 +375,134 @@ static void TestRecord() {
   CHECK(!InstallRecord(big.guest, 0, 63).empty());
 }
 
+// The check that runs before anything is installed: the same verdict as InstallRecord's, and it writes nothing.
+static void TestCheckRecord() {
+  FakeGuest g;
+  PutRecord4(&g);
+  const auto before = g.mem;
+  CHECK(CheckRecord(g.guest).empty());
+  CHECK(g.mem == before);
+  const uint32_t r = kSheet3Records + 12 * 4;
+  for (uint32_t off : {0u, 2u, 4u, 6u, 8u, 10u}) {
+    FakeGuest bad;
+    PutRecord4(&bad);
+    bad.Be16(r + off, 999);
+    const auto was = bad.mem;
+    CHECK(!CheckRecord(bad.guest).empty());
+    CHECK(bad.mem == was);
+  }
+}
+
+// A spr.afs with 20 entries in the game's layout (entries contiguous on 2048-byte boundaries, the name table last).
+static std::vector<uint8_t> MakeArchive(const std::vector<uint8_t>& logo_n, const std::vector<uint8_t>& logo_w) {
+  const uint32_t count = 20;
+  std::vector<std::vector<uint8_t>> entries(count);
+  for (uint32_t i = 0; i < count; ++i) entries[i].assign(3000 + i * 7, uint8_t(i + 1));
+  entries[kSprLogoN] = logo_n;
+  entries[kSprLogoW] = logo_w;
+  const auto align = [](size_t v) { return (v + 2047) / 2048 * 2048; };
+  std::vector<uint8_t> file(0x800, 0);
+  const auto le = [&](size_t at, uint32_t v) {
+    for (int k = 0; k < 4; ++k) file[at + k] = uint8_t(v >> (8 * k));
+  };
+  std::memcpy(file.data(), "AFS", 4);
+  le(4, count);
+  for (uint32_t i = 0; i < count; ++i) {
+    const size_t at = file.size();
+    le(8 + 8 * i, uint32_t(at));
+    le(12 + 8 * i, uint32_t(entries[i].size()));
+    file.insert(file.end(), entries[i].begin(), entries[i].end());
+    file.resize(align(file.size()), 0);
+  }
+  const size_t names = file.size();
+  le(8 + 8 * count, uint32_t(names));
+  le(12 + 8 * count, 48 * count);
+  file.resize(names + 48 * count, 0);
+  for (uint32_t i = 0; i < count; ++i) {
+    const std::string name = "entry" + std::to_string(i) + ".bin";
+    std::memcpy(file.data() + names + 48 * i, name.data(), name.size());
+    // The game's archives: a name record's last word holds TOC word i, word 0 being the entry count.
+    const uint32_t word = i == 0 ? count : (i % 2 == 1 ? (uint32_t(file[8 + 8 * (i / 2)]) | uint32_t(file[9 + 8 * (i / 2)]) << 8 | uint32_t(file[10 + 8 * (i / 2)]) << 16 | uint32_t(file[11 + 8 * (i / 2)]) << 24)
+                                                       : (uint32_t(file[4 + 8 * (i / 2)]) | uint32_t(file[5 + 8 * (i / 2)]) << 8 | uint32_t(file[6 + 8 * (i / 2)]) << 16 | uint32_t(file[7 + 8 * (i / 2)]) << 24));
+    le(names + 48 * i + 44, word);
+  }
+  file.resize(align(file.size()), 0);
+  return file;
+}
+
+static std::filesystem::path PutArchive(const char* folder, const std::vector<uint8_t>& archive) {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "doa4_title_word_test" / folder;
+  std::filesystem::create_directories(dir);
+  std::ofstream f(dir / kSprArchive, std::ios::binary | std::ios::trunc);
+  f.write(reinterpret_cast<const char*>(archive.data()), std::streamsize(archive.size()));
+  return dir;
+}
+
+// The whole archive route, on every run; and the line the players compare.
+static void TestArchiveAndFilesLine() {
+  const Made n = MakeLogoFile(MakeLogo(), 21), w = MakeLogoFile(MakeLogo(), 22);
+  const std::vector<uint8_t> archive = MakeArchive(n.file, w.file);
+  uint32_t width = 0, height = 0;
+  std::string error;
+  const auto overlay = BuildOverlay(PutArchive("good", archive), &width, &height, &error);
+  CHECK(overlay != nullptr);
+  if (!overlay) {
+    std::printf("BuildOverlay: %s\n", error.c_str());
+    return;
+  }
+  const Word word = ComposeWord(MakeLogo());
+  CHECK(width == word.width && height == word.height);
+  CHECK(overlay->size() == archive.size());
+  // Same layout: an entry outside the two reads as it did; the two read as the composed files.
+  std::vector<uint8_t> read(archive.size());
+  CHECK(overlay->Read(0, read.data(), read.size()));
+  std::vector<uint8_t> expect_n = n.file, expect_w = w.file;
+  uint32_t a = 0, b = 0;
+  CHECK(PutWordInLogoFile(&expect_n, &a, &b).empty());
+  CHECK(PutWordInLogoFile(&expect_w, &a, &b).empty());
+  CHECK(overlay->entry_size(kSprLogoN) == expect_n.size() && overlay->entry_size(kSprLogoW) == expect_w.size());
+  CHECK(std::equal(expect_n.begin(), expect_n.end(), read.begin() + long(overlay->entry_offset(kSprLogoN))));
+  CHECK(std::equal(expect_w.begin(), expect_w.end(), read.begin() + long(overlay->entry_offset(kSprLogoW))));
+  size_t differing_elsewhere = 0;
+  for (size_t i = 0; i < read.size(); ++i) {
+    const bool in_n = i >= overlay->entry_offset(kSprLogoN) && i < overlay->entry_offset(kSprLogoN) + expect_n.size();
+    const bool in_w = i >= overlay->entry_offset(kSprLogoW) && i < overlay->entry_offset(kSprLogoW) + expect_w.size();
+    if (!in_n && !in_w && read[i] != archive[i]) ++differing_elsewhere;
+  }
+  CHECK(differing_elsewhere == 0);
+
+  const std::string line = FilesLine(overlay.get());
+  CHECK(line.size() == std::string("title-word=").size() + 16 + 1);
+  CHECK(line.rfind("title-word=", 0) == 0 && line.back() == '\n');
+  CHECK(line.find_first_not_of("0123456789abcdef", 11) == line.size() - 1);
+  CHECK(FilesLine(nullptr) == "title-word=none\n");
+  CHECK(line != FilesLine(nullptr));
+  // The same files give the same line; a change in either logo file gives another: the two-player check depends on both.
+  uint32_t ww = 0, hh = 0;
+  const auto same = BuildOverlay(PutArchive("same", archive), &ww, &hh, &error);
+  CHECK(same != nullptr && FilesLine(same.get()) == line);
+  for (const bool change_n : {true, false}) {
+    std::vector<Rgba> other = MakeLogo();
+    for (Rgba& p : other) {
+      if (p.a != 0) p.g = uint8_t(p.g - 40);
+    }
+    const Made changed = MakeLogoFile(other, change_n ? 21 : 22);
+    const auto differs = BuildOverlay(PutArchive("other", MakeArchive(change_n ? changed.file : n.file, change_n ? w.file : changed.file)), &ww, &hh, &error);
+    CHECK(differs != nullptr && FilesLine(differs.get()) != line);
+  }
+
+  // Refused, with a reason: no archive at all, too few entries, and each logo file unusable in turn.
+  std::string why;
+  CHECK(BuildOverlay(std::filesystem::temp_directory_path() / "doa4_title_word_test" / "none_here", &ww, &hh, &why) == nullptr);
+  CHECK(!why.empty());
+  std::vector<uint8_t> junk(5000, 7);
+  for (const bool bad_n : {true, false}) {
+    why.clear();
+    CHECK(BuildOverlay(PutArchive("bad", MakeArchive(bad_n ? junk : n.file, bad_n ? w.file : junk)), &ww, &hh, &why) == nullptr);
+    CHECK(why.find(std::string("entry ") + std::to_string(bad_n ? kSprLogoN : kSprLogoW)) != std::string::npos);
+  }
+}
+
 // Below the logo by the design's distance, and it follows the logo: moved or scaled, the word goes with it.
 static void TestDrawFollowsTheLogo() {
   WordDraw d = WordDrawFor(640.0f, 300.0f, 1.0f, 1.0f);
@@ -385,7 +525,7 @@ static void TestRealFiles() {
   const auto overlay = BuildOverlay(root, &w, &h, &error);
   if (!overlay) std::printf("real files: %s\n", error.c_str());
   CHECK(overlay != nullptr);
-  std::printf("real files: word %ux%u\n", w, h);
+  std::printf("real files: word %ux%u, %s", w, h, overlay ? FilesLine(overlay.get()).c_str() : "no overlay\n");
   if (!overlay) return;
   // Read the logo file back through the overlay, as the game will.
   std::vector<uint8_t> xpr(size_t(overlay->entry_size(kSprLogoW)));
@@ -457,6 +597,8 @@ int main() {
   TestSlotReadsBack();
   TestRefusals();
   TestRecord();
+  TestCheckRecord();
+  TestArchiveAndFilesLine();
   TestDrawFollowsTheLogo();
   TestRealFiles();
   if (g_failures) {
