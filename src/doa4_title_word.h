@@ -43,8 +43,9 @@ inline constexpr uint32_t kLogoSprite = 0x30000;
 inline constexpr uint32_t kWordSprite = 0x30004;
 inline constexpr uint32_t kSheet3Records = 0x82C700A0;  // *(0x82C77D08 + 4 * 3) in the image: 6 x 12 bytes
 
-// The word's centre relative to the logo's, in the game's 1280x720 canvas at scale 1 (the approved mock-up).
-inline constexpr float kWordOffsetX = 2.0f;
+// The centre of the word's sprite relative to the logo's, in the game's 1280x720 canvas at scale 1 (the approved mock-up). The
+// sprite is wider than the letters in it, so X also keeps the letters where the user approved them.
+inline constexpr float kWordOffsetX = 7.5f;
 inline constexpr float kWordOffsetY = 81.5f;
 
 inline constexpr uint32_t kLogoWidth = 1024, kLogoHeight = 128;  // image 0

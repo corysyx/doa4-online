@@ -556,11 +556,11 @@ static void TestArchiveAndFilesLine() {
 static void TestDrawFollowsTheLogo() {
   WordDraw d = WordDrawFor(640.0f, 300.0f, 1.0f, 1.0f);
   CHECK(d.id == 0x30004);
-  CHECK(d.x == 642.0f && d.y == 381.5f);
+  CHECK(d.x == 647.5f && d.y == 381.5f);
   d = WordDrawFor(100.0f, 50.0f, 1.0f, 1.0f);
-  CHECK(d.x == 102.0f && d.y == 131.5f);
+  CHECK(d.x == 107.5f && d.y == 131.5f);
   d = WordDrawFor(640.0f, 300.0f, 2.0f, 0.5f);
-  CHECK(d.x == 644.0f && d.y == 340.75f);
+  CHECK(d.x == 655.0f && d.y == 340.75f);
 }
 
 static void TestRealFiles() {
@@ -620,6 +620,40 @@ static void TestRealFiles() {
       CHECK(changed > 0);
       CHECK(strays == 0);
       CHECK(overlay->size() == source->size());
+    }
+  }
+  // The spacing the user chose, on the real letters, in the slot as the game reads it. Gaps between solid pixels on two rows:
+  // O-N and N-L close to I-N, which the user likes as it is; the others not moved.
+  {
+    const auto alpha = [&](uint32_t x, uint32_t y) {
+      const uint8_t i = xpr[base(8) + TiledOffset(x, y, kSlotWidth, 0)];
+      return int(xpr[base(9) + TiledOffset(i, 0, 256, 2)]);
+    };
+    const auto gaps = [&](uint32_t y) {
+      std::vector<uint32_t> starts, ends;
+      bool in = false;
+      for (uint32_t x = 0; x < w; ++x) {
+        const bool on = alpha(x, y) > 150;
+        if (on && !in) starts.push_back(x);
+        if (!on && in) ends.push_back(x);
+        in = on;
+      }
+      std::vector<int> out;
+      for (size_t i = 0; i + 1 < starts.size() && i < ends.size(); ++i) out.push_back(int(starts[i + 1]) - int(ends[i]));
+      return out;
+    };
+    // Row 12 crosses the O once (over its hole's top) and every other letter's stems: O, N (left, right), L, I, N (left, right), E.
+    const std::vector<int> top = gaps(12);
+    std::printf("real files: gaps on row 12:");
+    for (int g : top) std::printf(" %d", g);
+    std::printf("\n");
+    CHECK(top.size() == 7);
+    if (top.size() == 7) {
+      const int o_n = top[0], n_l = top[2], i_n = top[4], n_e = top[6];
+      CHECK(o_n >= 9 && o_n <= 13);
+      CHECK(n_l >= 9 && n_l <= 13);
+      CHECK(i_n >= 9 && i_n <= 12);  // not moved
+      CHECK(n_e >= 8 && n_e <= 11);  // not moved
     }
   }
   const char* out = std::getenv("DOA4_TITLE_WORD_OUT");
