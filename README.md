@@ -1,6 +1,6 @@
 # Dead or Alive 4 Online
 
-![Dead or Alive 4 title screen running on PC](docs/images/title-screen.jpg)
+![Dead or Alive 4 Online title screen running on PC](docs/images/title-screen.jpg)
 
 **Dead or Alive 4 Online** is a native Windows build of **Dead or Alive 4** (Xbox 360) with two-player
 online play, statically recompiled with the
