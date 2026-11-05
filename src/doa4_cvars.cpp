@@ -8,7 +8,7 @@ REXCVAR_DEFINE_BOOL(doa4_tag_all_stages, false, "DOA4",
 REXCVAR_DEFINE_BOOL(doa4_mp_hidden_characters, false, "DOA4",
                     "Hidden characters in multiplayer select (Xenia patch by ryu_highabusa)");
 REXCVAR_DEFINE_BOOL(doa4_helena_opera, false, "DOA4", "Helena's opera dress as an extra costume");
-REXCVAR_DEFINE_BOOL(doa4_kokoro_kimonos, false, "DOA4", "Kokoro's pink and blue kimonos and school uniform as extra costumes");
+REXCVAR_DEFINE_BOOL(doa4_kokoro_kimonos, false, "DOA4", "Kokoro's pink and blue kimonos as extra costumes");
 REXCVAR_DEFINE_BOOL(doa4_christie_costume, false, "DOA4", "Christie's cutscene costume as an extra costume");
 
 // Video tab and F7: frames per second over the game. Host-only: not carried to the other player.

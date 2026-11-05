@@ -77,11 +77,9 @@ const std::array<Tweak, 5>& AllTweaks() {
       {"doa4_mp_hidden_characters", "Hidden characters in multiplayer select",
        MpHiddenCharacterPatches(), {}},
       // The models the Xenia Rev 1 patches put on slots 1 and 2 (ryu_highabusa), as extra costumes instead: Helena m3
-      // (hel03 + helAD), Kokoro m8 (pink) and m3 (blue), Christie m5. On the disc; no costume list uses them. Kokoro m12
-      // (hak12, the school uniform) is on the disc and unused too, though no Xenia patch selects it. Ten is her limit:
-      // the select screen breaks past about ten costumes (notes/research/costume_select_ui.md).
+      // (hel03 + helAD), Kokoro m8 (pink) and m3 (blue), Christie m5. On the disc; no costume list uses them.
       {"doa4_helena_opera", "Helena's opera dress", {}, {{0x07, {0x03}}}},
-      {"doa4_kokoro_kimonos", "Kokoro's kimonos and school uniform", {}, {{0x0A, {0x08, 0x03, 0x0C}}}},
+      {"doa4_kokoro_kimonos", "Kokoro's pink and blue kimonos", {}, {{0x0A, {0x08, 0x03}}}},
       {"doa4_christie_costume", "Christie's cutscene costume", {}, {{0x14, {0x05}}}},
   }};
   return tweaks;
