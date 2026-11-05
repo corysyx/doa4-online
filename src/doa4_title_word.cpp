@@ -37,6 +37,7 @@ constexpr int kNWidth = 72, kNStem = 24, kNLeft = 8, kNCanvasW = 120;
 constexpr double kLStem = 585.0, kIStem = 650.0;  // those letters' left edges at the baseline
 constexpr int kWordX0 = 0, kWordY0 = 34, kWordW = 444, kWordH = 76;  // the part of the canvas that holds the word
 constexpr uint32_t kLogoFileTextures = 12;                           // six images, each followed by its palette
+constexpr uint8_t kSolidAlpha = 235;  // the logo's letters read 240-255 here, its black shadow 190 at most
 
 struct Px {
   double r = 0, g = 0, b = 0, a = 0;
@@ -155,6 +156,24 @@ void Distance1d(const std::vector<double>& in, std::vector<double>* out) {
   }
 }
 
+// A letter over one soft shadow, down and to the right: the same for all six, so the word reads as one piece.
+Image WithSoftShadow(const Image& letter, int w, int h) {
+  std::vector<double> soft(letter.size());
+  for (size_t i = 0; i < letter.size(); ++i) soft[i] = letter[i].a;
+  BoxBlur(&soft, w, h, 2, 4);
+  Image full(letter.size());
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      if (x >= 3 && y >= 3) {
+        const double a = soft[size_t(y - 3) * w + x - 3] * 0.45;
+        full[size_t(y) * w + x] = Px{10, 24, 44, a};
+      }
+      Over(&full[size_t(y) * w + x], letter[size_t(y) * w + x]);
+    }
+  }
+  return full;
+}
+
 // The N, 1x, its shadow under it, as wide as the O and the E. On left-facing edges the chrome is `scuff_stem`'s real scuffed
 // band at the same row and depth; other edges have the clean rim; the inside is the L's dark centre, row by row.
 Image BuildN(const std::vector<Rgba>& logo, double scuff_stem) {
@@ -261,26 +280,83 @@ Image BuildN(const std::vector<Rgba>& logo, double scuff_stem) {
       s[3] += 1.0;
     }
   }
-  std::vector<double> alpha(n1.size());
   for (size_t i = 0; i < n1.size(); ++i) {
     if (sums[i][3] <= 0) continue;
     n1[i] = Px{sums[i][0] / sums[i][3], sums[i][1] / sums[i][3], sums[i][2] / sums[i][3], sums[i][3] / (kSs * kSs) * 255.0};
-    alpha[i] = n1[i].a;
   }
-  // The logo's soft shadow, down and to the right.
-  std::vector<double> soft = alpha;
-  BoxBlur(&soft, kNCanvasW, kCanvasH, 2, 4);
-  Image full(n1.size());
-  for (int y = 0; y < kCanvasH; ++y) {
-    for (int x = 0; x < kNCanvasW; ++x) {
-      if (x >= 3 && y >= 3) {
-        const double a = soft[size_t(y - 3) * kNCanvasW + x - 3] * 0.45;
-        full[size_t(y) * kNCanvasW + x] = Px{10, 24, 44, a};
-      }
-      Over(&full[size_t(y) * kNCanvasW + x], n1[size_t(y) * kNCanvasW + x]);
+  return WithSoftShadow(n1, kNCanvasW, kCanvasH);
+}
+
+// One letter of the logo, without what surrounds it: the largest connected solid shape inside its cut, plus that shape's own
+// soft edge. The logo's letters sit in a black see-through shadow that overlaps their neighbours, so cutting pixels by position
+// alone keeps chopped shadow and slivers of the next letter; here neither survives. Its shadow comes from WithSoftShadow.
+Image LetterBody(const std::vector<Rgba>& logo, const Cut& cut) {
+  const int w = int(kLogoWidth), h = int(kLogoHeight);
+  std::vector<int> label(size_t(w) * h, 0);
+  std::vector<uint8_t> solid(label.size(), 0);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      if (logo[size_t(y) * w + x].a >= kSolidAlpha && Coverage(cut, x, y) >= 0.5) solid[size_t(y) * w + x] = 1;
     }
   }
-  return full;
+  int best = 0, best_size = 0, next = 0;
+  std::vector<size_t> stack;
+  for (size_t start = 0; start < solid.size(); ++start) {  // in a fixed order: ties go to the first shape found
+    if (!solid[start] || label[start]) continue;
+    ++next;
+    int size = 0;
+    label[start] = next;
+    stack.push_back(start);
+    while (!stack.empty()) {
+      const size_t at = stack.back();
+      stack.pop_back();
+      ++size;
+      const int x = int(at % size_t(w)), y = int(at / size_t(w));
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          const int nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const size_t n = size_t(ny) * w + nx;
+          if (solid[n] && !label[n]) {
+            label[n] = next;
+            stack.push_back(n);
+          }
+        }
+      }
+    }
+    if (size > best_size) {
+      best_size = size;
+      best = next;
+    }
+  }
+  Image body(label.size());
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const size_t at = size_t(y) * w + x;
+      const double coverage = Coverage(cut, x, y);
+      if (coverage <= 0) continue;
+      Px p = LogoAt(logo, x, y);
+      if (label[at] == best && best != 0) {
+        p.a *= coverage;
+        body[at] = p;
+        continue;
+      }
+      if (p.a >= kSolidAlpha) continue;  // solid, but another shape: a piece of the next letter
+      // The soft edge: within two pixels of the letter and not shadow, which is black. Dark edge pixels fade out with it.
+      bool near = false;
+      for (int dy = -2; dy <= 2 && !near; ++dy) {
+        for (int dx = -2; dx <= 2 && !near; ++dx) {
+          const int nx = x + dx, ny = y + dy;
+          near = nx >= 0 && ny >= 0 && nx < w && ny < h && best != 0 && label[size_t(ny) * w + nx] == best;
+        }
+      }
+      if (!near) continue;
+      const double brightness = (p.r + p.g + p.b) / 3.0;
+      p.a *= coverage * Clamp(brightness / 80.0, 0, 1);
+      body[at] = p;
+    }
+  }
+  return WithSoftShadow(body, w, h);
 }
 
 // Area-weighted scale down, in premultiplied alpha.
@@ -501,15 +577,11 @@ Word ComposeWord(const std::vector<Rgba>& logo) {
       continue;
     }
     const Cut& c = CutFor(letter);
+    const Image body = LetterBody(logo, c);
     for (int y = 0; y < kCanvasH; ++y) {
       for (int x = 0; x < int(kLogoWidth); ++x) {
-        const double coverage = Coverage(c, x, y);
-        if (coverage <= 0) continue;
         const int to = x + pen - c.origin;
-        if (to < 0 || to >= kCanvasW) continue;
-        Px p = LogoAt(logo, x, y);
-        p.a *= coverage;
-        Over(&canvas[size_t(y) * kCanvasW + to], p);
+        if (to >= 0 && to < kCanvasW) Over(&canvas[size_t(y) * kCanvasW + to], body[size_t(y) * kLogoWidth + x]);
       }
     }
     pen += c.advance;

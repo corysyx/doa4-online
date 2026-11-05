@@ -226,6 +226,56 @@ static void TestWord() {
   CHECK(ComposeWord(MakeLogo()).pixels.size() == w.pixels.size());
 }
 
+// What the user saw on the real title (2026-11-05): the logo's own black shadow, chopped by a cut line, made a blocky edge right
+// of the O and a dark patch at the E's top left, and a sliver of the A's rim came along left of the L. So here the logo has what
+// the real one has: a black see-through shadow beside every letter and neighbour, reaching across the cut lines, and a piece of a
+// neighbour inside a cut, apart from the letter.
+static void TestNoLeftovers() {
+  std::vector<Rgba> logo = MakeLogo();
+  const Rgba shadow{0, 0, 0, 150};
+  for (int y = 41; y <= 100; ++y) {
+    for (int x = 340; x < 860; ++x) {
+      Rgba& p = logo[size_t(y) * kLogoWidth + x];
+      if (p.a == 0) p = shadow;
+    }
+  }
+  // The A's rim inside the L's cut at row 60: bright, two pixels of the black shadow from the L's body.
+  for (int y = 56; y <= 64; ++y) {
+    for (int x = 589; x <= 591; ++x) logo[size_t(y) * kLogoWidth + x] = Rgba{255, 0, 0, 255};
+  }
+  const Word w = ComposeWord(logo);
+  CHECK(w.pixels.size() == size_t(w.width) * w.height && !w.pixels.empty());
+  if (w.pixels.empty()) return;
+  int red = 0, black = 0;
+  for (const Rgba& p : w.pixels) {
+    if (p.r > 150 && p.g < 90 && p.a > 24) ++red;
+    if (p.r < 4 && p.g < 4 && p.b < 4 && p.a > 40) ++black;
+  }
+  CHECK(red == 0);    // NOT the sliver
+  CHECK(black == 0);  // NOT the logo's own shadow, kept or chopped
+  // A soft shadow all the same: right of the O, along a row through its middle, the alpha falls away with no cliff.
+  const uint32_t row = w.height / 2;
+  uint32_t x = 0;
+  while (x < w.width && w.pixels[size_t(row) * w.width + x].a < 200) ++x;
+  while (x < w.width && w.pixels[size_t(row) * w.width + x].a >= 200) ++x;  // the O's left stroke
+  while (x < w.width && w.pixels[size_t(row) * w.width + x].a < 200) ++x;   // its hole
+  while (x < w.width && w.pixels[size_t(row) * w.width + x].a >= 200) ++x;  // its right stroke
+  int biggest_fall = 0, peak = 0;
+  uint32_t walked = 0;
+  // From the pixel after the letter's own soft edge. Only falls count: a chopped shadow drops suddenly, while the walk may end
+  // by rising into the next letter's edge.
+  for (uint32_t k = x + 2; k < w.width && w.pixels[size_t(row) * w.width + k].a < 200 && walked < 12; ++k, ++walked) {
+    const int a = w.pixels[size_t(row) * w.width + k].a;
+    biggest_fall = std::max(biggest_fall, int(w.pixels[size_t(row) * w.width + k - 1].a) - a);
+    if (walked < 4) peak = std::max(peak, a);  // right beside the O: further on could be the next letter's edge or shadow
+  }
+  CHECK(walked >= 3);
+  CHECK(peak >= 10);          // NOT no shadow at all
+  CHECK(biggest_fall <= 40);  // NOT a chopped edge
+  // Every letter gets the same treatment: nothing of the shadow pattern depends on where a cut happens to run.
+  CHECK(ComposeWord(logo).pixels.size() == w.pixels.size());
+}
+
 // Two players must get the same bytes.
 static void TestDeterministic() {
   const Made a = MakeLogoFile(MakeLogo(), 7);
@@ -592,6 +642,7 @@ static void TestRealFiles() {
 int main() {
   TestTiling();
   TestWord();
+  TestNoLeftovers();
   TestDeterministic();
   TestOnlyTheSlotChanges();
   TestSlotReadsBack();
