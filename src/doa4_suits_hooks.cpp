@@ -21,6 +21,24 @@
 // overwrite r3 after the call. DOA4_SUITS_NO_FUR_GUARD=1 turns the guard off (the positive
 // control).
 //
+// The select screen's per-player count copy (doa4_costumes.h kCountCopy, u8[25] per player): the cursor, the list drawer
+// and the random costume read it, so the suits are made selectable where it is WRITTEN, never at a reader. Two guest
+// functions write it, both at the select screen (the log line names the thread):
+// - sub_82525E80(r3 = select object, r4 = the player's struct, r6 = the player's row): from sub_82521478, the screen's
+//   start-up (the only caller); after it fills the struct it copies the loaded profile's counts (P + 0x3FC2) into r6;
+// - sub_82523C18(r3 = snapshot): from sub_82523E20 and sub_82524130, refills every row from the screen's snapshot of
+//   the save (sub_82523A38).
+// After each, the rows of the girls with suits are raised to what the list offers (costumes::VisibleCount). Only the
+// copy changes, never the save. Not in a session (np_session unlocks everything there; the same stand-in as
+// SyncCostumeCounts: DOA4_EXTRAS_REQUEST marks a record run standing in for an offline game).
+// Test switch DOA4_SUITS_COUNT_TRACE=1, read once: logs every call of both writers with its thread, and at the list
+// drawer checks that no girl with suits shows a copy below what the writers leave (a third writer would show there).
+//
+// sub_82537350 (the Tatami stage's rule) reads the table's maximum, which includes the suits: without a hook a save
+// that earned Tatami would find it locked. With suits in the tables the rule is answered by unlocks::TatamiOpen, which
+// leaves the suits out of the maximum; with none it is the game's own function. Test switch DOA4_SUITS_TATAMI_TRACE=1
+// logs the game's answer beside ours.
+//
 // Test switch DOA4_SUITS_SCENE=<entry>=<char>:#<costume>[,...] (ported from the stage-0 probe's
 // DOA4_FORCE_SCENE): each attract scene's fighter entry gets that character in that costume, the
 // costume resolved by the game's own lookup over the (patched) tables.
@@ -66,6 +84,8 @@
 
 #include "doa4_suits_bust.h"
 #include "doa4_suits_labels.h"
+#include "doa4_unlocks.h"
+#include "net/np_session.h"
 #include "generated/default/dead_or_alive_4_init.h"
 
 extern "C" {
@@ -75,6 +95,9 @@ REX_EXTERN(__imp__sub_823FE870);
 REX_EXTERN(__imp__sub_82455E08);
 REX_EXTERN(__imp__sub_823841D0);
 REX_EXTERN(__imp__sub_82528190);
+REX_EXTERN(__imp__sub_82525E80);
+REX_EXTERN(__imp__sub_82523C18);
+REX_EXTERN(__imp__sub_82537350);
 REX_EXTERN(__imp__sub_823BF210);
 REX_EXTERN(__imp__sub_823C1280);
 REX_EXTERN(__imp__sub_823C15E8);
@@ -141,6 +164,79 @@ const std::vector<SceneForce>& Forces() {
   return forces;
 }
 
+doa4::costumes::SuitCounts g_suit_counts;  // written before guest code, read after
+std::atomic<bool> g_suit_counts_on{false};
+std::atomic<int> g_count_logs{0};
+
+const bool g_count_trace = [] {
+  const char* env = std::getenv("DOA4_SUITS_COUNT_TRACE");
+  return env && env[0] == '1';
+}();
+
+// Not in a session: np_session unlocks everything there (a record run with DOA4_EXTRAS_REQUEST stands in for offline).
+bool CountCopyOffline() {
+  static const bool stand_in = std::getenv("DOA4_EXTRAS_REQUEST") != nullptr;
+  return stand_in || !doa4::np::Active();
+}
+
+const char* GirlName(uint32_t character) {
+  switch (character) {
+    case 1: return "Tina";
+    case 5: return "Kasumi";
+    case 7: return "Helena";
+    case 10: return "Kokoro";
+    case 12: return "Leifang";
+    case 13: return "Ayane";
+    case 15: return "Lisa";
+    case 20: return "Christie";
+    case 21: return "Hitomi";
+    default: return nullptr;
+  }
+}
+
+void RaiseRow(uint8_t* base, uint32_t row, const char* writer, uint32_t player) {
+  if (!g_suit_counts_on.load(std::memory_order_acquire) || !CountCopyOffline()) return;
+  const doa4::GuestBytes guest{[base](uint32_t address) { return base[address]; },
+                               [base](uint32_t address, uint8_t value) { base[address] = value; }};
+  const std::vector<doa4::costumes::Raised> raised = doa4::costumes::RaiseCountRow(guest, row, g_suit_counts);
+  if (g_count_trace && g_count_logs.fetch_add(1, std::memory_order_relaxed) < 60) {
+    REXLOG_INFO("[doa4][SUITS] count copy: {} wrote player {} row {:#x} on thread {}; {} girl(s) raised", writer, player,
+                row, rex::thread::current_thread_system_id(), raised.size());
+  }
+  static std::mutex seen_mutex;
+  static std::set<uint32_t> seen;  // (character, save, shows): one line per distinct raise, not one per frame
+  for (const doa4::costumes::Raised& r : raised) {
+    {
+      std::lock_guard<std::mutex> lock(seen_mutex);
+      if (!seen.insert((uint32_t(r.character) << 16) | (uint32_t(r.save) << 8) | r.shows).second) continue;
+    }
+    const char* name = GirlName(r.character);
+    if (name) {
+      REXLOG_INFO("[doa4][SUITS] suits: {} shows {} of {} (save {}) [{}, player {}, thread {}]", name, r.shows, r.of,
+                  r.save, writer, player, rex::thread::current_thread_system_id());
+    } else {
+      REXLOG_INFO("[doa4][SUITS] suits: charId {:#x} shows {} of {} (save {}) [{}, player {}, thread {}]", r.character,
+                  r.shows, r.of, r.save, writer, player, rex::thread::current_thread_system_id());
+    }
+  }
+}
+
+// Trace only: at the list drawer, a girl with suits whose copy is set (non-zero) but below what the writers leave.
+void CheckRowsAtDrawer(uint8_t* base) {
+  static std::atomic<int> reports{0};
+  for (uint32_t p = 0; p < doa4::costumes::kCountCopyPlayers; ++p) {
+    const uint32_t row = doa4::costumes::kCountCopy + p * doa4::costumes::kCountCopyRow;
+    for (uint32_t c = 0; c < doa4::costumes::kCharCount; ++c) {
+      if (g_suit_counts[c] == 0 || base[row + c] == 0) continue;
+      const uint8_t of = base[doa4::costumes::kMaxTable + c];
+      if (base[row + c] < of && reports.fetch_add(1, std::memory_order_relaxed) < 8) {
+        REXLOG_WARN("[doa4][SUITS] count copy: at the list drawer player {} charId {:#x} shows {} of {}: a writer was missed",
+                    p, c, base[row + c], of);
+      }
+    }
+  }
+}
+
 std::atomic<uint32_t> g_label_table{0};
 std::atomic<bool> g_label_table_lost{false};  // the pointer word stopped naming the table (WARN once)
 
@@ -201,6 +297,15 @@ void doa4::suits::InstallGuards(const costumes::GuardState& state) {
   g_state.store(&g_state_storage, std::memory_order_release);
 }
 
+void doa4::suits::InstallSuitCounts(const costumes::SuitCounts& counts) {
+  g_suit_counts = counts;
+  bool any = false;
+  for (uint8_t n : counts) any = any || n != 0;
+  g_suit_counts_on.store(any, std::memory_order_release);
+}
+
+doa4::costumes::SuitCounts doa4::suits::InstalledSuitCounts() { return g_suit_counts; }
+
 uint32_t doa4::suits::InstalledEmptySlots() {
   const doa4::costumes::GuardState* state = g_state.load(std::memory_order_acquire);
   uint32_t marked = 0;
@@ -219,7 +324,47 @@ void doa4::suits::InstallLabelTable(uint32_t table) {
 
 uint32_t doa4::suits::InstalledLabelTable() { return g_label_table.load(std::memory_order_acquire); }
 
+REX_HOOK_RAW(sub_82525E80) {
+  const uint32_t row = ctx.r6.u32;  // the original uses r6 as a scratch, so read it first
+  __imp__sub_82525E80(ctx, base);
+  RaiseRow(base, row, "sub_82525E80", (row - doa4::costumes::kCountCopy) / doa4::costumes::kCountCopyRow);
+}
+
+REX_HOOK_RAW(sub_82523C18) {
+  __imp__sub_82523C18(ctx, base);
+  for (uint32_t p = 0; p < doa4::costumes::kCountCopyPlayers; ++p) {
+    RaiseRow(base, doa4::costumes::kCountCopy + p * doa4::costumes::kCountCopyRow, "sub_82523C18", p);
+  }
+}
+
+// The Tatami stage's rule (r3 returned, no argument): see the header comment. The original is a pure function of the
+// profile (lwz 23752(0x8303xxxx) = unlocks::kProfilePointer), so ours answers from the same bytes.
+REX_HOOK_RAW(sub_82537350) {
+  static const bool trace = std::getenv("DOA4_SUITS_TATAMI_TRACE") != nullptr;
+  if (!g_suit_counts_on.load(std::memory_order_acquire) || !CountCopyOffline()) {  // a session keeps the game's rule
+    __imp__sub_82537350(ctx, base);
+    return;
+  }
+  const doa4::GuestBytes guest{[base](uint32_t address) { return base[address]; }, {}};
+  const uint32_t profile = guest.ReadBe32(doa4::unlocks::kProfilePointer);
+  const uint32_t mine = doa4::unlocks::TatamiOpen(guest, profile) ? 1u : 0u;
+  if (trace) {
+    const uint64_t r3 = ctx.r3.u64, r4 = ctx.r4.u64, r5 = ctx.r5.u64, r6 = ctx.r6.u64, r7 = ctx.r7.u64, r8 = ctx.r8.u64,
+                   r9 = ctx.r9.u64, r10 = ctx.r10.u64, r11 = ctx.r11.u64;
+    __imp__sub_82537350(ctx, base);
+    static std::atomic<int> logs{0};
+    if (logs.fetch_add(1, std::memory_order_relaxed) < 40) {
+      REXLOG_INFO("[doa4][SUITS] tatami rule: the game says {}, ours says {} (profile {:#x}, thread {})", ctx.r3.u32, mine,
+                  profile, rex::thread::current_thread_system_id());
+    }
+    ctx.r4.u64 = r4; ctx.r5.u64 = r5; ctx.r6.u64 = r6; ctx.r7.u64 = r7; ctx.r8.u64 = r8; ctx.r9.u64 = r9;
+    ctx.r10.u64 = r10; ctx.r11.u64 = r11; (void)r3;
+  }
+  ctx.r3.u64 = mine;
+}
+
 REX_HOOK_RAW(sub_82528190) {
+  if (g_count_trace && g_suit_counts_on.load(std::memory_order_acquire) && CountCopyOffline()) CheckRowsAtDrawer(base);
   const uint32_t table = g_label_table.load(std::memory_order_acquire);
   if (table == 0) {
     __imp__sub_82528190(ctx, base);

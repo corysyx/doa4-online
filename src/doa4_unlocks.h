@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -68,8 +69,19 @@ int ClampCostumeCounts(const GuestBytes& guest, uint32_t profile);
 
 // Raises the character's costume count (by charId) to her maximum, as a costume tweak needs: the game offers costumes
 // in order, so the added ones come last. A character still locked (Helena, in a new save) is unlocked too. Returns
-// whether it wrote.
+// whether it wrote. Her maximum is the game's own: the imported swimsuits (SetSuitCostumes) are not counted, because
+// they are offered on the select screen without the save's count and the import must not change the save.
 bool RaiseCostumes(const GuestBytes& guest, uint32_t profile, uint8_t char_id);
+
+// How many imported swimsuits each character has (by charId): the table's maximum includes them, the save's count does
+// not. Called once at start-up, after the suits are in the tables and before any guest code runs; all zero by default.
+// RaiseCostumes and TatamiOpen leave the suits out of the maximum. ClampCostumeCounts and FindProfile keep the table's
+// whole maximum (a count above it is what they correct), and ApplyUnlock, the explicit "Unlock all" act, writes it.
+void SetSuitCostumes(const std::array<uint8_t, kCharIdCount>& by_char);
+
+// The Tatami stage's rule (the game's sub_82537350): every costume but Alpha-152's at the game's own maximum, every
+// Story character cleared, every voice but Ein's. Needs a loaded profile.
+bool TatamiOpen(const GuestBytes& guest, uint32_t profile);
 
 // Back to a new save's unlocks: costume counts 2, the 7 hidden characters locked, no voices, no Story clears. The
 // other records (Time Attack clears and the rest of the profile) stay. Returns how many bytes changed.

@@ -1032,6 +1032,103 @@ static void TestGuardModelEdge() {
   CHECK(GuardModel(w.s, 5, 31, 0) == 31);
 }
 
+// ---- Task 3: the select screen offers every suit with no change to the save ----
+
+// VisibleCount(save_count, list_length, has_suits). The wrong versions: "always the list length" (shows 5 for a girl
+// with no suits on an import that has other girls' suits) and "the save's count" (hides the suits).
+static void TestVisibleCount() {
+  CHECK(VisibleCount(2, 8, true) == 8);
+  CHECK(VisibleCount(2, 8, false) == 2);
+  CHECK(VisibleCount(8, 8, true) == 8);
+  CHECK(VisibleCount(2, 5, false) == 2);  // NOT 5: a girl without suits keeps her count
+  CHECK(VisibleCount(9, 8, true) == 9);   // never below the count
+  CHECK(VisibleCount(0, 8, true) == 8);
+  CHECK(VisibleCount(255, 8, false) == 255);
+}
+
+static const SuitCounts& NoSuits() {
+  static const SuitCounts none{};
+  return none;
+}
+
+// A fresh save's copy: 2 for every girl (the profile's starting counts), one row per player.
+static void FillRows(FakeGuest& g, uint8_t count) {
+  for (uint32_t p = 0; p < kCountCopyPlayers; ++p) {
+    for (uint32_t c = 0; c < kCharCount; ++c) g.bytes[kCountCopy + p * kCountCopyRow + c] = count;
+  }
+  g.written.clear();
+}
+
+static void TestCountSuits() {
+  FakeGuest g;
+  std::vector<Suit> suits = KokoroSuits();
+  for (const Suit& s : KasumiSuits()) suits.push_back(s);
+  const ApplyResult r = Apply(g.guest, g.alloc, suits);
+  CHECK(r.applied.size() == 8);
+  const SuitCounts n = CountSuits(r.applied);
+  CHECK(n[10] == 4 && n[5] == 4);
+  uint32_t others = 0;
+  for (uint32_t c = 0; c < kCharCount; ++c) others += (c == 10 || c == 5) ? 0u : n[c];
+  CHECK(others == 0);
+  CHECK(CountSuits({}) == NoSuits());
+}
+
+// The copy: a fresh save (2 each) with Kokoro's and Kasumi's suits imported. Both girls show all their costumes in every
+// player's row; Ayane (charId 13, in the fixture with a normal maximum, no suit here) stays at her 2.
+static void TestRaiseCountRow() {
+  FakeGuest g;
+  std::vector<Suit> suits = KokoroSuits();
+  for (const Suit& s : KasumiSuits()) suits.push_back(s);
+  const SuitCounts counts = CountSuits(Apply(g.guest, g.alloc, suits).applied);
+  FillRows(g, 2);
+  CHECK(g.Get(kMaxTable + 5) == 11 && g.Get(kMaxTable + 10) == 11 && g.Get(kMaxTable + 13) == 6);  // preconditions
+  const uint32_t row = kCountCopy + 1 * kCountCopyRow;  // player 1
+  const std::vector<Raised> raised = RaiseCountRow(g.guest, row, counts);
+  CHECK(raised.size() == 2);  // exactly the two girls with suits, in charId order
+  if (raised.size() == 2) {
+    CHECK(raised[0].character == 5 && raised[0].save == 2 && raised[0].shows == 11 && raised[0].of == 11);
+    CHECK(raised[1].character == 10 && raised[1].save == 2 && raised[1].shows == 11);
+  }
+  CHECK(g.Get(row + 5) == 11 && g.Get(row + 10) == 11);
+  CHECK(g.Get(row + 13) == 2);  // a girl without suits: her count, NOT her 6
+  CHECK(g.Get(row + 0) == 2 && g.Get(row + 24) == 2);
+  // Only that row, and only those two bytes: another player's row and every byte around are as they were.
+  CHECK(g.written.size() == 2 && g.written.count(row + 5) == 1 && g.written.count(row + 10) == 1);
+  CHECK(g.Get(kCountCopy + 5) == 2 && g.Get(kCountCopy + 2 * kCountCopyRow + 10) == 2);
+  // Nothing more to raise the second time: no write at all (the writers run every refresh).
+  g.written.clear();
+  CHECK(RaiseCountRow(g.guest, row, counts).empty());
+  CHECK(g.written.empty());
+  // A save that already earned more than the list (a count at or above the maximum) is left alone.
+  g.bytes[row + 5] = 11;
+  g.bytes[row + 10] = 12;
+  CHECK(RaiseCountRow(g.guest, row, counts).empty());
+  CHECK(g.Get(row + 10) == 12);
+  // No suits anywhere: nothing is raised whatever the maxima are (the import without a girl's suits, or none).
+  FakeGuest none;
+  FillRows(none, 2);
+  CHECK(RaiseCountRow(none.guest, kCountCopy, NoSuits()).empty());
+  CHECK(none.written.empty());
+}
+
+// A box on a girl with suits: the maximum follows the box live, so the copy follows it too.
+static void TestRaiseCountRowFollowsBox() {
+  namespace tw = doa4::tweaks;
+  FakeGuest g;
+  tw::TweakPatcher patcher;
+  AllBoxesOn(g, patcher);
+  const ApplyResult r = Apply(g.guest, g.alloc, KokoroSuits());
+  CarrySuits(g, patcher, r);
+  const SuitCounts counts = CountSuits(r.applied);
+  FillRows(g, 2);
+  CHECK(RaiseCountRow(g.guest, kCountCopy, counts).size() == 1);
+  CHECK(g.Get(kCountCopy + 10) == 13);  // the box's 9 and her 4 suits
+  CHECK(patcher.Apply(g.guest, tw::kKokoroKimonos, false, AnyAddress).empty());
+  FillRows(g, 2);
+  CHECK(RaiseCountRow(g.guest, kCountCopy, counts).size() == 1);
+  CHECK(g.Get(kCountCopy + 10) == 11);  // the box off: 7 and 4
+}
+
 int main() {
   TestFixturesAgree();
   TestRecordCounts();
@@ -1058,6 +1155,10 @@ int main() {
   TestDecideLoad();
   TweaksThenSuitsStayWithinLimit();
   TestBoxToggledAfterSuits();
+  TestVisibleCount();
+  TestCountSuits();
+  TestRaiseCountRow();
+  TestRaiseCountRowFollowsBox();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

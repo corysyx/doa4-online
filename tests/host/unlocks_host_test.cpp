@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <map>
+#include <vector>
 
 #include "doa4_unlock_fixtures.h"
 
@@ -360,6 +361,131 @@ static void TestRaiseCostumes() {
   CHECK(g.writes == 0);
 }
 
+// ---- Task 3: the import changes no saved count and re-locks no stage ----
+//
+// The import raises the table's maximum by the girl's suits (costumes::Apply) and tells SetSuitCostumes how many. The
+// fixtures: Kokoro (charId 0x0A, profile index 18) with her box on (maximum 9) and four suits (13); Kasumi (charId 5,
+// profile index 5, maximum 7) with four suits (11).
+constexpr int kKasumiIndex = 5, kKokoroIndex = 18;
+
+static void Import(FakeGuest& g, bool kokoro_box = true) {
+  g.bytes[kMaxCostumes + 0x0A] = kokoro_box ? 13 : 11;
+  g.bytes[kMaxCostumes + 5] = 11;
+  std::array<uint8_t, kCharIdCount> suits{};
+  suits[0x0A] = 4;
+  suits[5] = 4;
+  SetSuitCostumes(suits);
+}
+static void Removed(FakeGuest& g, bool kokoro_box = true) {
+  g.bytes[kMaxCostumes + 0x0A] = kokoro_box ? 9 : 7;
+  g.bytes[kMaxCostumes + 5] = 7;
+  SetSuitCostumes({});
+}
+
+// What the UI tick does to the save every 100 ms (SyncCostumeCounts in dead_or_alive_4_app.h), without the guest.
+static void Tick(FakeGuest& g, bool kokoro_box_on) {
+  if (const std::optional<uint32_t> loaded = FindLoadedRecord(g.guest)) {
+    ClampCostumeCounts(g.guest, *loaded);
+    if (FindProfile(g.guest) && kokoro_box_on) RaiseCostumes(g.guest, *loaded, 0x0A);
+  }
+}
+
+// Every byte of the profile's fixture range, for "the save is unchanged".
+static std::vector<uint8_t> Profile(const FakeGuest& g) {
+  std::vector<uint8_t> out;
+  for (uint32_t i = 0; i < 140; ++i) out.push_back(g.Get(kP + kFixtureStart + i));
+  return out;
+}
+
+// The import changes no count. A box on Kokoro is the game's own v1.0.9 behaviour (the tick raises her to the box's
+// maximum), so with the box on the check is against the same save without the import. With the box off a tick writes
+// nothing at all, on a new save (counts 2) and on one that earned everything (the fixture's maxima). The positive
+// control is the same tick on a count the instrument must act on (a count above the maximum): it does write, so
+// "nothing written" is not "the tick never ran".
+static void TestImportLeavesTheCounts() {
+  for (const bool earned : {false, true}) {
+    FakeGuest g;
+    Setup(g, earned ? fx::kFullProfile : fx::kFreshProfile);
+    Import(g, false);
+    const std::vector<uint8_t> before = Profile(g);
+    g.writes = 0;
+    for (int i = 0; i < 5; ++i) Tick(g, false);
+    CHECK(Profile(g) == before);
+    CHECK(g.writes == 0);  // not one write, not even of the same value
+  }
+  for (const bool earned : {false, true}) {  // the box on: with the import = without it, byte for byte
+    FakeGuest with, without;
+    Setup(with, earned ? fx::kFullProfile : fx::kFreshProfile);
+    Setup(without, earned ? fx::kFullProfile : fx::kFreshProfile);
+    without.bytes[kMaxCostumes + 0x0A] = 9;
+    with.bytes[kMaxCostumes + 0x0A] = 9;
+    SetSuitCostumes({});
+    for (int i = 0; i < 5; ++i) Tick(without, true);  // the game as it is: no suits told, the box maximum 9
+    Import(with, true);
+    for (int i = 0; i < 5; ++i) Tick(with, true);
+    CHECK(Profile(with) == Profile(without));
+    CHECK(At(with, kCostumeCount, kKokoroIndex) == 9);  // the box's maximum, NOT the 13 with her suits
+    CHECK(At(with, kCostumeCount, kKasumiIndex) == (earned ? 7 : 2));
+    SetSuitCostumes({});
+  }
+  FakeGuest control;
+  Setup(control, fx::kFreshProfile);
+  Import(control, false);
+  control.bytes[kP + kCostumeCount + kKasumiIndex] = 12;  // above her 11
+  control.writes = 0;
+  Tick(control, false);
+  CHECK(control.writes >= 1 && At(control, kCostumeCount, kKasumiIndex) == 11);
+  SetSuitCostumes({});
+}
+
+// Tatami: a save that earned it (every count at the game's own maximum) keeps it with the suits in the tables. The
+// control: with the maximum raised and the suits not told (what the table alone does), it re-locks.
+static void TestImportKeepsTatami() {
+  FakeGuest g;
+  Setup(g, fx::kFullProfile);
+  CHECK(OpenStageCount(g.guest, kP) == 3);
+  CHECK(TatamiOpen(g.guest, kP));
+  Import(g, false);
+  CHECK(TatamiOpen(g.guest, kP));
+  CHECK(OpenStageCount(g.guest, kP) == 3);
+  SetSuitCostumes({});  // the control: the raised maximum alone
+  CHECK(!TatamiOpen(g.guest, kP));
+  CHECK(OpenStageCount(g.guest, kP) == 2);
+  // A count one short of the game's own maximum still keeps it locked: the suits are not a way in.
+  Import(g, false);
+  g.bytes[kP + kCostumeCount + kKasumiIndex] = 6;
+  CHECK(!TatamiOpen(g.guest, kP));
+  g.bytes[kP + kCostumeCount + kKasumiIndex] = 7;
+  CHECK(TatamiOpen(g.guest, kP));
+  // The rest of the rule is unchanged by the suits.
+  g.bytes[kP + kVoiceUnlocked + 0] = 0;
+  CHECK(!TatamiOpen(g.guest, kP));
+  SetSuitCostumes({});
+}
+
+// "Unlock all costumes" is an explicit act and writes the whole maximum, suits included. Taking the import away after it
+// must not leave a save the program refuses: the clamp brings the counts to the game's own maximum, and then the
+// Extras tab works again.
+static void TestUnlockAllThenImportRemoved() {
+  FakeGuest g;
+  Setup(g, fx::kFreshProfile);
+  Import(g);
+  CHECK(ApplyUnlock(g.guest, kP, Unlock::kCostumes).costumes > 0);
+  CHECK(At(g, kCostumeCount, kKasumiIndex) == 11 && At(g, kCostumeCount, kKokoroIndex) == 13);  // the explicit act
+  CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
+  Removed(g);  // the import folder is gone: the tables are the game's again
+  CHECK(!FindProfile(g.guest));  // before the clamp: refused, as the brief's removal case describes
+  CHECK(FindLoadedRecord(g.guest) == std::optional<uint32_t>(kP));
+  Tick(g, true);
+  CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
+  CHECK(At(g, kCostumeCount, kKasumiIndex) == 7);   // her own maximum
+  CHECK(At(g, kCostumeCount, kKokoroIndex) == 9);   // the box's
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes));
+  g.writes = 0;
+  Tick(g, true);
+  CHECK(g.writes == 0);
+}
+
 // The real 100% save wiped: every unlock field equals the real fresh save's; every other byte stays the 100% save's
 // (it has Time Attack clears, which the fresh save has not, so "copy the fresh fixture" would fail here).
 static void TestWipe() {
@@ -438,6 +564,9 @@ int main() {
   TestExistingProgressIsKept();
   TestSecondClickChangesNothing();
   TestTatamiRule();
+  TestImportLeavesTheCounts();
+  TestImportKeepsTatami();
+  TestUnlockAllThenImportRemoved();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

@@ -1582,6 +1582,11 @@ class DeadOrAlive4App : public rex::ReXApp {
         const std::string error = patcher_.CarrySuits(guest_, alloc, character, list);
         if (!error.empty()) REXLOG_ERROR("[doa4][SUITS] {}", error);
       }
+      // The select screen offers a girl with suits all of her costumes whatever her save's count says (the hooks on the
+      // count copy's two writers), and the save's own maximum stays without the suits (RaiseCostumes, the Tatami rule).
+      const doa4::costumes::SuitCounts suit_counts = doa4::costumes::CountSuits(applied.applied);
+      doa4::suits::InstallSuitCounts(suit_counts);
+      doa4::unlocks::SetSuitCostumes(suit_counts);
       guard = applied.guard;
       any_applied = !applied.applied.empty();
     }

@@ -127,6 +127,35 @@ using AllocFn = std::function<uint32_t(uint32_t size)>;
 // Afterwards the app hands her models to TweakPatcher::CarrySuits, so a box toggled later keeps them.
 ApplyResult Apply(const GuestBytes& guest, const AllocFn& alloc, const std::vector<suits::Suit>& suits);
 
+// How many costumes the select screen offers one girl. The save's count is one number per girl and the suits come after
+// all her costumes, so a girl with suits is offered all of them (`list_length`: her costume maximum, which includes the
+// suits) whatever the save's count says, and a girl without suits keeps the count: her other girls' suits do not change
+// it. Never below the count (a count above the maximum is not lowered here).
+uint8_t VisibleCount(uint8_t save_count, uint8_t list_length, bool has_suits);
+
+// The select screen's per-player copy of the save's counts: u8[25] per player (row = base + 25 * player), indexed by
+// charId. Written by exactly two guest functions (fix round notes: Task 3 report): sub_82525E80 fills one player's row
+// from the loaded profile when the screen starts, and sub_82523C18 refills every row from the screen's snapshot of the
+// save. Read by the cursor sub_825265E0, the list drawer sub_82528190 and the random costume sub_82523120.
+inline constexpr uint32_t kCountCopy = 0x83103000;
+inline constexpr uint32_t kCountCopyRow = kCharCount;
+inline constexpr uint32_t kCountCopyPlayers = 4;
+
+// How many suits each character has in the tables (from Apply's result); 0 for a girl without.
+using SuitCounts = std::array<uint8_t, kCharCount>;
+SuitCounts CountSuits(const std::vector<Applied>& applied);
+
+// One girl's copy raised to what VisibleCount offers.
+struct Raised {
+  uint8_t character = 0;
+  uint8_t save = 0;   // the copy's count before (the save's, as the game filled it)
+  uint8_t shows = 0;  // after
+  uint8_t of = 0;     // her costume maximum
+};
+// Raises one player's row (`row` = the row's address) for every girl with suits; returns the girls it changed.
+// Writes only the copy, never the save.
+std::vector<Raised> RaiseCountRow(const GuestBytes& guest, uint32_t row, const SuitCounts& suits);
+
 // Which rule of the load-request guard a request (character, model) meets, first match wins:
 //  - model 255 and any character that is not one of the 25: none (255 means "none" to the loader,
 //    sub_823FE870, which then loads nothing);

@@ -32,4 +32,10 @@ void InstallLabelTable(uint32_t table);
 // The installed table (0 = none), read back for the start-up log.
 uint32_t InstalledLabelTable();
 
+// Which girls have suits in the tables (costumes::CountSuits of Apply's result), for the select screen's count copy.
+// Called from OnPostSetup before any guest code runs; all zero, the default, leaves the copy as the game fills it.
+void InstallSuitCounts(const costumes::SuitCounts& counts);
+// The installed counts, read back from the hook's state for the start-up log.
+costumes::SuitCounts InstalledSuitCounts();
+
 }  // namespace doa4::suits

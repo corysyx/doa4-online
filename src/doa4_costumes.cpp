@@ -217,6 +217,32 @@ ApplyResult Apply(const GuestBytes& g, const AllocFn& alloc, const std::vector<s
   return result;
 }
 
+uint8_t VisibleCount(uint8_t save_count, uint8_t list_length, bool has_suits) {
+  return has_suits && list_length > save_count ? list_length : save_count;
+}
+
+SuitCounts CountSuits(const std::vector<Applied>& applied) {
+  SuitCounts counts{};
+  for (const Applied& a : applied) {
+    if (a.character < kCharCount && counts[a.character] < 255) ++counts[a.character];
+  }
+  return counts;
+}
+
+std::vector<Raised> RaiseCountRow(const GuestBytes& g, uint32_t row, const SuitCounts& suits) {
+  std::vector<Raised> changed;
+  for (uint32_t c = 0; c < kCharCount; ++c) {
+    if (suits[c] == 0) continue;
+    const uint8_t save = g.Read(row + c);
+    const uint8_t of = g.Read(kMaxTable + c);
+    const uint8_t shows = VisibleCount(save, of, true);
+    if (shows == save) continue;
+    g.Write(row + c, shows);
+    changed.push_back({uint8_t(c), save, shows, of});
+  }
+  return changed;
+}
+
 GuardRule RuleFor(const GuardState& state, uint32_t character, uint32_t model) {
   if (model == 255) return GuardRule::kNone;  // 255 = "none" to the loader (sub_823FE870)
   if (character >= kCharCount) return GuardRule::kNone;

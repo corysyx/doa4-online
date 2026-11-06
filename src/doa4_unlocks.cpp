@@ -14,6 +14,16 @@ uint8_t MaxCostumes(const GuestBytes& guest, int index) {
   return guest.Read(kMaxCostumes + CharId(guest, index));
 }
 
+std::array<uint8_t, kCharIdCount> g_suit_costumes{};  // written once before guest code runs, then only read
+
+// The costumes the game itself offers her: the table's maximum without the imported suits.
+uint8_t OwnMaxCostumes(const GuestBytes& guest, int index) {
+  const uint8_t id = CharId(guest, index);
+  const uint8_t max = guest.Read(kMaxCostumes + id);
+  const uint8_t suits = id < kCharIdCount ? g_suit_costumes[id] : uint8_t(0);
+  return suits < max ? uint8_t(max - suits) : uint8_t(0);
+}
+
 uint8_t ProfileByte(const GuestBytes& guest, uint32_t profile, uint32_t offset, int index = 0) {
   return guest.Read(profile + offset + uint32_t(index));
 }
@@ -110,6 +120,22 @@ std::optional<uint32_t> FindLoadedRecord(const GuestBytes& guest) {
   return profile;
 }
 
+void SetSuitCostumes(const std::array<uint8_t, kCharIdCount>& by_char) { g_suit_costumes = by_char; }
+
+bool TatamiOpen(const GuestBytes& guest, uint32_t profile) {
+  // Tatami: every costume but Alpha-152's at the game's own maximum (the suits are not costumes of the save), every
+  // Story character cleared, every voice but Ein's. The game's rule is sub_82537350, which reads the table's maximum.
+  bool tatami = AllStoryCleared(guest, profile);
+  for (int i = 0; i < kCharacterCount && tatami; ++i) {
+    if (i != kAlphaIndex &&
+        ProfileByte(guest, profile, kCostumeCount, i) < OwnMaxCostumes(guest, i)) {
+      tatami = false;
+    }
+    if (i != kEinIndex && ProfileByte(guest, profile, kVoiceUnlocked, i) == 0) tatami = false;
+  }
+  return tatami;
+}
+
 int ClampCostumeCounts(const GuestBytes& guest, uint32_t profile) {
   int changed = 0;
   for (int i = 0; i < kCharacterCount; ++i) {
@@ -127,7 +153,7 @@ bool RaiseCostumes(const GuestBytes& guest, uint32_t profile, uint8_t char_id) {
   for (int i = 0; i < kCharacterCount; ++i) {
     if (CharId(guest, i) != char_id) continue;
     const uint32_t address = profile + kCostumeCount + uint32_t(i);
-    const uint8_t max = MaxCostumes(guest, i);
+    const uint8_t max = OwnMaxCostumes(guest, i);  // never into the suits: they are offered without the count
     bool wrote = SetByte(guest, profile + kCharacterUnlocked + uint32_t(i), 1);
     if (guest.Read(address) < max) {
       guest.Write(address, max);
@@ -209,17 +235,7 @@ int OpenStageCount(const GuestBytes& guest, uint32_t profile) {
   for (int i = 0; i < kCharacterCount; ++i) {
     if (ProfileByte(guest, profile, kStoryClears, i) != 0) biolab = true;
   }
-  // Tatami: every costume but Alpha-152's at its maximum, every Story character
-  // cleared, every voice but Ein's.
-  bool tatami = AllStoryCleared(guest, profile);
-  for (int i = 0; i < kCharacterCount && tatami; ++i) {
-    if (i != kAlphaIndex &&
-        ProfileByte(guest, profile, kCostumeCount, i) < MaxCostumes(guest, i)) {
-      tatami = false;
-    }
-    if (i != kEinIndex && ProfileByte(guest, profile, kVoiceUnlocked, i) == 0) tatami = false;
-  }
-  return int(nassau) + int(biolab) + int(tatami);
+  return int(nassau) + int(biolab) + int(TatamiOpen(guest, profile));
 }
 
 UnlockResult ApplyUnlock(const GuestBytes& guest, uint32_t profile, Unlock what) {
