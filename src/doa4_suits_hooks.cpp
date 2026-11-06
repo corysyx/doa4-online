@@ -39,6 +39,12 @@
 // leaves the suits out of the maximum; with none it is the game's own function. Test switch DOA4_SUITS_TATAMI_TRACE=1
 // logs the game's answer beside ours.
 //
+// sub_82408398(r3 = charId) returns r3 = "her costume count >= her maximum" (a leaf; direct callers sub_824082F0 Story-clear
+// unlock, sub_824C3238 award, sub_8249A710, sub_82408F60, sub_824C1E48, sub_824C5BD0). The maximum is the table's, which
+// includes the suits, so with suits imported a girl at her own maximum is "not complete" and a Story clear or award would
+// count++ her saved P+0x3FC2 up to the raised maximum. Offline with suits it answers by unlocks::CostumesComplete (her own
+// maximum); in a session the original runs. Test switch DOA4_SUITS_COMPLETE_TRACE=1 logs the game's answer beside ours.
+//
 // Test switch DOA4_SUITS_SCENE=<entry>=<char>:#<costume>[,...] (ported from the stage-0 probe's
 // DOA4_FORCE_SCENE): each attract scene's fighter entry gets that character in that costume, the
 // costume resolved by the game's own lookup over the (patched) tables.
@@ -98,6 +104,7 @@ REX_EXTERN(__imp__sub_82528190);
 REX_EXTERN(__imp__sub_82525E80);
 REX_EXTERN(__imp__sub_82523C18);
 REX_EXTERN(__imp__sub_82537350);
+REX_EXTERN(__imp__sub_82408398);
 REX_EXTERN(__imp__sub_823BF210);
 REX_EXTERN(__imp__sub_823C1280);
 REX_EXTERN(__imp__sub_823C15E8);
@@ -359,6 +366,27 @@ REX_HOOK_RAW(sub_82537350) {
     }
     ctx.r4.u64 = r4; ctx.r5.u64 = r5; ctx.r6.u64 = r6; ctx.r7.u64 = r7; ctx.r8.u64 = r8; ctx.r9.u64 = r9;
     ctx.r10.u64 = r10; ctx.r11.u64 = r11; (void)r3;
+  }
+  ctx.r3.u64 = mine;
+}
+
+REX_HOOK_RAW(sub_82408398) {
+  static const bool trace = std::getenv("DOA4_SUITS_COMPLETE_TRACE") != nullptr;
+  if (!g_suit_counts_on.load(std::memory_order_acquire) || !CountCopyOffline()) {  // a session keeps the game's rule
+    __imp__sub_82408398(ctx, base);
+    return;
+  }
+  const doa4::GuestBytes guest{[base](uint32_t address) { return base[address]; }, {}};
+  const uint32_t profile = guest.ReadBe32(doa4::unlocks::kProfilePointer);
+  const uint8_t character = uint8_t(ctx.r3.u32);
+  const uint32_t mine = doa4::unlocks::CostumesComplete(guest, profile, character, true) ? 1u : 0u;
+  if (trace) {
+    __imp__sub_82408398(ctx, base);
+    static std::atomic<int> logs{0};
+    if (logs.fetch_add(1, std::memory_order_relaxed) < 40) {
+      REXLOG_INFO("[doa4][SUITS] complete rule: charId {:#x} the game says {}, ours says {} (thread {}, lr {:#x})",
+                  character, ctx.r3.u32, mine, rex::thread::current_thread_system_id(), uint32_t(ctx.lr));
+    }
   }
   ctx.r3.u64 = mine;
 }

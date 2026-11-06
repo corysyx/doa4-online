@@ -486,6 +486,48 @@ static void TestUnlockAllThenImportRemoved() {
   CHECK(g.writes == 0);
 }
 
+// Fix round 1: sub_82408398(charId) = "her count >= her maximum" (the Story-clear unlock sub_824082F0 and the award
+// sub_824C3238 count++ only when it says no). With suits in the table the maximum is the raised one, so a girl at her
+// own maximum would earn another count. Offline with suits it compares against her own maximum; online, and for a
+// girl without suits, it is the table's. The charId -> profile index table is the image's 0x82C59FF8 (doa4.bin).
+static void SetCharToIndex(FakeGuest& g) {
+  static const uint8_t table[26] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 15, 10, 11, 19, 20, 21, 12, 22, 16, 17, 14, 0, 0, 13, 0};
+  for (uint32_t i = 0; i < 26; ++i) g.bytes[kCharToProfileIndex + i] = table[i];
+}
+
+static void TestCostumesComplete() {
+  FakeGuest g;
+  Setup(g, fx::kFreshProfile);
+  SetCharToIndex(g);
+  Import(g, false);  // Kasumi (charId 5, index 5): table maximum 11 = her own 7 + 4 suits; Kokoro 11 = 7 + 4
+  const auto count = [&](int index, uint8_t v) { g.bytes[kP + kCostumeCount + uint32_t(index)] = v; };
+  // Precondition: own maximum and raised maximum differ, so the wrong rule cannot pass.
+  CHECK(g.Get(kMaxCostumes + 5) == 11);
+  count(kKasumiIndex, 7);
+  CHECK(CostumesComplete(g.guest, kP, 5, true));    // at her own maximum: complete (the table's 11 says no)
+  count(kKasumiIndex, 6);
+  CHECK(!CostumesComplete(g.guest, kP, 5, true));   // one below her own maximum
+  count(kKasumiIndex, 11);
+  CHECK(CostumesComplete(g.guest, kP, 5, true));    // above: complete
+  // Online (not offline) the game's own rule: the table's maximum.
+  count(kKasumiIndex, 7);
+  CHECK(!CostumesComplete(g.guest, kP, 5, false));
+  count(kKasumiIndex, 11);
+  CHECK(CostumesComplete(g.guest, kP, 5, false));
+  // A girl with no suits (Ayane, charId 13 = profile index 11, maximum 6): the table's, offline or not.
+  g.bytes[kP + kCostumeCount + 11] = 5;
+  CHECK(!CostumesComplete(g.guest, kP, 13, true) && !CostumesComplete(g.guest, kP, 13, false));
+  g.bytes[kP + kCostumeCount + 11] = 6;
+  CHECK(CostumesComplete(g.guest, kP, 13, true) && CostumesComplete(g.guest, kP, 13, false));
+  // A charId past the 25: no maximum (0), so always complete, as the game's.
+  CHECK(CostumesComplete(g.guest, kP, 25, true));
+  // Nothing is written by asking.
+  g.writes = 0;
+  CostumesComplete(g.guest, kP, 5, true);
+  CHECK(g.writes == 0);
+  SetSuitCostumes({});
+}
+
 // The real 100% save wiped: every unlock field equals the real fresh save's; every other byte stays the 100% save's
 // (it has Time Attack clears, which the fresh save has not, so "copy the fresh fixture" would fail here).
 static void TestWipe() {
@@ -567,6 +609,7 @@ int main() {
   TestImportLeavesTheCounts();
   TestImportKeepsTatami();
   TestUnlockAllThenImportRemoved();
+  TestCostumesComplete();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

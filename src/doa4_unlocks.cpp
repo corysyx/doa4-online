@@ -122,6 +122,15 @@ std::optional<uint32_t> FindLoadedRecord(const GuestBytes& guest) {
 
 void SetSuitCostumes(const std::array<uint8_t, kCharIdCount>& by_char) { g_suit_costumes = by_char; }
 
+bool CostumesComplete(const GuestBytes& guest, uint32_t profile, uint8_t char_id, bool offline) {
+  if (char_id >= kCharIdCount) return true;  // no maximum: the game's li 0
+  const uint8_t count = guest.Read(profile + kCostumeCount + guest.Read(kCharToProfileIndex + char_id));
+  const uint8_t table = guest.Read(kMaxCostumes + char_id);
+  const uint8_t suits = offline ? g_suit_costumes[char_id] : uint8_t(0);
+  const uint8_t max = suits < table ? uint8_t(table - suits) : uint8_t(0);
+  return count >= max;
+}
+
 bool TatamiOpen(const GuestBytes& guest, uint32_t profile) {
   // Tatami: every costume but Alpha-152's at the game's own maximum (the suits are not costumes of the save), every
   // Story character cleared, every voice but Ein's. The game's rule is sub_82537350, which reads the table's maximum.

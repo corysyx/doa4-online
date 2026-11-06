@@ -24,6 +24,7 @@ inline constexpr uint32_t kRecordToProfile = 0x7968;     // P = record + this
 inline constexpr uint32_t kRecordName = 8;  // record offset: profile name, UTF-16BE, 16 chars
 inline constexpr uint32_t kProfileIndexToChar = 0x82C5A014;  // u8[23]
 inline constexpr uint32_t kMaxCostumes = 0x82C34888;         // u8[25], by charId
+inline constexpr uint32_t kCharToProfileIndex = 0x82C59FF8;  // u8[25], by charId (sub_82408398)
 inline constexpr uint32_t kStoryRoster = 0x82C34400;         // 18 x 40 bytes, byte 0 = charId
 inline constexpr int kStoryRosterCount = 18;
 inline constexpr uint32_t kStoryRosterStride = 40;
@@ -82,6 +83,12 @@ void SetSuitCostumes(const std::array<uint8_t, kCharIdCount>& by_char);
 // The Tatami stage's rule (the game's sub_82537350): every costume but Alpha-152's at the game's own maximum, every
 // Story character cleared, every voice but Ein's. Needs a loaded profile.
 bool TatamiOpen(const GuestBytes& guest, uint32_t profile);
+
+// The game's sub_82408398(charId): "her costume count >= her maximum". The Story-clear unlock (sub_824082F0) and the
+// award (sub_824C3238) add a costume only when it is false. `offline` with suits imported compares against her own
+// maximum (SetSuitCostumes: the suits are not counted, so a clear or award never changes the save for the import's
+// sake); otherwise the table's maximum, as the game. A charId past 24 has no maximum (always complete).
+bool CostumesComplete(const GuestBytes& guest, uint32_t profile, uint8_t char_id, bool offline);
 
 // Back to a new save's unlocks: costume counts 2, the 7 hidden characters locked, no voices, no Story clears. The
 // other records (Time Attack clears and the rest of the profile) stay. Returns how many bytes changed.
