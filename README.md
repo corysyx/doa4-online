@@ -23,7 +23,9 @@ You do not need to build anything. Each player does steps 1-3 once.
 1. **Download the game program.** Open the
    [Releases page](https://github.com/Dwreckgg/doa4-recomp/releases), pick the newest
    `netplay-v...` release and download `DOA4-netplay-v...-win64.zip`. Both players must use the
-   **same** release.
+   **same** release, if a player already has an old release installed they can update in game by
+   using the ESC overlay. Simply go to the 'Online' tab and click 'Check for Updates' to check your
+   version, click again to update if prompted to and restart your game.
 2. **Unzip it** into a folder of its own, for example `C:\Games\Dead or Alive 4 Online` (plain letters, digits
    and spaces only in the path).
 3. **Start `dead_or_alive_4.exe`.** The first time, the game asks for your own copy of
@@ -85,6 +87,7 @@ the next start. The menu has seven tabs:
   **Use default** to go back to the default.
 - **In-game snapshots:** "Also save a full-quality copy when you save a snapshot to the in-game Album"
   saves a full-quality copy of every snapshot you save in the game's own photo mode.
+  ![A snapshot from the game's photo mode, saved as a full-quality copy (shown here reduced)](docs/images/photo-mode.jpg)
 
 **Extras**
 - **Unlocks:** Unlock all characters, Unlock all costumes, Unlock all system voices, Unlock all
@@ -385,7 +388,7 @@ can lock files the game is writing). The Esc menu's Game tab shows the folder in
   snapshot in the game's own photo mode also writes that photo at full quality to the same folder
   (the game's Album keeps a small, compressed copy). Only snapshots you save to the Album are copied.
 
-![A snapshot from the game's photo mode, saved as a full-quality copy (shown here reduced)](docs/images/photo-mode.jpg)
+
 - Logs: `out\build\win-amd64-release\logs\dead_or_alive_4_NNN.log`.
 
 ## 8. Regenerating the recompiled code
@@ -440,6 +443,7 @@ Studio's `VsDevCmd.bat` from `DOA4_VSDEVCMD` and LLVM's `bin` folder from `DOA4_
 |---|---|
 | Choosing **Ryu Hayabusa** (or **Brad Wong**, first reported as Zack) as player 1 crashed the game; Ryu also crashed the attract demo (Ryu vs Christie). | Fixed: the runtime put the game's data pool at guest address 0x00010000, so low that the game's "already relocated?" test (a table entry above the buffer address counts as a pointer) skipped Ryu's move-script table; Brad Wong's character-select model read a bad motion record from the same low pool (gone with the fix, not traced to its table). The game now keeps guest 0x00010000-0x0FFFFFFF unused (`src/doa4_lowmem.cpp`; the log says `[doa4][MEM] reserved guest ...`). |
 | A rare crash with `Call to invalid or unregistered function at guest address 0x...` in the log, at one particular move or moment. | A function the recompiler missed. Add the address to `hints.toml` and regenerate (step 8). |
+| In game Sound slider volume settings (sound effects, music, etc) are bugged and not functioning correctly | Planned to be fixed next update patch |
 
 ## Building from a fresh GitHub clone
 
