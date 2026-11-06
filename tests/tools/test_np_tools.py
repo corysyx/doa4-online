@@ -2364,6 +2364,21 @@ def leftover_pids(runs, name, sides=("host", "joiner")):
     return [int(row[1]) for side in sides for row in pair_pids(runs, name, side) if mod.pid_alive(int(row[1]))]
 
 
+def test_pair_joiner_userdata(root):
+    # Task 5: --joiner-userdata is the joiner's own copy (one side can hold an import the other lacks); the host keeps --userdata.
+    other = os.path.join(root, "ud_joiner")
+    shutil.copytree(make_pair_userdata(root), other)
+    os.makedirs(os.path.join(other, "doax2_suits"))
+    with open(os.path.join(other, "doax2_suits", "manifest.txt"), "w") as f:
+        f.write("doax2-suits 1\n")
+    code, out, runs = np_pair(root, "jud", "--joiner-userdata", other)
+    check(code == 0 and "verdict ok" in out, f"np_pair, --joiner-userdata: exit {code}\n{out}")
+    check(os.path.exists(os.path.join(runs, "jud_joiner", "ud", "doax2_suits", "manifest.txt")), "np_pair: the joiner got its own folder")
+    check(not os.path.exists(os.path.join(runs, "jud_host", "ud", "doax2_suits")), "np_pair: the host did not")
+    code, out, runs = np_pair(root, "jud2")
+    check(code == 0 and not os.path.exists(os.path.join(runs, "jud2_joiner", "ud", "doax2_suits")), "np_pair: without the option the joiner copies --userdata")
+
+
 def test_pair_ok(root):
     code, out, runs = np_pair(root, "ok")
     check(code == 0 and "verdict ok" in out, f"np_pair, an ok pair: exit {code}\n{out}")

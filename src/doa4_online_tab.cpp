@@ -35,6 +35,7 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
 
   ImGui::SeparatorText("Online play");
   ImGui::TextWrapped("%s", view.status_line.c_str());
+  if (!view.suits_line.empty()) ImGui::TextWrapped("%s", view.suits_line.c_str());
   if (!view.event_line.empty()) {
     const bool refusal = in.lobby.refusal != "none" || in.lobby.session_refused;
     ImGui::TextColored(refusal ? kErrorColor : kNoteColor, "%s", view.event_line.c_str());

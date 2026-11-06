@@ -63,6 +63,8 @@ ParseResult ParseManifest(std::string_view text);
 // ParseManifest(FormatManifest(m)) == m; a writer (Plan 2) re-parses its output before replacing
 // manifest.txt.
 std::string FormatManifest(const Manifest& manifest);
+// One suit's line, with its newline: what FormatManifest writes for it.
+std::string FormatSuitLine(const Suit& suit);
 
 // A plain file name: 1-64 of [A-Za-z0-9_.-], not starting with '.'.
 bool SafeFileName(std::string_view name);

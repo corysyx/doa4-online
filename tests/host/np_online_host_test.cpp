@@ -343,6 +343,7 @@ struct Side {
   std::string release = "dev";
   std::string files = kFilesText;
   std::string guest = GuestText();
+  std::string suits;  // Providers::suits: this side's import checksum, empty without one
   std::mutex save_mu;
   std::vector<handoff::File> save = SaveFixture();
   std::string save_error;
@@ -365,6 +366,7 @@ struct Side {
       return files;
     };
     p.guest_settings = [this] { return guest; };
+    p.suits = suits;
     p.save_files = [this](std::string* e) {
       std::lock_guard<std::mutex> lock(save_mu);
       if (!save_error.empty()) {
@@ -1050,6 +1052,142 @@ static void TestStartSession() {
   joiner.Stop();
 }
 
+// Task 5: the two players' import checksums meet in the lobby. A difference never refuses; each side's status says which case
+// it is, and the hand-off carries the state to both, whoever holds the import. Real lobbies over the real transport.
+static void OneSuitCase(const char* name, const std::string& host_suits, const std::string& joiner_suits, rules::SuitSession want,
+                        const std::string& host_text, const std::string& joiner_text) {
+  Side hs((std::string("suits_h_") + name).c_str()), js((std::string("suits_j_") + name).c_str());
+  hs.suits = host_suits;
+  js.suits = joiner_suits;
+  online::Lobby host, joiner;
+  if (!StartLobby(host, hs) || !StartLobby(joiner, js)) return;
+  CHECK(ConnectPair(host, joiner));  // a positive control of "never refuses": they connected
+  CHECK(WaitCanStart(host));
+  CHECKF(host.status().refusal == "none" && joiner.status().refusal == "none", "%s: refusal %s / %s", name,
+         host.status().refusal.c_str(), joiner.status().refusal.c_str());
+  CHECKF(host.status().suits_text == host_text, "%s: host says '%s'", name, host.status().suits_text.c_str());
+  CHECKF(joiner.status().suits_text == joiner_text, "%s: joiner says '%s'", name, joiner.status().suits_text.c_str());
+  host.StartSession();
+  CHECK(WaitFor([&] { return hs.restarts.load() == 1 && js.restarts.load() == 1; }, 3000));
+  Bytes hb, jb;
+  handoff::Handoff h, j;
+  CHECK(ReadFile(hs.HandoffPath(), &hb) && ReadFile(js.HandoffPath(), &jb));
+  CHECK(handoff::Unpack(hb, &h).empty() && handoff::Unpack(jb, &j).empty());
+  CHECKF(h.suit_state == want && j.suit_state == want, "%s: hand-offs say %d and %d, want %d", name, int(h.suit_state),
+         int(j.suit_state), int(want));
+  host.Stop();
+  joiner.Stop();
+}
+
+static void TestSuitStates() {
+  if (!Group("swimsuits: both sides' checksums make the state, in the status line and in both hand-offs; none of it refuses")) return;
+  using rules::SuitSession;
+  const std::string sha_a = "0123456789abcdef0123456789abcdef01234567", sha_b = "0123456789abcdef0123456789abcdef01234568";
+  OneSuitCase("none", "", "", SuitSession::kNone, "Swimsuits: neither player", "Swimsuits: neither player");
+  OneSuitCase("same", sha_a, sha_a, SuitSession::kSame, "Swimsuits: both", "Swimsuits: both");
+  OneSuitCase("joiner", "", sha_a, SuitSession::kMixed, "Swimsuits: only the other player", "Swimsuits: only you");
+  OneSuitCase("host", sha_a, "", SuitSession::kMixed, "Swimsuits: only you", "Swimsuits: only the other player");
+  OneSuitCase("differ", sha_a, sha_b, SuitSession::kMixed, "Swimsuits: both, from different imports",
+              "Swimsuits: both, from different imports");
+}
+
+// A session process shows the state its hand-off carries and sends no checksum (like files: the lobby has compared).
+static void TestSuitsInSession() {
+  if (!Group("swimsuits: a session process reads the state from the hand-off, and its Hello carries no checksum")) return;
+  Side s("suits_session");
+  s.suits = "0123456789abcdef0123456789abcdef01234567";
+  FakePeer fake;
+  online::Lobby lobby;
+  handoff::Handoff h;
+  h.build = s.build.load();
+  h.release = "dev";
+  h.role = handoff::Role::kJoiner;
+  h.delay = 3;
+  h.local_port = DeadPort();
+  h.peer = Loop(fake.sock.port);
+  h.session_token = 0x51A7E000u;
+  h.seed = 1;
+  h.guest_settings = GuestText();
+  h.suit_state = rules::SuitSession::kMixed;
+  std::string error;
+  CHECKF(lobby.StartInSession(s.P(), LoopCfg(), h, [](int32_t, wire::LeaveReason) {}, &error), "StartInSession: %s", error.c_str());
+  Rx hello;
+  CHECK(fake.Wait(wire::Type::kHello, 1000, &hello));
+  wire::Hello m;
+  CHECK(wire::DecodeHello(hello.body, &m));
+  CHECK(m.session_token == h.session_token);
+  CHECKF(m.suits.empty(), "a session Hello carried '%s'", m.suits.c_str());
+  CHECKF(lobby.status().suits_text == "Swimsuits: only one player, or different imports", "status says '%s'",
+         lobby.status().suits_text.c_str());
+  lobby.Stop();
+}
+
+// The lobby keeps no checksum of a player who left: a new joiner without suits is not told the old one's.
+static void TestSuitsForgotten() {
+  if (!Group("swimsuits: the status line goes with the peer")) return;
+  Side hs("suits_gone");
+  hs.suits = "0123456789abcdef0123456789abcdef01234567";
+  online::Lobby host;
+  if (!StartLobby(host, hs)) return;
+  host.Host(0);
+  CHECK(WaitState(host, State::kHosting, 1000));
+  CHECKF(host.status().suits_text.empty(), "hosting alone says '%s'", host.status().suits_text.c_str());
+  FakePeer f;
+  CHECK(FakeJoin(f, host, hs.build.load(), "dev", 1, 2) != 0);
+  CHECK(WaitState(host, State::kConnected, 1000));
+  CHECKF(host.status().suits_text == "Swimsuits: only you", "connected says '%s'", host.status().suits_text.c_str());
+  host.Disconnect();
+  CHECK(WaitFor([&] { return host.status().state == State::kOffline; }, 1000));
+  CHECKF(host.status().suits_text.empty(), "after leaving: '%s'", host.status().suits_text.c_str());
+  host.Stop();
+}
+
+// An accepted joiner learns the host's checksum from the Welcome (a refusal carries none); the Welcome stays within the Hello's size.
+static void TestWelcomeCarriesSuits() {
+  if (!Group("swimsuits: the Welcome that accepts a joiner carries the host's checksum, a refusal does not")) return;
+  Side hs("suits_welcome");
+  hs.suits = "0123456789abcdef0123456789abcdef01234567";
+  online::Lobby host;
+  if (!StartLobby(host, hs)) return;
+  host.Host(0);
+  CHECK(WaitState(host, State::kHosting, 1000));
+  SleepMs(100);
+  FakePeer bad;
+  bad.Send(host.status().port, wire::Type::kHello, 0, HelloBody(hs.build.load() + 1, "dev", kFilesText));
+  Rx r;
+  CHECK(bad.Wait(wire::Type::kWelcome, 1000, &r));
+  wire::Welcome w;
+  CHECK(wire::DecodeWelcome(r.body, &w) && w.refusal == wire::Refusal::kBuild);
+  CHECKF(w.suits.empty(), "a refusal carried '%s'", w.suits.c_str());
+  FakePeer good;
+  good.Send(host.status().port, wire::Type::kHello, 0, HelloBody(hs.build.load(), "dev", kFilesText));
+  Rx r2;
+  CHECK(good.Wait(wire::Type::kWelcome, 1000, &r2));
+  wire::Welcome w2;
+  CHECK(wire::DecodeWelcome(r2.body, &w2) && w2.refusal == wire::Refusal::kNone);
+  CHECKF(w2.suits == hs.suits, "the accepting Welcome carried '%s'", w2.suits.c_str());
+  CHECKF(r2.body.size() + wire::kHeaderBytes <= HelloBody(hs.build.load(), "dev", kFilesText).size() + wire::kHeaderBytes,
+         "the accepting Welcome of %zu bytes is larger than the Hello", r2.body.size() + wire::kHeaderBytes);
+  host.Stop();
+
+  // The size rule counts the checksum: a Hello smaller than the Welcome with the checksum gets no reply at all, never a larger one.
+  Side tiny("suits_welcome_tiny");
+  tiny.files = "a=1\n";
+  tiny.suits = hs.suits;
+  online::Lobby host2;
+  if (!StartLobby(host2, tiny)) return;
+  host2.Host(0);
+  CHECK(WaitState(host2, State::kHosting, 1000));
+  SleepMs(100);
+  FakePeer small;
+  const Bytes hello = wire::Encode(wire::Type::kHello, 0, HelloBody(tiny.build.load(), "dev", tiny.files));
+  CHECK(hello.size() < 70);  // the Welcome: 12 + 1 + 8 + 5 + 2 + 4 + 2 + 40 = 74 bytes
+  small.Send(host2.status().port, wire::Type::kHello, 0, HelloBody(tiny.build.load(), "dev", tiny.files));
+  SleepMs(300);
+  CHECK(small.Of(wire::Type::kWelcome).empty());
+  host2.Stop();
+}
+
 static void TestJoinerRefusesBoot() {
   if (!Group("start session: the joiner refuses (its build changed) -> host stays Connected with its reason")) return;
   Side hs("refuse_host"), js("refuse_join");
@@ -1330,9 +1468,9 @@ static void TestSessionSpoof() {
 // =====================================================================================================
 
 static std::map<std::string, std::string> ParseStatus(const std::string& text, bool* ok) {
-  // Task 15 close-out (b): code= and nat= before refusal= (refusal stays the last line); plan 1b Task 4: update= too
+  // Task 15 close-out (b): code= and nat= before refusal= (refusal stays the last line); plan 1b Task 4: update= too; Task 5: suits=
   static const char* const kKeys[] = {"state", "port", "peer_port", "ping", "delay", "can_start", "event", "code", "nat",
-                                      "update", "refusal"};
+                                      "update", "suits", "refusal"};
   constexpr size_t kCount = sizeof kKeys / sizeof kKeys[0];
   std::map<std::string, std::string> m;
   *ok = !text.empty() && text.back() == '\n';
@@ -1577,14 +1715,15 @@ static void TestReplyBounds() {
   for (Bytes d; a.Recv(300, &d);) ++more;
   CHECKF(more == 3, "%d replies to 3 Hellos after the window", more);
   SleepMs(1100);
-  // size: a 30-byte Hello cannot carry back even an empty refusal ("dev": 32 bytes) -> nothing; 36 bytes -> a reply <= 36
+  // size: a 32-byte Hello cannot carry back even an empty refusal ("dev": 34 bytes) -> nothing; 38 bytes -> a reply <= 38
+  // (both gained the two bytes of the empty suits text in Task 5, so the relation is the old one)
   const Bytes tiny = wire::Encode(wire::Type::kHello, 0, HelloBody(hs.build + 1, "", ""));
-  CHECK(tiny.size() == 30);
+  CHECK(tiny.size() == 32);
   a.SendTo(hp, tiny);
   Bytes d;
   CHECK(!a.Recv(300, &d));
   const Bytes small = wire::Encode(wire::Type::kHello, 0, HelloBody(hs.build + 1, "", "x=1234"));
-  CHECK(small.size() == 36);
+  CHECK(small.size() == 38);
   a.SendTo(hp, small);
   CHECK(a.Recv(300, &d));
   CHECKF(d.size() <= small.size(), "reply of %zu bytes to %zu", d.size(), small.size());
@@ -2372,6 +2511,10 @@ int main(int argc, char** argv) {
   TestReachOut();
   TestStartSession();
   TestJoinerRefusesBoot();
+  TestSuitStates();
+  TestSuitsInSession();
+  TestSuitsForgotten();
+  TestWelcomeCarriesSuits();
   TestJoinerSilent();
   TestStartRefusals();
   TestSession();

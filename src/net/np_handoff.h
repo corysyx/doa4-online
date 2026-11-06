@@ -16,8 +16,8 @@
 
 namespace doa4::np::handoff {
 
-// Layout (little-endian): "D4HO", u16 version (1), u64 build, text release, u8 role, u8 delay, u16 local_port,
-// u8 peer ip[4], u16 peer port, u32 session_token, u64 seed, text guest_settings (u32 length), u32 file count,
+// Layout (little-endian): "D4HO", u16 version (2), u64 build, text release, u8 role, u8 delay, u16 local_port,
+// u8 peer ip[4], u16 peer port, u32 session_token, u64 seed, u8 suit_state, text guest_settings (u32 length), u32 file count,
 // then per file: text name (u16 length), u32 data length, data. Every length checked before use; the bytes must
 // end exactly where the last file does.
 inline constexpr char kSavePrefix[] = "B13EBABEBABEBABE/544307D1/";  // the profile XUID (a constant of the SDK) / DOA4's title id
@@ -43,6 +43,7 @@ struct Handoff {
   rules::Endpoint peer;         // the other side as this side last heard it; address not 0.0.0.0, port non-zero
   uint32_t session_token = 0;   // non-zero
   uint64_t seed = 0;            // the session seed (np_session SessionSeed)
+  rules::SuitSession suit_state = rules::SuitSession::kNone;  // the host's rules::SuitSessionOf; read before guest code runs
   std::string guest_settings;   // CaptureGuestSettings text
   std::vector<File> files;      // the host's save, names under kSavePrefix
 };
@@ -60,7 +61,8 @@ bool NameOk(std::string_view name);
 // files; a file over kMaxFileBytes or a name NameOk refuses; two names that are one file on Windows (equal but for
 // the case of a letter) or a name that is also a folder of another (a/b with a/b/c); a release over
 // kMaxReleaseBytes or guest settings over kMaxGuestBytes; a release that is not printable ASCII (0x20..0x7E); a role
-// that is neither; a delay outside 1..8; a zero session token, local port or peer port; the peer address 0.0.0.0;
+// that is neither; a delay outside 1..8; a suit state that is none of the three; a zero session token, local port or peer
+// port; the peer address 0.0.0.0;
 // guest settings text that ApplyGuestSettings would refuse (empty, a malformed line, a missing or unknown name, a
 // trust-class setting off its default: the host fails early); a packed total over kMaxPackedBytes.
 std::vector<uint8_t> Pack(const Handoff& h);
@@ -69,8 +71,10 @@ std::vector<uint8_t> Pack(const Handoff& h);
 // back the same bytes. The size is checked before anything is read, every length before the bytes it announces.
 std::string Unpack(std::span<const uint8_t> bytes, Handoff* out);
 
-// Guest-visible settings (R7). The names, in a fixed order: the SDK cvars of Task 4's census, then every
-// tweaks::AllTweaks() cvar.
+// Guest-visible settings (R7). The names, in a fixed order: the SDK cvars of Task 4's census, every tweaks::AllTweaks() cvar,
+// then doa4_suits_full_bust: its rescale writes guest memory, so the session runs the host's value on both PCs, like a box. It
+// is no trust matter, so it is carried, not forced (the Extras tab that changes it is locked in a session, and a player's own
+// value comes back when the session ends).
 const std::vector<std::string>& GuestSettingNames();
 // The TRUST class (fix round 1): carried settings whose non-default value weakens a boundary of the PC that applies
 // it (the guest-writable game folder, patches loaded from disk, debug monitors, memory protection, host thread

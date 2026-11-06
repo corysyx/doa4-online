@@ -42,8 +42,8 @@ inline constexpr uint32_t kCharCount = 25;
 inline constexpr uint32_t kFileCount = 1640;
 inline constexpr uint64_t kWholeTpr = 0x1400000;  // per player
 inline constexpr uint64_t kWholeCat = 0x400000;
-inline constexpr uint32_t kImageStart = 0x82000000;  // the XEX's sections: table pointers that
-inline constexpr uint32_t kImageEnd = 0x83000000;    // point elsewhere are not costume lists
+inline constexpr uint32_t kImageStart = 0x82000000;  // the XEX's sections. A record block out here is one Apply moved; a list
+inline constexpr uint32_t kImageEnd = 0x83000000;    // pointer out here may be a box's or Apply's block (CheckSuit)
 // From Task 1 (notes/research/swimsuit_table_readers.md): sub_8249A710 indexes a 15-entry
 // threshold table by the unlock count, so a character keeps at most 17 costumes; a costume
 // number at or above max makes the lookup read variant bytes past the array, so the list and
@@ -94,10 +94,15 @@ struct FileLoc {
 // Where a global file number lives, for the three character archives only.
 std::optional<FileLoc> FileLocation(const GuestBytes& guest, uint32_t file);
 
-// Whether a suit fits this game's tables (before any patch); empty when it does, else why not.
-// A named head part must be a pair one of her own records already uses, and both part files must
-// be character archive files.
+// Whether a suit fits this game's tables as they stand: after the Extras boxes, before Apply (a box has already moved her list
+// to the heap; after Apply her records have moved too and a second check of her suits would see other records). Empty when it
+// fits, else why not. A named head part must be a pair one of her own records already uses, and both part files must be
+// character archive files.
 std::string CheckSuit(const GuestBytes& guest, const suits::Suit& suit);
+
+// The suits of `suits` that pass CheckSuit, in order: what a session puts in the tables from the picks. It reads only the
+// tables, which are equal on both PCs of a session, so both keep the same ones. `refused` (may be null): "<label>: <why>".
+std::vector<suits::Suit> Fitting(const GuestBytes& guest, const std::vector<suits::Suit>& suits, std::vector<std::string>* refused);
 
 struct Applied {
   uint8_t character = 0;
@@ -124,8 +129,14 @@ using AllocFn = std::function<uint32_t(uint32_t size)>;
 // 255 model records (model index 255 means "none" to the loader, sub_823FE870): a suit that would
 // pass either is refused by name and her earlier suits stay. The record copy is never freed or
 // moved: the loader caches a pointer into it (slot + 32, sub_823FE150).
-// Afterwards the app hands her models to TweakPatcher::CarrySuits, so a box toggled later keeps them.
+// Afterwards the app hands her models to TweakPatcher::CarrySuits, so a box toggled later keeps them. The input's order, and
+// which suits it holds, are the caller's: the import's offline, the picks in a session (doa4_suits.h).
 ApplyResult Apply(const GuestBytes& guest, const AllocFn& alloc, const std::vector<suits::Suit>& suits);
+
+// Every byte of the costume tables as the game reads them, in a fixed order: per character her maximum, length, the list and
+// variant pointers and what they point at, her record pointer and her `state.records[c]` records. The session logs its digest,
+// so two peers' logs compare the moved blocks too, which the frame-0 .data dump does not reach.
+std::vector<uint8_t> TableBytes(const GuestBytes& guest, const GuardState& state);
 
 // How many costumes the select screen offers one girl. The save's count is one number per girl and the suits come after
 // all her costumes, so a girl with suits is offered all of them (`list_length`: her costume maximum, which includes the

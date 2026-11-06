@@ -105,6 +105,29 @@ static void TestConnectedHost() {
   CHECK_EQ(Describe(in).status_line, "Connected to the other player at 198.51.100.7:7200 (ping 42 ms)");
   in.lobby.peer_address.clear();
   CHECK_EQ(Describe(in).status_line, "Connected to the other player (ping 42 ms)");  // no address known: as before
+  // Task 5: the swimsuit line comes from the lobby and is shown once there is another player
+  CHECK_EQ(Describe(in).suits_line, "");
+  in.lobby.suits_text = "Swimsuits: only you";
+  CHECK_EQ(Describe(in).suits_line, "Swimsuits: only you");
+  CHECK_EQ(Describe(in).status_line, "Connected to the other player (ping 42 ms)");  // its own line, not this one
+  for (const State s : {State::kStarting, State::kRestarting}) {
+    In other = in;
+    other.lobby.state = s;
+    CHECK_EQ(Describe(other).suits_line, "Swimsuits: only you");
+  }
+  for (const State s : {State::kOffline, State::kHosting, State::kConnecting}) {
+    In other = in;
+    other.lobby.state = s;
+    CHECK_EQ(Describe(other).suits_line, "");  // nobody to compare with
+  }
+  {
+    In session = in;
+    session.in_session = true;
+    session.lobby.suits_text = "Swimsuits: both";
+    session.lobby.state = State::kConnecting;  // a session process before the peer's first Hello
+    CHECK_EQ(Describe(session).suits_line, "Swimsuits: both");
+  }
+  in.lobby.suits_text.clear();
   in.lobby.ping_samples = 4;
   in.lobby.can_start = true;
   v = Describe(in);

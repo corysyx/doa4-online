@@ -17,7 +17,7 @@ constexpr uint8_t kLastRefusal = 5;      // Refusal::kSession
 constexpr uint8_t kLastLeave = 3;        // LeaveReason::kInternal
 
 // The largest Hello body (every field at its limit) must leave room for the header in one datagram.
-static_assert(kHeaderBytes + 8 + (2 + kMaxText) + (2 + kMaxFilesText) + 1 + 1 + 4 <= kMaxDatagram);
+static_assert(kHeaderBytes + 8 + (2 + kMaxText) + (2 + kMaxFilesText) + 1 + 1 + 4 + (2 + kMaxSuitsText) <= kMaxDatagram);
 
 class Writer {
  public:
@@ -168,13 +168,14 @@ std::vector<uint8_t> EncodeHello(const Hello& h) {
   w.U8(h.delay_auto);
   w.U8(h.delay_frames);
   w.U32(h.session_token);
+  if (!w.Text(h.suits, kMaxSuitsText)) return {};
   return out;
 }
 bool DecodeHello(std::span<const uint8_t> body, Hello* out) {
   Reader r(body);
   Hello h;
   if (!r.U64(&h.build) || !r.Text(kMaxText, &h.release) || !r.Text(kMaxFilesText, &h.files) || !r.U8(&h.delay_auto) ||
-      !r.U8(&h.delay_frames) || !r.U32(&h.session_token) || !r.AtEnd())
+      !r.U8(&h.delay_frames) || !r.U32(&h.session_token) || !r.Text(kMaxSuitsText, &h.suits) || !r.AtEnd())
     return false;
   *out = std::move(h);
   return true;
@@ -188,6 +189,7 @@ std::vector<uint8_t> EncodeWelcome(const Welcome& m) {
   w.U64(m.build);
   if (!w.Text(m.release, kMaxText) || !w.Text(m.text, kMaxText)) return {};
   w.U32(m.session_token);
+  if (!w.Text(m.suits, kMaxSuitsText)) return {};
   return out;
 }
 bool DecodeWelcome(std::span<const uint8_t> body, Welcome* out) {
@@ -195,7 +197,7 @@ bool DecodeWelcome(std::span<const uint8_t> body, Welcome* out) {
   Welcome m;
   uint8_t refusal = 0;
   if (!r.U8(&refusal) || refusal > kLastRefusal || !r.U64(&m.build) || !r.Text(kMaxText, &m.release) ||
-      !r.Text(kMaxText, &m.text) || !r.U32(&m.session_token) || !r.AtEnd())
+      !r.Text(kMaxText, &m.text) || !r.U32(&m.session_token) || !r.Text(kMaxSuitsText, &m.suits) || !r.AtEnd())
     return false;
   m.refusal = Refusal(refusal);
   *out = std::move(m);

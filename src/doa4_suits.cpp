@@ -8,6 +8,7 @@
 
 #include "doa4_costumes.h"
 #include "doa4_gamefiles.h"
+#include "doa4_suits_picks.h"
 #include "doa4_utf8.h"
 
 namespace doa4::suits {
@@ -244,6 +245,26 @@ std::map<std::string, std::map<uint32_t, std::string>> EntryLabels(const ImportS
 std::vector<Suit> SuitsOf(const ImportStatus& status) {
   std::vector<Suit> out;
   for (const LoadedSuit& l : status.suits) out.push_back(l.suit);
+  return out;
+}
+
+std::string ImportChecksum(const ImportStatus& status) {
+  std::vector<std::string> lines;
+  for (const LoadedSuit& l : status.suits) {
+    if (IsPick(l.suit)) lines.push_back(FormatSuitLine(l.suit));
+  }
+  if (lines.empty()) return {};
+  std::sort(lines.begin(), lines.end());
+  std::string text;
+  for (const std::string& line : lines) text += line;
+  return gamefiles::Sha1Hex(text.data(), text.size());
+}
+
+std::vector<LoadedSuit> SessionFiles(const ImportStatus& status) {
+  std::vector<LoadedSuit> out;
+  for (const LoadedSuit& l : status.suits) {
+    if (IsPick(l.suit)) out.push_back(l);
+  }
   return out;
 }
 

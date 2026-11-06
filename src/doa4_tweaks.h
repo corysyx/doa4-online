@@ -72,7 +72,8 @@ class TweakPatcher {
   void CaptureOriginals(const GuestBytes& guest, const AllocFn& alloc);
   bool captured() const { return !originals_.empty(); }
 
-  // Writes the tweak's bytes (on) or the captured originals (off). Read-only
+  // Writes the tweak's bytes (on) or the off-state bytes (off): what CaptureOriginals saw, or for a girl with suits the state
+  // CarrySuits worked out. Read-only
   // patches are made writable first and read-only again after; if any cannot
   // be made writable, nothing is written. Returns "" or what went wrong.
   std::string Apply(const GuestBytes& guest, size_t tweak, bool on, const ProtectFn& protect);
@@ -80,8 +81,8 @@ class TweakPatcher {
   // Whether guest memory holds the tweak's bytes.
   bool IsOn(const GuestBytes& guest, size_t tweak) const;
 
-  // The imported suits come after the boxes' costumes in the same tables, and go in after the boxes applied
-  // (costumes::Apply). Call this right after, for each character Apply gave suits, with her suits' models in order: her
+  // The suits (the import's offline, the picks in a session) come after the boxes' costumes in the same tables, and go in after
+  // the boxes applied (costumes::Apply). Call this right after, for each character Apply gave suits, with her suits' models in order: her
   // box (at most one per character; the host test pins that), on or off, then holds them too, so toggling it later moves
   // only its own costumes and her suits stay, numbered after them. Takes two guest blocks in either state; a character
   // with no box takes none. With the box off and the suits leaving no room for its costumes, turning it on is refused by
@@ -92,7 +93,8 @@ class TweakPatcher {
  private:
   // patches_[tweak]: AllTweaks()'s patches, or for a costume tweak the words CaptureOriginals worked out.
   std::vector<std::vector<Patch>> patches_;
-  // originals_[tweak][patch] = the bytes CaptureOriginals saw.
+  // originals_[tweak][patch] = the bytes CaptureOriginals saw; CarrySuits replaces a costume box's words with the off state that
+  // holds her suits.
   std::vector<std::vector<std::vector<uint8_t>>> originals_;
   std::vector<bool> unavailable_;  // by tweak: no guest memory for its blocks
   std::vector<std::string> refuse_on_;  // by tweak: why turning it on is refused (CarrySuits), or empty

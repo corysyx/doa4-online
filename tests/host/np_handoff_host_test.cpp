@@ -289,10 +289,8 @@ static const NotCarried kSdkNotCarried[] = {
 };
 // (Task 9 adds the Online tab's netplay_* settings: each player's own network preferences; the input delay a session
 // uses travels in the hand-off itself, not as a guest setting.)
-// doa4_suits_full_bust: not carried for now. Task 5 (plan 2026-11-06) decides it with the sessions' suit tables: with suits in a
-// session, its rescale writes guest memory, so the two players must agree on it.
+// doa4_suits_full_bust is carried (Task 5, kPortCarried): its rescale writes guest memory, so the two players must agree on it.
 static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_show_fps", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
-                                              "doa4_suits_full_bust",
                                               "netplay_port", "netplay_delay_auto", "netplay_delay", "netplay_last_join",
                                               "netplay_show_stats", "netplay_upnp"};
 // the trust class: carried settings whose non-default value weakens a boundary of the PC that applies it
@@ -320,9 +318,13 @@ static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
 static constexpr size_t kSdkTotal = 194;  // the distinct cvar names the SDK's src defines at that commit
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
+// The port's own carried setting beyond the tweaks: it changes guest memory and is no trust matter (np_handoff.cpp kPortSettings).
+static const char* const kPortCarried[] = {"doa4_suits_full_bust"};
+
 static std::vector<std::string> ExpectedNames() {
   std::vector<std::string> v(kSdkNames, kSdkNames + kSdkCount);
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) v.push_back(t.cvar);
+  for (const char* n : kPortCarried) v.push_back(n);
   return v;
 }
 
@@ -388,7 +390,7 @@ struct RawFile {
 };
 struct Raw {
   std::string magic = "D4HO";
-  uint16_t version = 1;
+  uint16_t version = 2;
   uint64_t build = 0x1122334455667788ull;
   std::string release = "netplay-v1.0.3";
   std::optional<uint16_t> release_len;
@@ -399,6 +401,7 @@ struct Raw {
   uint16_t peer_port = 7200;
   uint32_t token = 0xCAFEF00Du;
   uint64_t seed = 0x0102030405060708ull;
+  uint8_t suit_state = 2;
   std::string guest = GoodText();
   std::optional<uint32_t> guest_len;
   std::optional<uint32_t> count;
@@ -422,6 +425,7 @@ static Bytes Encode(const Raw& r) {
   PutLe(&b, r.peer_port, 2);
   PutLe(&b, r.token, 4);
   PutLe(&b, r.seed, 8);
+  PutLe(&b, r.suit_state, 1);
   PutLe(&b, r.guest_len ? *r.guest_len : r.guest.size(), 4);
   PutText(&b, r.guest);
   PutLe(&b, r.count ? *r.count : r.files.size(), 4);
@@ -439,9 +443,9 @@ static Raw RawOf(std::vector<RawFile> files) {
   return r;
 }
 
-// The packed size by the documented layout: 46 fixed bytes + release + guest + per file (2 + name + 4 + data).
+// The packed size by the documented layout: 47 fixed bytes + release + guest + per file (2 + name + 4 + data).
 static size_t ExpectedSize(const ho::Handoff& h) {
-  size_t n = 46 + h.release.size() + h.guest_settings.size();
+  size_t n = 47 + h.release.size() + h.guest_settings.size();
   for (const ho::File& f : h.files) n += 2 + f.name.size() + 4 + f.data.size();
   return n;
 }
@@ -507,14 +511,14 @@ static std::string UnpackRefusal(const Bytes& b) {
 // The layout, round trips, truncation
 // =====================================================================================================
 
-// Hand-derived from the documented layout (np_handoff.h), not by running Pack: "D4HO", u16 version 1, u64 build,
+// Hand-derived from the documented layout (np_handoff.h), not by running Pack: "D4HO", u16 version 2, u64 build,
 // text release "v1", u8 role 1, u8 delay 3, u16 local port 7201 (0x1C21), peer 203.0.113.7, u16 peer port 7200
-// (0x1C20), u32 token 0xCAFEF00D, u64 seed, u32 guest length + the settings text (GoodText: every carried name once,
+// (0x1C20), u32 token 0xCAFEF00D, u64 seed, u8 suit_state 2 (kMixed), u32 guest length + the settings text (GoodText: every carried name once,
 // built from the pinned list), u32 file count 1, then the file: u16 name length 27 (26-byte prefix + "x"), the name,
-// u32 data length 3, 09 08 07. 84 bytes plus the text.
+// u32 data length 3, 09 08 07. 85 bytes plus the text.
 static Bytes Golden() {
   Bytes g = {0x44, 0x34, 0x48, 0x4F,                                                  // "D4HO"
-             0x01, 0x00,                                                              // version 1
+             0x02, 0x00,                                                              // version 2
              0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,                          // build
              0x02, 0x00, 0x76, 0x31,                                                  // "v1"
              0x01, 0x03,                                                              // role joiner, delay 3
@@ -523,6 +527,7 @@ static Bytes Golden() {
              0x20, 0x1C,                                                              // peer port 7200
              0x0D, 0xF0, 0xFE, 0xCA,                                                  // token
              0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,                          // seed
+             0x02,                                                                    // suit_state kMixed
              };
   const std::string text = GoodText();  // u32 length, then the text
   for (int k = 0; k < 4; ++k) g.push_back(uint8_t(text.size() >> (8 * k)));
@@ -546,15 +551,65 @@ static ho::Handoff GoldenHandoff() {
   h.peer = Ep(203, 0, 113, 7, 7200);
   h.session_token = 0xCAFEF00Du;
   h.seed = 0x0102030405060708ull;
+  h.suit_state = rules::SuitSession::kMixed;
   h.guest_settings = GoodText();
   h.files.push_back({kPre + "x", {9, 8, 7}});
   return h;
 }
 
+// Task 5: the session's swimsuit state. Each value round-trips; a value that is none of the three is refused by Pack and by
+// Unpack (a joiner reads a remote host's byte); a cut packet is refused like any other (TestTruncation's sweep has the field).
+static void TestSuitState() {
+  Group("suit state: every value round-trips, at its place");
+  for (const rules::SuitSession v : {rules::SuitSession::kNone, rules::SuitSession::kSame, rules::SuitSession::kMixed}) {
+    ho::Handoff h = GoldenHandoff();
+    h.suit_state = v;
+    const Bytes packed = ho::Pack(h);
+    CHECK(!packed.empty());
+    CHECK(packed.size() == ExpectedSize(h));
+    ho::Handoff out;
+    CHECK(ho::Unpack(packed, &out).empty());
+    CHECK(out.suit_state == v);
+    Raw r = RawOf({{kPre + "x", {9, 8, 7}}});
+    r.release = "v1";
+    r.suit_state = uint8_t(v);
+    CHECK(Encode(r) == packed);  // the byte sits where the layout says, by hand
+    CHECK(ho::Pack(out) == packed);
+  }
+  CHECK(ho::Handoff{}.suit_state == rules::SuitSession::kNone);  // a hand-off nobody set a state on is today's session
+
+  Group("suit state: a value outside the three is refused both ways");
+  for (const unsigned bad : {3u, 4u, 255u}) {
+    Raw r = RawOf({{kPre + "x", {9, 8, 7}}});
+    r.suit_state = uint8_t(bad);
+    g_ctx = "suit_state " + std::to_string(bad);
+    CHECK(UnpackRefusal(Encode(r)) == "an unknown swimsuit state");
+    ho::Handoff h = GoldenHandoff();
+    h.suit_state = rules::SuitSession(bad);
+    CHECK(ho::Pack(h).empty());
+  }
+  g_ctx.clear();
+
+  Group("suit state: an old hand-off (version 1, no such byte) is refused, not misread");
+  {
+    Raw r = RawOf({{kPre + "x", {9, 8, 7}}});
+    r.version = 1;
+    CHECK(UnpackRefusal(Encode(r)) == "a different hand-off version");
+  }
+  Group("suit state: a packet cut at the state byte is refused");
+  {
+    const Bytes packed = ho::Pack(GoldenHandoff());
+    const size_t at = 4 + 2 + 8 + 2 + 2 + 1 + 1 + 2 + 4 + 2 + 4 + 8;  // the bytes before it, with the two-byte release text
+    CHECK(packed[at] == 2);
+    const Bytes cut(packed.begin(), packed.begin() + at);
+    CHECK(UnpackRefusal(cut) == "the hand-off is cut short");
+  }
+}
+
 static void TestLayout() {
   Group("layout: Pack writes the documented bytes (little-endian, in the documented order)");
   const Bytes golden = Golden();
-  CHECK(golden.size() == 84 + GoodText().size());
+  CHECK(golden.size() == 85 + GoodText().size());
   CHECK(ho::Pack(GoldenHandoff()) == golden);
   CHECK(Encode([] {
           Raw r;
@@ -958,7 +1013,7 @@ static void TestHeaderRefusals() {
       b[size_t(pos)] ^= 0xFF;
       CHECK(UnpackRefusal(b) == "not a session hand-off");
     }
-    for (unsigned v : {0u, 2u, 3u, 0x0100u, 0xFFFFu}) {
+    for (unsigned v : {0u, 1u, 3u, 0x0100u, 0xFFFFu}) {
       Raw m;
       m.version = uint16_t(v);
       g_ctx = "version " + std::to_string(v);
@@ -1442,7 +1497,7 @@ static void TestGuestNames() {
   g_ctx.clear();
   CHECK(!uniq.count("headless"));
   CHECK(uniq.count("vsync") && uniq.count("window_width") && uniq.count("doa4_tag_all_stages") &&
-        uniq.count("doa4_mp_hidden_characters"));
+        uniq.count("doa4_mp_hidden_characters") && uniq.count("doa4_suits_full_bust"));
   CHECK(uniq.count("async_shader_compilation"));  // fix round 1: a draw skipped while its pipeline is built drops readback work
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) CHECK(uniq.count(t.cvar));
 }
@@ -2054,7 +2109,9 @@ static void TestSdkNames(const std::string& sdk_src, const std::string& port_src
   // the port: its cvars are the Extras tweaks (carried through the tweaks module) and the listed host-only names
   std::set<std::string> port_expected(kPortNotCarried, kPortNotCarried + kPortNotCarriedCount);
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) CHECK(port_expected.insert(t.cvar).second);
-  CHECK(port_expected.size() == kPortNotCarriedCount + doa4::tweaks::AllTweaks().size());
+  for (const char* n : kPortCarried) CHECK(port_expected.insert(n).second);
+  CHECK(port_expected.size() == kPortNotCarriedCount + doa4::tweaks::AllTweaks().size() + 1);
+  CHECK(!IsTrusted("doa4_suits_full_bust"));  // carried at the host's value, not forced: it is no boundary of the PC
   for (const auto& d : port) {
     g_ctx = d.first;
     CHECK(port_expected.count(d.first) == 1);
@@ -2065,6 +2122,49 @@ static void TestSdkNames(const std::string& sdk_src, const std::string& port_src
   }
   g_ctx.clear();
   CHECK(port.size() == port_expected.size());
+
+  // Task 5: every test switch named DOA4_SUITS_* in the port is classified. One that changes guest state goes through
+  // np::TestSwitch, so in a session it counts only with DOA4_NP_TEST_DIR set: a player's environment cannot fork one peer. One read
+  // by a bare getenv must be on the list of switches that only log or take a picture.
+  {
+    static const std::set<std::string> kGuarded = {"DOA4_SUITS_NATIVE_CLOTH_BUDGET", "DOA4_SUITS_NO_FUR_GUARD", "DOA4_SUITS_SCENE",
+                                                   "DOA4_SUITS_BUST_FLIP_S"};
+    static const std::set<std::string> kHarmless = {"DOA4_SUITS_COUNT_TRACE", "DOA4_SUITS_LABEL_TRACE", "DOA4_SUITS_TATAMI_TRACE",
+                                                    "DOA4_SUITS_COMPLETE_TRACE", "DOA4_SUITS_PIN_TRACE", "DOA4_SUITS_CLOTH_TRACE",
+                                                    "DOA4_SUITS_PHOTOS"};
+    std::set<std::string> guarded, bare;
+    int extras_request_bare = 0, extras_request_guarded = 0;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(port_src, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+      if (!it->is_regular_file(ec)) continue;
+      const std::string ext = it->path().extension().string();
+      if (ext != ".cpp" && ext != ".h") continue;
+      std::ifstream in(it->path(), std::ios::binary);
+      const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      const auto collect = [&](const std::string& call, std::set<std::string>* into) {
+        const std::string key = call + "(\"DOA4_SUITS_";
+        for (size_t at = text.find(key); at != std::string::npos; at = text.find(key, at + 1)) {
+          const size_t name = at + call.size() + 2;
+          into->insert(text.substr(name, text.find('"', name) - name));
+        }
+      };
+      collect("getenv", &bare);
+      collect("TestSwitch", &guarded);
+      for (size_t at = text.find("getenv(\"DOA4_EXTRAS_REQUEST\")"); at != std::string::npos;
+           at = text.find("getenv(\"DOA4_EXTRAS_REQUEST\")", at + 1)) {
+        ++extras_request_bare;
+      }
+      for (size_t at = text.find("TestSwitch(\"DOA4_EXTRAS_REQUEST\")"); at != std::string::npos;
+           at = text.find("TestSwitch(\"DOA4_EXTRAS_REQUEST\")", at + 1)) {
+        ++extras_request_guarded;
+      }
+    }
+    CHECK(guarded == kGuarded);
+    CHECK(bare == kHarmless);
+    CHECK(extras_request_bare == 0);      // the record-run stand-in: the same class of switch, on the count-copy rule's path
+    CHECK(extras_request_guarded == 3);   // the hook's rule, SyncCostumeCounts and PollExtrasRequest
+  }
 
   // every carried name is a cvar of the SDK or the port (a typo would refuse every session)
   for (const std::string& n : ho::GuestSettingNames()) {
@@ -2103,6 +2203,7 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[i], "--port-src") == 0 && i + 1 < argc) port_src = argv[++i];
   }
   TestLayout();
+  TestSuitState();
   TestRoundTrip();
   TestTruncation();
   TestFileCountLimit();

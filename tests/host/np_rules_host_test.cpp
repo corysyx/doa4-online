@@ -1434,9 +1434,43 @@ static void TestDifferingGroups() {
   CHECK(rules::DifferingGroups("a=\n", "") == V({"a"}));
 }
 
+// Task 5 (plan 2026-11-06): what a session does with the two players' import checksums. A difference is never a refusal.
+static void TestSuitSession() {
+  using rules::SuitSession;
+  Group("SuitSessionOf: the brief's five cases");
+  CHECK(rules::SuitSessionOf("", "") == SuitSession::kNone);
+  CHECK(rules::SuitSessionOf("abc", "abc") == SuitSession::kSame);
+  CHECK(rules::SuitSessionOf("abc", "") == SuitSession::kMixed);
+  CHECK(rules::SuitSessionOf("", "abc") == SuitSession::kMixed);
+  CHECK(rules::SuitSessionOf("abc", "abd") == SuitSession::kMixed);
+  Group("SuitSessionOf: what a likely wrong version gets wrong");
+  CHECK(rules::SuitSessionOf("abc", "abcd") == SuitSession::kMixed);   // NOT a prefix match
+  CHECK(rules::SuitSessionOf("abcd", "abc") == SuitSession::kMixed);
+  CHECK(rules::SuitSessionOf("abc", "ABC") == SuitSession::kMixed);    // NOT a case-blind match
+  // the wire values: the hand-off carries them (np_handoff.h), so they are pinned
+  CHECK(uint8_t(SuitSession::kNone) == 0 && uint8_t(SuitSession::kSame) == 1 && uint8_t(SuitSession::kMixed) == 2);
+
+  Group("SuitSessionName: the log's word for each");
+  CHECK(std::string(rules::SuitSessionName(SuitSession::kNone)) == "none");
+  CHECK(std::string(rules::SuitSessionName(SuitSession::kSame)) == "same");
+  CHECK(std::string(rules::SuitSessionName(SuitSession::kMixed)) == "mixed");
+
+  Group("SuitStatusText: the lobby's line says which case the two sides are in, from this side");
+  CHECK(rules::SuitStatusText("", "") == "Swimsuits: neither player");
+  CHECK(rules::SuitStatusText("abc", "abc") == "Swimsuits: both");
+  CHECK(rules::SuitStatusText("abc", "") == "Swimsuits: only you");
+  CHECK(rules::SuitStatusText("", "abc") == "Swimsuits: only the other player");
+  CHECK(rules::SuitStatusText("abc", "abd") == "Swimsuits: both, from different imports");
+  Group("SuitStatusText: a session process knows the state only");
+  CHECK(rules::SuitStatusText(SuitSession::kNone) == "Swimsuits: neither player");
+  CHECK(rules::SuitStatusText(SuitSession::kSame) == "Swimsuits: both");
+  CHECK(rules::SuitStatusText(SuitSession::kMixed) == "Swimsuits: only one player, or different imports");
+}
+
 int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i)
     if (std::strcmp(argv[i], "-v") == 0) g_verbose = true;
+  TestSuitSession();
   TestJoinCodes();
   TestStun();
   TestNat();

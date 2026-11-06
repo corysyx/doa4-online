@@ -30,7 +30,8 @@
 //   the save (sub_82523A38).
 // After each, the rows of the girls with suits are raised to what the list offers (costumes::VisibleCount). Only the
 // copy changes, never the save. Not in a session (np_session unlocks everything there; the same stand-in as
-// SyncCostumeCounts: DOA4_EXTRAS_REQUEST marks a record run standing in for an offline game).
+// SyncCostumeCounts: DOA4_EXTRAS_REQUEST marks a record run standing in for an offline game). One line, the first time a process
+// fills the copy, says which it is.
 // Test switch DOA4_SUITS_COUNT_TRACE=1, read once: logs every call of both writers with its thread, and at the list
 // drawer checks that no girl with suits shows a copy below what the writers leave (a third writer would show there).
 //
@@ -47,7 +48,8 @@
 //
 // Test switch DOA4_SUITS_SCENE=<entry>=<char>:#<costume>[,...] (ported from the stage-0 probe's
 // DOA4_FORCE_SCENE): each attract scene's fighter entry gets that character in that costume, the
-// costume resolved by the game's own lookup over the (patched) tables.
+// costume resolved by the game's own lookup over the (patched) tables. Through np::TestSwitch, like the other switches that
+// change guest state: in a session they count only with DOA4_NP_TEST_DIR set, so a player's environment cannot fork one peer.
 //
 // Costume-select labels past COS. 10 (doa4_suits_labels.h). The extended sheet-6 table (records
 // 197..203 = COS. 11..17) is installed once at start-up by SetUpLabels; these hooks only steer ids:
@@ -121,7 +123,7 @@ uint32_t Be32(uint8_t* base, uint32_t a) { return rex::memory::load_and_swap<uin
 
 bool FurGuardOn() {
   static const bool on = [] {
-    const char* env = std::getenv("DOA4_SUITS_NO_FUR_GUARD");
+    const char* env = doa4::np::TestSwitch("DOA4_SUITS_NO_FUR_GUARD");  // changes guest state: not a player's to set online
     const bool off = env && env[0] == '1';
     if (off) REXLOG_WARN("[doa4][SUITS] test: fur guard OFF (DOA4_SUITS_NO_FUR_GUARD=1)");
     return !off;
@@ -150,7 +152,7 @@ uint32_t ParseNum(std::string_view s) {
 const std::vector<SceneForce>& Forces() {
   static const std::vector<SceneForce> forces = [] {
     std::vector<SceneForce> out;
-    const char* env = std::getenv("DOA4_SUITS_SCENE");
+    const char* env = doa4::np::TestSwitch("DOA4_SUITS_SCENE");  // changes guest state: not a player's to set online
     if (!env) return out;
     std::string_view rest(env);
     while (!rest.empty()) {
@@ -180,11 +182,13 @@ const bool g_count_trace = [] {
   return env && env[0] == '1';
 }();
 
-// Not in a session: np_session unlocks everything there (a record run with DOA4_EXTRAS_REQUEST stands in for offline).
-bool CountCopyOffline() {
-  static const bool stand_in = std::getenv("DOA4_EXTRAS_REQUEST") != nullptr;
-  return stand_in || !doa4::np::Active();
+// Not in a session: np_session unlocks everything there (a record run with DOA4_EXTRAS_REQUEST stands in for offline; through
+// TestSwitch, so a player's environment cannot make one peer of a session raise its copy alone).
+bool CountCopyStandIn() {
+  static const bool stand_in = doa4::np::TestSwitch("DOA4_EXTRAS_REQUEST") != nullptr;
+  return stand_in;
 }
+bool CountCopyOffline() { return CountCopyStandIn() || !doa4::np::Active(); }
 
 const char* GirlName(uint32_t character) {
   switch (character) {
@@ -334,6 +338,14 @@ uint32_t doa4::suits::InstalledLabelTable() { return g_label_table.load(std::mem
 REX_HOOK_RAW(sub_82525E80) {
   const uint32_t row = ctx.r6.u32;  // the original uses r6 as a scratch, so read it first
   __imp__sub_82525E80(ctx, base);
+  // What the rule below reads, the first time this fires in a process: in a launched session np::Start ran in
+  // OnPostLoadXexImage, before the game's first thread, so both peers say active (and neither raises its copy).
+  static std::atomic<bool> first_fill{true};
+  if (first_fill.exchange(false)) {
+    REXLOG_INFO("[doa4][SUITS] count copy: first fill, np::Active {}, stand-in {}, suits in the tables {}: {}", doa4::np::Active(),
+                CountCopyStandIn(), g_suit_counts_on.load(std::memory_order_acquire),
+                g_suit_counts_on.load(std::memory_order_acquire) && CountCopyOffline() ? "raises the copy" : "leaves the copy");
+  }
   RaiseRow(base, row, "sub_82525E80", (row - doa4::costumes::kCountCopy) / doa4::costumes::kCountCopyRow);
 }
 
@@ -473,7 +485,7 @@ std::atomic<int> g_bust_logs{0};
 
 bool FullBustWanted() {
   static const int flip = [] {
-    const char* env = std::getenv("DOA4_SUITS_BUST_FLIP_S");
+    const char* env = doa4::np::TestSwitch("DOA4_SUITS_BUST_FLIP_S");  // changes guest state: not a player's to set online
     return env ? std::atoi(env) : 0;
   }();
   if (flip > 0) {

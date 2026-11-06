@@ -64,6 +64,7 @@
 #include "doa4_suits.h"
 #include "doa4_suits_hooks.h"
 #include "doa4_suits_labels.h"
+#include "doa4_suits_picks.h"
 #include "doa4_title_word.h"
 #include "doa4_tweaks.h"
 #include "doa4_unlocks.h"
@@ -642,6 +643,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     };
     const std::filesystem::path real = user_data_;
     p.save_files = [real](std::string* error) { return SaveFilesOf(real, error); };
+    p.suits = suits_checksum_;  // set in SetUpSuits, before any lobby of a process that is not a session (a session sends none)
     p.handoff_path = restart::HandoffPath(user_data_);
     p.restart_into_session = [this] {
       app_context().CallInUIThreadDeferred([this] {
@@ -912,7 +914,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   // Test switch: DOA4_EXTRAS_REQUEST=<file>: the file's text goes to MenuDialog::TestAction, once (a minimized window
   // never paints the menu, and a test never clicks in front of the user).
   void PollExtrasRequest() {
-    static const char* const path = std::getenv("DOA4_EXTRAS_REQUEST");
+    static const char* const path = doa4::np::TestSwitch("DOA4_EXTRAS_REQUEST");  // what a click would do: not a player's to set online
     if (!path || !path[0]) return;
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) return;
@@ -957,7 +959,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   // exception, a record run standing in for an offline game because only it can take scripted pad input.
   void SyncCostumeCounts() {
     if (!guest_ready_ || SessionLocked()) return;
-    static const bool offline_stand_in = std::getenv("DOA4_EXTRAS_REQUEST") != nullptr;
+    static const bool offline_stand_in = doa4::np::TestSwitch("DOA4_EXTRAS_REQUEST") != nullptr;
     if (doa4::np::Active() && !offline_stand_in) return;
     const std::optional<uint32_t> loaded = doa4::unlocks::FindLoadedRecord(guest_);
     if (!loaded) return;
@@ -1495,6 +1497,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   bool guest_ready_ = false;
   doa4::tweaks::TweakPatcher patcher_;
   doa4::suits::ImportStatus suits_status_;  // DOAX2 swimsuits (SetUpSuits)
+  std::string suits_checksum_;              // suits::ImportChecksum, what this PC tells the other player; "" without an import
   std::shared_ptr<const doa4::afs::Overlay> title_spr_;  // spr.afs as the title word serves it (SetUpLabels goes on top)
   doa4::tweaks::ProtectFn protect_;
   doa4::ExtrasState extras_;
@@ -1520,6 +1523,10 @@ class DeadOrAlive4App : public rex::ReXApp {
   // suits. Needs the mounts (OnPostSetup) and guest_ (SetUpExtras, OnPostLoadXexImage); runs
   // before any guest code. With no import, or any failure before the tables change, the game's
   // own archives and tables stay as they are.
+  // A session process (the suit state read from the hand-off, ReadHandoff): kNone reads and applies nothing, whatever this PC
+  // has: today's session. kSame and kMixed build the tables from the compiled picks, not from a manifest, so a PC with no files
+  // builds the same bytes as a PC with all of them; overlays only for the picks' files this PC holds, and whatever it lacks stays
+  // an empty slot the guard sends to COS. 1. An overlay that cannot be built costs this PC its suits, never the tables.
   void SetUpSuits() {
     rex::Runtime* rt = runtime();
     rex::memory::Memory* memory = rt ? rt->memory() : nullptr;
@@ -1532,7 +1539,16 @@ class DeadOrAlive4App : public rex::ReXApp {
     doa4::costumes::GuardState guard = doa4::costumes::ReadGuardState(guest_);
     doa4::suits::InstallGuards(guard);
     const std::filesystem::path game_root = std::filesystem::absolute(rt->game_data_root());
-    suits_status_ = doa4::suits::LoadImport(UserData() / "doax2_suits", game_root, guest_);
+    using doa4::np::rules::SuitSession;
+    const bool session = session_.has_value();
+    const SuitSession suit_state = session ? session_->suit_state : SuitSession::kNone;
+    if (session) {
+      REXLOG_INFO("[doa4][SUITS] session: the hand-off says swimsuits {}", doa4::np::rules::SuitSessionName(suit_state));
+    }
+    if (!session || suit_state != SuitSession::kNone) {
+      suits_status_ = doa4::suits::LoadImport(UserData() / "doax2_suits", game_root, guest_);
+    }
+    if (session) suits_status_.suits = doa4::suits::SessionFiles(suits_status_);
     // The combined archives that were really put in place (empty when there are none, or when
     // installing them failed): the empty-slot marks are read through exactly these.
     std::map<std::string, std::shared_ptr<const doa4::afs::Overlay>> installed;
@@ -1552,10 +1568,26 @@ class DeadOrAlive4App : public rex::ReXApp {
         }
       }
     }
-    if (!suits_status_.suits.empty()) {
+    // What the lobby tells the other player: what this PC can really serve, boxes aside (they are the host's in a session).
+    suits_checksum_ = doa4::suits::ImportChecksum(suits_status_);
+    // What the tables hold. Offline, the import. In a session, the picks, on both PCs: CheckSuit reads only the tables, which the
+    // host's settings made equal, so a refusal is the same on both.
+    std::vector<doa4::suits::Suit> table_suits;
+    if (session) {
+      if (suit_state != SuitSession::kNone) {
+        std::vector<std::string> refused;
+        table_suits = doa4::costumes::Fitting(guest_, doa4::suits::PickSuits(), &refused);
+        for (const std::string& r : refused) REXLOG_ERROR("[doa4][SUITS] session: pick refused: {}", r);
+        REXLOG_INFO("[doa4][SUITS] session: {} picks go in the tables, this PC holds the files of {} (import {})", table_suits.size(),
+                    suits_status_.suits.size(), suits_checksum_.empty() ? std::string("none") : suits_checksum_);
+      }
+    } else {
+      table_suits = doa4::suits::SuitsOf(suits_status_);
+    }
+    if (!table_suits.empty()) {
       const auto alloc = [memory](uint32_t size) { return memory->SystemHeapAlloc(size); };
       // The tables as they stand: the Extras boxes (SetUpExtras) went first.
-      const doa4::costumes::ApplyResult applied = doa4::costumes::Apply(guest_, alloc, doa4::suits::SuitsOf(suits_status_));
+      const doa4::costumes::ApplyResult applied = doa4::costumes::Apply(guest_, alloc, table_suits);
       std::vector<doa4::suits::LoadedSuit> kept;
       for (const doa4::suits::LoadedSuit& l : suits_status_.suits) {
         bool in = false;
@@ -1593,6 +1625,11 @@ class DeadOrAlive4App : public rex::ReXApp {
     // The final guard state: Apply's counts (else the image's), and every model whose body files
     // are empty slots in the archives as the game reads them (through the installed overlays).
     const std::string guard_note = doa4::suits::MarkEmptySlots(&guard, guest_, game_root, installed);
+    if (session) {  // the two peers' logs can be compared: heap blocks included, which the frame-0 .data dump does not reach
+      const std::vector<uint8_t> tables = doa4::costumes::TableBytes(guest_, guard);
+      REXLOG_INFO("[doa4][SUITS] session: costume tables digest {} ({} bytes)", doa4::gamefiles::Sha1Hex(tables.data(), tables.size()),
+                  tables.size());
+    }
     if (!guard_note.empty()) REXLOG_WARN("[doa4][SUITS] load-request guard: {}", guard_note);
     doa4::suits::InstallGuards(guard);
     // Read back from the installed state (not from the local), so a state that was never installed shows.

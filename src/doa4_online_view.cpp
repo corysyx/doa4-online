@@ -69,6 +69,7 @@ View Describe(const In& in) {
   if (session) {
     v.status_line = std::string("In an online session as the ") + (st.is_host ? "host" : "joiner") + " - delay " +
                     DelayText(in.delay) + ", ping " + PingText(in.ping_ms);
+    v.suits_line = st.suits_text;
     v.show_leave = true;
     v.display_note = kDisplayNote;
     v.session_note = kSessionNote;
@@ -111,6 +112,7 @@ View Describe(const In& in) {
     }
     if (state == State::kConnected || state == State::kStarting || state == State::kRestarting) {
       if (!st.is_host) v.display_note = kDisplayNote;
+      v.suits_line = st.suits_text;
     }
   }
 

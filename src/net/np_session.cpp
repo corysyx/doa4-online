@@ -777,7 +777,8 @@ void UnlockStep(State& s, uint32_t f) {
   if (!s.unlock || !s.host.guest) return;
   const doa4::GuestBytes& g = *s.host.guest;
   // A save written while a costume tweak was on, with the tweak off now: FindProfile refuses it, and this step would
-  // never unlock anything. Both players hold the same save and tweaks, and this runs at the same frame on both.
+  // never unlock anything. Both players hold the host's save and settings and build the same tables (from the picks when a
+  // session has suits: rules::SuitSessionOf), and this runs at the same frame on both.
   if (const std::optional<uint32_t> loaded = doa4::unlocks::FindLoadedRecord(g)) {
     doa4::unlocks::ClampCostumeCounts(g, *loaded);
   }
@@ -796,6 +797,13 @@ void UnlockStep(State& s, uint32_t f) {
   std::snprintf(line, sizeof line, "unlock: everything at frame %u (characters %d, costumes %d, voices %d, stages %d)", f,
                 r.characters, r.costumes, r.voices, r.stages);
   Log(line);
+  // The counts this frame wrote, in the log of each peer, so two logs can be compared at this frame (a frame-0 equal dump does
+  // not reach this write, and the profile is outside .data).
+  std::string counts = "unlock: counts at frame " + std::to_string(f) + ":";
+  for (int i = 0; i < doa4::unlocks::kCharacterCount; ++i) {
+    counts += " " + std::to_string(g.Read(*p + doa4::unlocks::kCostumeCount + uint32_t(i)));
+  }
+  Log(counts);
 }
 
 // ---- online ----
@@ -1516,15 +1524,20 @@ void StartOnline(Host host) {
   char tok[16];
   std::snprintf(tok, sizeof tok, "%08X", unsigned(s.ho.session_token));
   Log(std::string("session: ") + (s.slot == 0 ? "host" : "joiner") + ", delay " + std::to_string(s.ho.delay) +
-      ", token " + tok + ", peer " + rules::EndpointText(s.ho.peer) + ", seed " + std::to_string(s.seed));
+      ", token " + tok + ", peer " + rules::EndpointText(s.ho.peer) + ", seed " + std::to_string(s.seed) + ", swimsuits " +
+      rules::SuitSessionName(s.ho.suit_state));
   s.events = _wfopen((s.dir / "events.txt").wstring().c_str(), L"a");
   ReadSweepSetting(s, TestDirEnv("DOA4_NP_SWEEP"));
   s.unlock = true;
   s.guest_meta = GuestMeta(s.ho.guest_settings);
   s.unlock_meta = "1";
+  // Task 5: a session with suit tables says so; a replay builds no such tables, so it refuses that recording with the reason.
+  // A session without suits writes no key: its recording stays what it was.
+  const std::string suits_meta =
+      s.ho.suit_state == rules::SuitSession::kNone ? "" : "suits=" + std::string(rules::SuitSessionName(s.ho.suit_state)) + "\n";
   const std::string extra = "guest=" + s.guest_meta + "\nunlock=1\nguest_skipped=" +
                             (g_skipped.empty() ? std::string("none") : g_skipped) + "\nsession=online role=" +
-                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n";
+                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta;
   const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
   s.rec = _wfopen((s.dir / "rec.d4r").wstring().c_str(), L"wb");
   const std::string head = EncodeRecHeader(s.seed, 0, meta);

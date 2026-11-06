@@ -112,4 +112,17 @@ Verdict Judge(const Identity& host, const Identity& joiner, bool host_busy);
 // twice in one text is not valid (np_files writes each group once); which value counts is unspecified.
 std::vector<std::string> DifferingGroups(std::string_view files_a, std::string_view files_b);
 
+// ---- Swimsuits in a session (spec "Online") ----
+// mine, theirs: the two players' import checksums (suits::ImportChecksum), empty without an import. kNone: neither has one:
+// today's session, nothing applied. kSame: the same import. kMixed: one has none, or they differ. A difference is never a
+// refusal. The values travel in the hand-off (np_handoff.h).
+enum class SuitSession : uint8_t { kNone = 0, kSame = 1, kMixed = 2 };
+SuitSession SuitSessionOf(std::string_view mine, std::string_view theirs);
+const char* SuitSessionName(SuitSession s);  // "none", "same", "mixed": the log's and the recording's word
+// The lobby's status line, from this side: "Swimsuits: neither player", "Swimsuits: both", "Swimsuits: only you",
+// "Swimsuits: only the other player", "Swimsuits: both, from different imports".
+std::string SuitStatusText(std::string_view mine, std::string_view theirs);
+// A session process knows the hand-off's state only.
+std::string SuitStatusText(SuitSession s);
+
 }  // namespace doa4::np::rules

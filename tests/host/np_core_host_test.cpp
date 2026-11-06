@@ -246,6 +246,10 @@ static void TestMetaMismatch() {
   CHECK(MetaMismatch(meta("bb"), cur) == "build bb vs aa");
   CHECK(MetaMismatch(meta("aa", "dd", "all", "3", "4", "x=1"), cur) == "serial 3 vs default; tweaks x=1 vs x=0");
   CHECK(MetaMismatch("", cur).find("build (none) vs aa") == 0);  // a version-1 recording
+  // Task 5: a session that built suit tables has a suits= key; a replay process builds none, so it refuses that recording. A
+  // session with no suits writes no key (its recording stays what it was) and is replayable.
+  CHECK(MetaMismatch(cur + "suits=same\n", cur) == "suits same vs (none)");
+  CHECK(MetaMismatch(cur + "suits=mixed\n", cur) == "suits mixed vs (none)");
   CHECK(MetaMismatch("other=1\n" + meta().substr(0, meta().size() - 1), cur).empty());  // no final newline
   // A key that neither text has reads "(none)" in both and agrees ("(none)" is a missing key, not a value
   // that disagrees like "unreadable").

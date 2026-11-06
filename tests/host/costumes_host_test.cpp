@@ -2,6 +2,7 @@
 // Built and run by run_costumes_test.bat.
 
 #include "../../src/doa4_costumes.h"
+#include "../../src/doa4_suits_picks.h"
 #include "../../src/doa4_tweaks.h"
 
 #include <cstdio>
@@ -519,6 +520,105 @@ static void TestBoxToggledAfterSuits() {
     }
     CHECK(additions == 3 && seen.size() == additions);
   }
+}
+
+// Task 5: a session's tables come from the picks, so two PCs build the same bytes whatever each holds. With every box on, the host's
+// settings apply first on both PCs and then the picks (SetUpExtras, then SetUpSuits). Both guests go through the whole sequence;
+// the comparison is over every byte of each, and the fixture's preconditions show something was written.
+static std::map<uint32_t, uint8_t> SessionTables(bool boxes, ApplyResult* out) {
+  namespace tw = doa4::tweaks;
+  FakeGuest g;
+  tw::TweakPatcher patcher;
+  if (boxes) {
+    AllBoxesOn(g, patcher);
+  } else {
+    patcher.CaptureOriginals(g.guest, g.alloc);
+  }
+  std::vector<std::string> refused;
+  const std::vector<Suit> fit = doa4::costumes::Fitting(g.guest, doa4::suits::PickSuits(), &refused);
+  CHECK(refused.empty());  // all 34 pass CheckSuit on the image's real tables, boxes or not
+  CHECK(fit.size() == 34);
+  *out = Apply(g.guest, g.alloc, fit);
+  CarrySuits(g, patcher, *out);
+  return g.bytes;
+}
+
+static constexpr uint32_t g_table_bytes_list_at = 30;  // inside Kasumi's list of 28 + 4 models
+
+static void TestFitting() {
+  FakeGuest g;
+  // Ayane has a head part, so a suit that names none is refused; the next one stays, and the order holds.
+  const Suit bad = MakeSuit(13, -1, 275, 276, kNoPart, kNoPart, "vay_cs_b");
+  const Suit good = MakeSuit(5, 7, 269, 270, 509, 510, "vks_ch_d");
+  const Suit good2 = MakeSuit(5, 8, 271, 272, 509, 510, "vks_cs_a");
+  CHECK(!CheckSuit(g.guest, bad).empty() && CheckSuit(g.guest, good).empty());
+  std::vector<std::string> refused;
+  const std::vector<Suit> fit = doa4::costumes::Fitting(g.guest, {good, bad, good2}, &refused);
+  CHECK(fit.size() == 2);
+  if (fit.size() == 2) CHECK(fit[0].design == "vks_ch_d" && fit[1].design == "vks_cs_a");
+  CHECK(refused.size() == 1);
+  if (refused.size() == 1) CHECK(refused[0].rfind("vay_cs_b c0: ", 0) == 0);
+  CHECK(doa4::costumes::Fitting(g.guest, {bad}, nullptr).empty());  // no list asked for: still refused, and no crash
+}
+
+static void TestPicksMakeTheSameTables() {
+  for (const bool boxes : {false, true}) {
+    ApplyResult a, b;
+    const auto host = SessionTables(boxes, &a);
+    const auto joiner = SessionTables(boxes, &b);
+    CHECK(host == joiner);
+    CHECK(a.applied.size() == b.applied.size());
+    CHECK(a.errors == b.errors);
+    // non-vacuous: every suit went in (no girl is over the limit with the boxes on), and the tables moved
+    CHECK(a.applied.size() == 34);
+    CHECK(a.errors.empty());
+    FakeGuest vanilla;
+    CHECK(host != vanilla.bytes);
+  }
+  // TableBytes: what the session's log line digests. Two peers agree; a byte in a moved block (outside .data) shows.
+  {
+    FakeGuest h, j;
+    const std::vector<Suit> picks = doa4::suits::PickSuits();
+    const ApplyResult ra = Apply(h.guest, h.alloc, doa4::costumes::Fitting(h.guest, picks, nullptr));
+    const ApplyResult rb = Apply(j.guest, j.alloc, doa4::costumes::Fitting(j.guest, picks, nullptr));
+    const std::vector<uint8_t> ta = doa4::costumes::TableBytes(h.guest, ra.guard);
+    CHECK(ta.size() > 2000);
+    CHECK(ta == doa4::costumes::TableBytes(j.guest, rb.guard));
+    const uint32_t list = j.Be32(kListTable + 4 * 5), var = j.Be32(kVarTable + 4 * 5), records = j.Be32(kModelTable + 8 * 5 + 4);
+    CHECK(list >= 0x40000000 && var >= 0x40000000 && records >= 0x40000000);  // Kasumi's three blocks moved
+    for (const uint32_t a : {list + g_table_bytes_list_at, var + 10, records + 8 * 32 + 7}) {
+      const uint8_t was = j.Get(a);
+      j.bytes[a] = uint8_t(was + 1);
+      CHECK(ta != doa4::costumes::TableBytes(j.guest, rb.guard));
+      j.bytes[a] = was;
+    }
+    CHECK(ta == doa4::costumes::TableBytes(j.guest, rb.guard));
+    j.bytes[kMaxTable + 5] = uint8_t(j.Get(kMaxTable + 5) + 1);  // a table in the image
+    CHECK(ta != doa4::costumes::TableBytes(j.guest, rb.guard));
+    FakeGuest vanilla;
+    CHECK(doa4::costumes::TableBytes(vanilla.guest, ReadGuardState(vanilla.guest)) != ta);
+  }
+  // A control the comparison can fail on: boxes on one side only.
+  ApplyResult a, b;
+  const auto with = SessionTables(true, &a);
+  const auto without = SessionTables(false, &b);
+  CHECK(with != without);
+
+  // Kasumi's list holds her own 7 and the four suits, in the picks' order, and an append is past her records; Kokoro with her box
+  // on has her two kimonos first. Numbers from the manifest.
+  namespace tw = doa4::tweaks;
+  FakeGuest g;
+  tw::TweakPatcher patcher;
+  AllBoxesOn(g, patcher);
+  const std::vector<Suit> fit = doa4::costumes::Fitting(g.guest, doa4::suits::PickSuits(), nullptr);
+  const ApplyResult r = Apply(g.guest, g.alloc, fit);
+  CHECK(g.Get(kMaxTable + 5) == 11);
+  CHECK(GameLookup(g, 5, 7, 0) == 7);    // vks_ch_d own:7
+  CHECK(GameLookup(g, 5, 8, 0) == 8);    // vks_cs_a own:8
+  CHECK(GameLookup(g, 5, 9, 0) == 31);   // vks_on_o append: past her 31 records (RecordCount, pinned in TestRecordCounts)
+  CHECK(GameLookup(g, 5, 10, 0) == 32);  // vks_hn_i append
+  CHECK(g.Get(kMaxTable + 10) == 13);    // Kokoro: 7 + 2 kimonos + 4 suits
+  CHECK(GameLookup(g, 10, 9, 0) == 2);   // vco_cs_i own:2, after the kimonos
 }
 
 static void TestGuardModel() {
@@ -1145,6 +1245,8 @@ int main() {
   TestApplyAyane();
   TestAllOrNothing();
   TestMaxLimit();
+  TestFitting();
+  TestPicksMakeTheSameTables();
   TestGuardModel();
   TestRecordCountsAll();
   TestRecordCountOutsideImage();

@@ -630,4 +630,35 @@ Verdict Judge(const Identity& host, const Identity& joiner, bool host_busy) {
   return v;
 }
 
+SuitSession SuitSessionOf(std::string_view mine, std::string_view theirs) {
+  if (mine.empty() && theirs.empty()) return SuitSession::kNone;
+  return mine == theirs ? SuitSession::kSame : SuitSession::kMixed;
+}
+
+const char* SuitSessionName(SuitSession s) {
+  switch (s) {
+    case SuitSession::kNone: return "none";
+    case SuitSession::kSame: return "same";
+    case SuitSession::kMixed: return "mixed";
+  }
+  return "?";
+}
+
+std::string SuitStatusText(std::string_view mine, std::string_view theirs) {
+  if (mine.empty() && theirs.empty()) return "Swimsuits: neither player";
+  if (mine == theirs) return "Swimsuits: both";
+  if (theirs.empty()) return "Swimsuits: only you";
+  if (mine.empty()) return "Swimsuits: only the other player";
+  return "Swimsuits: both, from different imports";
+}
+
+std::string SuitStatusText(SuitSession s) {
+  switch (s) {
+    case SuitSession::kNone: return "Swimsuits: neither player";
+    case SuitSession::kSame: return "Swimsuits: both";
+    case SuitSession::kMixed: return "Swimsuits: only one player, or different imports";
+  }
+  return "";
+}
+
 }  // namespace doa4::np::rules

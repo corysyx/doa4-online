@@ -184,20 +184,23 @@ ParseResult ParseManifest(std::string_view text) {
   return result;
 }
 
+std::string FormatSuitLine(const Suit& s) {
+  std::string out = "suit " + std::to_string(s.character) + " ";
+  out += s.own_model < 0 ? std::string("append") : "own:" + std::to_string(s.own_model);
+  out += " " + std::to_string(s.body_tpr) + " " + std::to_string(s.body_cat) + " ";
+  out += s.part_tpr == kNoPart ? std::string("- -")
+                               : std::to_string(s.part_tpr) + " " + std::to_string(s.part_cat);
+  out += " " + s.design + " " + std::to_string(s.colour);
+  for (const SuitFile* f : {&s.tpr, &s.cat}) {
+    out += " " + f->name + " " + std::to_string(f->size) + " " + f->sha1;
+  }
+  out += "\n";
+  return out;
+}
+
 std::string FormatManifest(const Manifest& manifest) {
   std::string out = "doax2-suits 1\nconverter " + manifest.converter + "\n";
-  for (const Suit& s : manifest.suits) {
-    out += "suit " + std::to_string(s.character) + " ";
-    out += s.own_model < 0 ? std::string("append") : "own:" + std::to_string(s.own_model);
-    out += " " + std::to_string(s.body_tpr) + " " + std::to_string(s.body_cat) + " ";
-    out += s.part_tpr == kNoPart ? std::string("- -")
-                                 : std::to_string(s.part_tpr) + " " + std::to_string(s.part_cat);
-    out += " " + s.design + " " + std::to_string(s.colour);
-    for (const SuitFile* f : {&s.tpr, &s.cat}) {
-      out += " " + f->name + " " + std::to_string(f->size) + " " + f->sha1;
-    }
-    out += "\n";
-  }
+  for (const Suit& s : manifest.suits) out += FormatSuitLine(s);
   return out;
 }
 

@@ -5,9 +5,16 @@
 // fails a check is left out with a reason; the others load. Checked files stay open without write
 // sharing, so they cannot change under the game.
 //
-// Order: LoadImport reads the game's tables (through CheckSuit) BEFORE any patch, so call it
-// before costumes::Apply; after Apply a patched girl's list and variant pointers are on the heap
-// and every one of her suits would be refused.
+// Order: LoadImport reads the game's tables (through CheckSuit) as they stand, after the Extras boxes, so call it before
+// costumes::Apply: Apply moves her record block, and her suits would then be checked against other records.
+//
+// A session (rules::SuitSession, read from the hand-off before guest code runs). kNone: nothing is read or applied, so two
+// players without suits run today's session. kSame and kMixed: the costume tables come from the picks (doa4_suits_picks.h),
+// not from a manifest, so both PCs build the same bytes; the overlays come from SessionFiles, the files this PC holds. A model
+// whose files this PC lacks stays an empty slot (MarkEmptySlots), and the load guard sends it to the girl's first costume.
+// What cannot be equal in kMixed: the guest reads the archives' TOCs through the overlays while it boots, before frame 0, so its
+// per-file size tables hold the suits' sizes on a PC with the files and the placeholders' on one without (the task 5 report lists
+// the ranges; masking them, in kMixed only, is the mixed sessions' check).
 
 #pragma once
 
@@ -41,7 +48,7 @@ struct LoadedSuit {
 struct ImportStatus {
   bool folder = false;               // the import folder exists
   std::filesystem::path path;
-  std::string fingerprint;           // SHA-1 of the canonical manifest text; empty without one
+  std::string fingerprint;           // SHA-1 of the canonical manifest text (with file order and converter); empty without one
   std::vector<LoadedSuit> suits;     // passed every check, in manifest order
   std::vector<std::string> skipped;  // "<label>: <why>", one per suit left out
   std::string problem;               // why nothing loaded, or empty
@@ -67,6 +74,17 @@ std::map<std::string, std::map<uint32_t, std::string>> EntryLabels(const ImportS
                                                                    const GuestBytes& guest);
 
 std::vector<Suit> SuitsOf(const ImportStatus& status);
+
+// What the two players compare when connecting (Hello::suits): the SHA-1, in hex, of the suit lines (FormatSuitLine) of the
+// suits this PC loaded that are picks, sorted, one after the other. "" when there are none. Two imports are the same when every
+// pick either holds has the same numbers and the same files (name, size and SHA-1) in both. So a file changed or missing on one
+// PC, which LoadImport leaves out, makes the imports different (the spec: a mixed session). The converter word, the manifest's
+// order, comments and suits the picks do not list are not part of it: a session's tables do not read them. Same bytes, whatever
+// wrote them.
+std::string ImportChecksum(const ImportStatus& status);
+
+// The loaded suits that are picks, in the import's order: the files a session may overlay on this PC.
+std::vector<LoadedSuit> SessionFiles(const ImportStatus& status);
 
 // The load-request guard's empty-slot marks: sets state->empty_slot to every model (below
 // state->records[c], at most 256) of every character whose body .tpr or body .cat is an empty

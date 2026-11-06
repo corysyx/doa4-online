@@ -3,7 +3,7 @@ through the Online tab's request files (no keyboard, mouse or focus automation),
 what each copy wrote.
 
   py -3 -I tools/np_pair.py NAME --script <pad script> --userdata <pristine save> --runs <folder> --exe <exe>
-      [--joiner-exe EXE] [--cache DIR] [--joiner-affinity MASK] [--sim D,J,L] [--delay N] [--seed N]
+      [--joiner-exe EXE] [--joiner-userdata DIR] [--cache DIR] [--joiner-affinity MASK] [--sim D,J,L] [--delay N] [--seed N]
       [--env-host K=V ...] [--env-joiner K=V ...] [--arg-host=ARG ...] [--arg-joiner=ARG ...]
       [--kill-joiner-at-frame N | --quit-joiner-at-frame N] [--third-joiner] [--host-only SECONDS]
       [--expect ok|desync|lost|refused-build|refused-files|refused-busy|refused-session|lobby] [--timeout S]
@@ -349,7 +349,8 @@ class Pair:
         if os.path.exists(side.run):
             raise SystemExit(f"run folder exists: {side.run}")
         os.makedirs(side.ctl)
-        shutil.copytree(a.userdata, side.ud)
+        # --joiner-userdata: the joiner's own folder, so one side can hold what the other lacks (a swimsuit import: doax2_suits)
+        shutil.copytree(a.joiner_userdata if name == "joiner" and a.joiner_userdata else a.userdata, side.ud)
         side.saves_before = hash_saves(side.ud)
         self.sides.append(side)
         return side
@@ -958,6 +959,7 @@ def main(argv=None):
     ap.add_argument("name")
     ap.add_argument("--script", required=True)
     ap.add_argument("--userdata", required=True, help="pristine user data folder (copied for every copy, never written)")
+    ap.add_argument("--joiner-userdata", help="the joiner's pristine user data folder (default --userdata), never written")
     ap.add_argument("--runs", required=True)
     ap.add_argument("--exe", required=True)
     ap.add_argument("--joiner-exe")

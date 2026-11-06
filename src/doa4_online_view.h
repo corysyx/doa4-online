@@ -29,6 +29,7 @@ struct In {
 
 struct View {
   std::string status_line;
+  std::string suits_line;                              // which swimsuit case the two players are in, or empty (Status::suits_text)
   std::string event_line;   // Status::event; the session_refused text when the lobby set only the flag
   bool show_join = false, show_host = false, show_code = false, show_reach_out = false, show_start = false,
        show_leave = false, show_disconnect = false;

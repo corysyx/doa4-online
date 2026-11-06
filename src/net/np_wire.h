@@ -7,7 +7,7 @@
 // caller owns both (kToken, kSource) and counts kBody when a DecodeX of a good packet fails.
 // Every DecodeX is exact too: a body with a missing byte, a trailing byte, a text longer than its limit or a
 // length that points past the end returns false and leaves *out as it was. Text fields are u16 length + bytes
-// (no terminator); kMaxText bytes at most, except Hello::files (1,000). The encoders refuse (return an empty
+// (no terminator); kMaxText bytes at most, except Hello::files (1,000) and the suits texts (kMaxSuitsText). The encoders refuse (return an empty
 // vector) what the decoders would refuse. Nothing here is thread-safe; the classes are driven by one thread.
 #pragma once
 #include <array>
@@ -20,12 +20,13 @@
 namespace doa4::np::wire {
 
 inline constexpr uint32_t kMagic = 0x34414F44u;  // the bytes 'D' 'O' 'A' '4' on the wire
-inline constexpr uint8_t kProto = 1;             // bumped by any incompatible change
+inline constexpr uint8_t kProto = 2;             // bumped by any incompatible change (2: Hello and Welcome gained suits)
 inline constexpr size_t kHeaderBytes = 12;       // u32 magic, u8 proto, u8 type, u16 body bytes, u32 token
 inline constexpr size_t kMaxDatagram = 1400;     // header + body; never sent larger, dropped larger
 inline constexpr size_t kChunkBytes = 1200;      // payload of one reliable chunk
 inline constexpr unsigned kMaxChunks = 255;      // so a reliable message is at most 306,000 bytes
 inline constexpr size_t kMaxText = 200;          // any text field
+inline constexpr size_t kMaxSuitsText = 64;      // Hello::suits, Welcome::suits (a SHA-1 in hex is 40)
 
 enum class Type : uint8_t {
   kHello = 1, kWelcome = 2, kPing = 3, kPong = 4, kChunk = 5, kAck = 6,
@@ -57,6 +58,8 @@ struct Hello {  // joiner -> host (lobby), and both ways in a session process
   uint8_t delay_auto = 1;
   uint8_t delay_frames = 2;    // the manual value (1..8)
   uint32_t session_token = 0;  // 0 in the lobby; the hand-off's token in a session process
+  std::string suits;           // the import's checksum text (suits::ImportChecksum), "" without an import; in a session
+                               // process "", like files. A difference is never a refusal (rules::SuitSessionOf).
 };
 struct Welcome {  // host -> joiner
   Refusal refusal = Refusal::kNone;
@@ -64,6 +67,7 @@ struct Welcome {  // host -> joiner
   std::string release;
   std::string text;            // the host's reason (shown when the joiner cannot compose its own advice)
   uint32_t session_token = 0;  // the random token every later packet carries (0 when refused)
+  std::string suits;           // the host's import checksum, so the joiner's lobby can say which case it is in ("" when refused)
 };
 struct Ping { uint32_t t_ms = 0; };  // kPing and kPong carry the same body
 struct Chunk {  // wire: u32 msg_id, u8 msg_type, u8 count, u8 index, u8 0, u16 payload length, payload

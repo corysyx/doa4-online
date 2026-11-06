@@ -16,11 +16,11 @@
 namespace doa4::np::handoff {
 namespace {
 
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;
 constexpr char kMagic[4] = {'D', '4', 'H', 'O'};
 // Everything but the release text, the guest settings text and the files: magic 4, version 2, build 8, release
-// length 2, role 1, delay 1, local port 2, peer ip 4, peer port 2, token 4, seed 8, guest length 4, file count 4.
-constexpr size_t kFixedBytes = 46;
+// length 2, role 1, delay 1, local port 2, peer ip 4, peer port 2, token 4, seed 8, suit state 1, guest length 4, file count 4.
+constexpr size_t kFixedBytes = 47;
 constexpr uint8_t kMinDelay = 1;
 constexpr uint8_t kMaxDelay = 8;
 
@@ -47,6 +47,10 @@ constexpr const char* kSdkSettings[] = {
     // guest audio callbacks
     "audio_maxqframes",
 };
+
+// The port's own carried settings beyond the tweaks. doa4_suits_full_bust: its rescale writes guest memory, so both players run
+// one value; a player's toggle cannot end a match, because the host's value is what runs and the tab is locked in a session.
+constexpr const char* kPortSettings[] = {"doa4_suits_full_bust"};
 
 // The TRUST class: carried settings whose NON-DEFAULT value weakens a boundary of the PC that applies it (the census
 // table in the Task 4 report says why for each). They are forced to their default on both sides of a session:
@@ -205,6 +209,7 @@ const char* FileCollision(const std::vector<File>& files) {
 
 bool RoleOk(uint8_t role) { return role == uint8_t(Role::kHost) || role == uint8_t(Role::kJoiner); }
 bool DelayOk(uint8_t delay) { return delay >= kMinDelay && delay <= kMaxDelay; }
+bool SuitStateOk(uint8_t state) { return state <= uint8_t(rules::SuitSession::kMixed); }
 
 size_t PackedSize(const Handoff& h) {
   size_t n = kFixedBytes + h.release.size() + h.guest_settings.size();
@@ -241,6 +246,7 @@ const Registry& Reg() {
     Registry r;
     r.names.assign(std::begin(kSdkSettings), std::end(kSdkSettings));
     for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) r.names.push_back(t.cvar);
+    r.names.insert(r.names.end(), std::begin(kPortSettings), std::end(kPortSettings));
     r.trusted.resize(r.names.size());
     for (const TrustedDefault& t : kTrusted) {
       const auto it = std::find(r.names.begin(), r.names.end(), t.name);
@@ -291,7 +297,7 @@ std::string ParseSettings(std::string_view text, std::vector<std::optional<std::
 
 // True if Pack may write `h`: every limit and range Unpack enforces.
 bool Packable(const Handoff& h) {
-  if (!RoleOk(uint8_t(h.role)) || !DelayOk(h.delay) || h.session_token == 0) return false;
+  if (!RoleOk(uint8_t(h.role)) || !DelayOk(h.delay) || !SuitStateOk(uint8_t(h.suit_state)) || h.session_token == 0) return false;
   if (h.local_port == 0 || h.peer.port == 0 || !PeerAddressOk(h.peer.ip)) return false;
   if (h.release.size() > kMaxReleaseBytes || h.guest_settings.size() > kMaxGuestBytes) return false;
   if (!PrintableAscii(h.release)) return false;
@@ -344,6 +350,7 @@ std::vector<uint8_t> Pack(const Handoff& h) {
   w.U16(h.peer.port);
   w.U32(h.session_token);
   w.U64(h.seed);
+  w.U8(uint8_t(h.suit_state));
   w.U32(uint32_t(h.guest_settings.size()));
   w.Text(h.guest_settings);
   w.U32(uint32_t(h.files.size()));
@@ -396,6 +403,10 @@ std::string Unpack(std::span<const uint8_t> bytes, Handoff* out) {
   if (!r.U32(&h.session_token)) return kCut;
   if (h.session_token == 0) return "a zero session token";
   if (!r.U64(&h.seed)) return kCut;
+  uint8_t suit_state = 0;
+  if (!r.U8(&suit_state)) return kCut;
+  if (!SuitStateOk(suit_state)) return "an unknown swimsuit state";
+  h.suit_state = rules::SuitSession(suit_state);
 
   uint32_t guest_len = 0;
   if (!r.U32(&guest_len)) return kCut;

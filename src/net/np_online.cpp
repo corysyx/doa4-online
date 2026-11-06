@@ -277,6 +277,7 @@ struct Lobby::Impl {
   rules::Endpoint peer;
   uint32_t token = 0;
   std::string peer_release;
+  std::string peer_suits;  // the other player's import checksum (its Hello or Welcome); compared, never shown
   uint32_t peer_last_rx = 0;
   // joiner
   rules::Endpoint target;
@@ -400,7 +401,7 @@ struct Lobby::Impl {
   void SendPeer(wire::Type type, const std::vector<uint8_t>& body) { SendTo(peer, type, token, body); }
   bool ReplyWelcome(const rules::Endpoint& to, wire::Welcome w, size_t trigger_bytes, uint32_t now, bool stranger);
   wire::Hello OwnHello(uint32_t session_token) const;
-  void Connected(const rules::Endpoint& from, uint32_t tok, const std::string& release, uint32_t now);
+  void Connected(const rules::Endpoint& from, uint32_t tok, const std::string& release, const std::string& suits, uint32_t now);
 
   void OnPacket(const rules::Endpoint& from, const wire::Packet& pk);
   void OnForeign(const rules::Endpoint& from, uint8_t proto, uint8_t type, size_t bytes);
@@ -470,6 +471,11 @@ Status Lobby::Impl::SnapshotLocked() const {
   s.upnp = cfg.upnp ? (upnp_started ? upnp::Get().message : "UPnP: not asked yet") : "UPnP off";
   s.session_refused = session_refused;
   s.refusal = refusal;
+  if (session) {
+    s.suits_text = rules::SuitStatusText(sh.suit_state);
+  } else if (has_peer && (state == State::kConnected || state == State::kStarting || state == State::kRestarting)) {
+    s.suits_text = rules::SuitStatusText(p.suits, peer_suits);
+  }
   for (size_t r = 0; r < s.drops.size(); ++r) {
     s.drops[r] = ts.dropped[r] + drops[r];
     s.dropped += s.drops[r];
@@ -516,6 +522,7 @@ void Lobby::Impl::WriteStatus(uint32_t now) {
                            "\ncan_start=" + (s.can_start ? "1" : "0") + "\nevent=" + Sanitize(s.event, 1000) +
                            "\ncode=" + Sanitize(s.my_code, 64) + "\nnat=" + NatKey(s.nat) +  // Task 15 close-out (b)
                            "\nupdate=" + Sanitize(p.updater.message ? p.updater.message() : "", 1000) +  // plan 1b Task 4
+                           "\nsuits=" + s.suits_text +  // Task 5
                            "\nrefusal=" + s.refusal + "\n";
   status_dirty = false;
   status_last = now;
@@ -615,6 +622,7 @@ void Lobby::Impl::GoOffline() {
   peer_confirmed = false;
   token = 0;
   peer_release.clear();
+  peer_suits.clear();
   punching = false;
   booting = false;
   tx.Reset();
@@ -654,6 +662,7 @@ wire::Hello Lobby::Impl::OwnHello(uint32_t session_token) const {
   h.build = Build();
   h.release = Sanitize(p.release);
   h.files = session ? "" : files_text;
+  h.suits = session ? "" : p.suits;
   h.delay_auto = delay_auto ? 1 : 0;
   h.delay_frames = uint8_t(std::clamp(delay_manual, 1, 8));
   h.session_token = session_token;
@@ -667,7 +676,7 @@ wire::Hello Lobby::Impl::OwnHello(uint32_t session_token) const {
 bool Lobby::Impl::ReplyWelcome(const rules::Endpoint& to, wire::Welcome w, size_t trigger_bytes, uint32_t now, bool stranger) {
   w.release = Sanitize(w.release);
   w.text = Sanitize(w.text);
-  const size_t fixed = wire::kHeaderBytes + 1 + 8 + 2 + w.release.size() + 2 + 4;
+  const size_t fixed = wire::kHeaderBytes + 1 + 8 + 2 + w.release.size() + 2 + 4 + 2 + w.suits.size();
   if (fixed > trigger_bytes) return false;
   if (w.text.size() > trigger_bytes - fixed) w.text.resize(trigger_bytes - fixed);
   if (stranger) {
@@ -679,12 +688,13 @@ bool Lobby::Impl::ReplyWelcome(const rules::Endpoint& to, wire::Welcome w, size_
   return true;
 }
 
-void Lobby::Impl::Connected(const rules::Endpoint& from, uint32_t tok, const std::string& release, uint32_t now) {
+void Lobby::Impl::Connected(const rules::Endpoint& from, uint32_t tok, const std::string& release, const std::string& suits, uint32_t now) {
   has_peer = true;
   peer_confirmed = false;  // R2-I3: tentative until its first authenticated Pong
   peer = from;  // carry 2c: the address the socket saw, never the code typed
   token = tok;
   peer_release = Sanitize(release);
+  peer_suits = suits;
   peer_last_rx = now;
   rtt = 0;
   rtt_n = 0;
@@ -929,6 +939,7 @@ void Lobby::Impl::HandleHello(const rules::Endpoint& from, const wire::Packet& p
   if (has_peer && from == peer) {  // the joiner did not get the Welcome: the same one again
     if (state != State::kConnected) return;
     w.session_token = token;
+    w.suits = p.suits;
     ReplyWelcome(from, w, pk.body.size() + wire::kHeaderBytes, now, false);
     return;
   }
@@ -942,8 +953,9 @@ void Lobby::Impl::HandleHello(const rules::Endpoint& from, const wire::Packet& p
     if (tentative)
       Log("[doa4][NET] a valid Hello from " + rules::EndpointText(from) + " replaces the tentative peer " + rules::EndpointText(peer) +
           " (it never answered a ping)");
-    Connected(from, RandomToken(), hl.release, now);
+    Connected(from, RandomToken(), hl.release, hl.suits, now);
     w.session_token = token;
+    w.suits = p.suits;
     Log("[doa4][NET] joiner connected: release " + peer_release + ", delay preference " +
         (hl.delay_auto ? std::string("auto") : std::to_string(std::clamp(int(hl.delay_frames), 1, 8))));  // carry 2a: clamped
     ReplyWelcome(from, w, trigger, now, false);
@@ -986,7 +998,7 @@ void Lobby::Impl::HandleWelcome(const rules::Endpoint& from, const wire::Packet&
       Drop(wire::Drop::kBody);
       return;
     }
-    Connected(from, w.session_token, w.release, now);
+    Connected(from, w.session_token, w.release, w.suits, now);
     return;
   }
   std::string text;
@@ -1113,6 +1125,7 @@ void Lobby::Impl::StartSessionNow(uint32_t now) {
   h.session_token = RandomToken();
   uint64_t seed = 0;
   h.seed = ParseU64(Test("DOA4_NP_SEED"), &seed) ? seed : Random64();
+  h.suit_state = rules::SuitSessionOf(p.suits, peer_suits);
   h.guest_settings = guest;
   h.files = std::move(files);
   const std::vector<uint8_t> bytes = handoff::Pack(h);
@@ -1132,7 +1145,7 @@ void Lobby::Impl::StartSessionNow(uint32_t now) {
   boot_t0 = now;
   state = State::kStarting;
   Log("[doa4][NET] session start sent: " + std::to_string(bytes.size()) + " bytes, " + std::to_string(boot.files.size()) +
-      " save files, delay " + std::to_string(boot.delay));
+      " save files, delay " + std::to_string(boot.delay) + ", swimsuits " + rules::SuitSessionName(boot.suit_state));
   SetEvent("Starting the online session (" + std::to_string(boot.files.size()) + " save files): both games restart...");
 }
 

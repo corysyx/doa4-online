@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -22,6 +23,7 @@
 
 #include "../../src/doa4_costumes.h"
 #include "../../src/doa4_gamefiles.h"
+#include "../../src/doa4_suits_picks.h"
 #include "../../src/doa4_utf8.h"
 #include "doa4_costume_fixtures.h"
 
@@ -1529,6 +1531,216 @@ static void TestRealGameFolder() {
   }
 }
 
+// ---- Task 5: the compiled picks, what makes two imports the same, and the files this PC holds ----
+
+// "" when `suits` (a manifest's, in its order) name the compiled table: every field but the file sizes and hashes.
+static std::string DifferenceFromPicks(const std::vector<Suit>& suits) {
+  const std::vector<Suit> picks = PickSuits();
+  if (suits.size() != picks.size()) return "count " + std::to_string(suits.size());
+  for (size_t i = 0; i < picks.size(); ++i) {
+    const Suit& a = suits[i];
+    const Suit& p = picks[i];
+    const std::string at = "line " + std::to_string(i) + " (" + a.Label() + "): ";
+    if (a.character != p.character) return at + "character";
+    if (a.own_model != p.own_model) return at + "own_model";
+    if (a.body_tpr != p.body_tpr || a.body_cat != p.body_cat) return at + "body";
+    if (a.part_tpr != p.part_tpr || a.part_cat != p.part_cat) return at + "part";
+    if (a.design != p.design) return at + "design";
+    if (a.colour != p.colour) return at + "colour";
+    if (a.tpr.name != p.tpr.name || a.cat.name != p.cat.name) return at + "file name";
+  }
+  return "";
+}
+
+static void TestPicksTable() {
+  const std::vector<Suit> picks = PickSuits();
+  CHECK(picks.size() == 34);
+  // A real manifest's rules hold for the table: ParseManifest refuses a repeated file, placeholder or label.
+  Manifest m;
+  m.converter = "picks";
+  for (Suit s : picks) {
+    s.tpr.size = 1;
+    s.tpr.sha1 = std::string(40, 'a');
+    s.cat.size = 1;
+    s.cat.sha1 = std::string(40, 'b');
+    m.suits.push_back(s);
+  }
+  const ParseResult parsed = ParseManifest(FormatManifest(m));
+  CHECK(parsed.manifest.has_value());
+  if (parsed.manifest) CHECK(DifferenceFromPicks(parsed.manifest->suits).empty());
+  // Nothing is claimed about a file the table does not know.
+  for (const Suit& s : picks) CHECK(s.tpr.size == 0 && s.cat.size == 0 && s.tpr.sha1.empty() && s.cat.sha1.empty());
+  // The fixture list above (kPicks, from picks.json's slot strings) agrees on the body pairs.
+  std::map<std::pair<uint16_t, uint16_t>, int> slots;
+  for (const Pick& p : kPicks) ++slots[{p.tpr, p.cat}];
+  size_t found = 0;
+  for (const Suit& s : picks) found += slots.count({s.body_tpr, s.body_cat});
+  CHECK(found == 34);
+  // Per girl, as the catalogue has them.
+  std::map<int, int> per;
+  for (const Suit& s : picks) ++per[s.character];
+  CHECK(per[5] == 4 && per[13] == 3 && per[21] == 4 && per[10] == 4 && per[7] == 4 && per[15] == 3 && per[20] == 4 && per[12] == 4 &&
+        per[1] == 4);
+  // Pinned for a run with no real manifest: the SHA-1 of the table's own lines, derived by a script from the real manifest
+  // (imports/all34_r18/manifest.txt: each line's first nine words, its file names, size 0, no hash), not from this table.
+  std::string lines;
+  for (const Suit& s : picks) lines += FormatSuitLine(s);
+  CHECK(doa4::gamefiles::Sha1Hex(lines.data(), lines.size()) == "a2eff1921139fa78fb21f38a0e40b40efb2e1289");
+  // The instrument can see each field: one change each, every one named.
+  const std::vector<Suit> base = picks;
+  CHECK(DifferenceFromPicks(base).empty());
+  const auto seen = [&](auto&& change) {
+    std::vector<Suit> v = base;
+    change(v[2]);
+    return !DifferenceFromPicks(v).empty();
+  };
+  CHECK(seen([](Suit& s) { s.character = 6; }));
+  CHECK(seen([](Suit& s) { s.own_model = 9; }));
+  CHECK(seen([](Suit& s) { s.body_tpr = 1; }));
+  CHECK(seen([](Suit& s) { s.body_cat = 1; }));
+  CHECK(seen([](Suit& s) { s.part_tpr = 1; }));
+  CHECK(seen([](Suit& s) { s.part_cat = 1; }));
+  CHECK(seen([](Suit& s) { s.design = "x"; }));
+  CHECK(seen([](Suit& s) { s.colour = 1; }));
+  CHECK(seen([](Suit& s) { s.tpr.name = "x"; }));
+  CHECK(seen([](Suit& s) { s.cat.name = "x"; }));
+}
+
+// Env-gated, as the disc's checks are: DOA4_SUITS_MANIFEST_REAL=<a real import's manifest.txt>.
+static void TestPicksAgainstRealManifest() {
+  const char* path = std::getenv("DOA4_SUITS_MANIFEST_REAL");
+  if (!path) {
+    std::printf("real manifest: SKIPPED (DOA4_SUITS_MANIFEST_REAL unset)\n");
+    return;
+  }
+  const std::vector<uint8_t> bytes = ReadAll(path);
+  const std::string text(bytes.begin(), bytes.end());
+  const ParseResult parsed = ParseManifest(text);
+  CHECK(parsed.manifest.has_value());
+  if (!parsed.manifest) return;
+  const std::string diff = DifferenceFromPicks(parsed.manifest->suits);
+  if (!diff.empty()) std::printf("the manifest differs from the picks: %s\n", diff.c_str());
+  CHECK(diff.empty());
+  std::printf("real manifest: %zu suits compared with the picks\n", parsed.manifest->suits.size());
+}
+
+// A real manifest line for pick `i`, with these file contents.
+static Suit PickWithFiles(size_t i, const std::vector<uint8_t>& tpr, const std::vector<uint8_t>& cat) {
+  Suit s = PickSuits()[i];
+  s.tpr.size = tpr.size();
+  s.tpr.sha1 = Sha(tpr);
+  s.cat.size = cat.size();
+  s.cat.sha1 = Sha(cat);
+  return s;
+}
+
+static ImportStatus StatusOf(std::vector<Suit> suits) {
+  ImportStatus st;
+  st.folder = true;
+  for (Suit& s : suits) st.suits.push_back({std::move(s), nullptr, nullptr});
+  return st;
+}
+
+static void TestImportChecksum() {
+  const std::vector<uint8_t> a = Content(1, 64), b = Content(2, 64), c = Content(3, 64);
+  const Suit s0 = PickWithFiles(0, a, b), s1 = PickWithFiles(1, a, c), s2 = PickWithFiles(2, b, c);
+  const std::string whole = ImportChecksum(StatusOf({s0, s1, s2}));
+  CHECK(whole.size() == 40);
+  CHECK(ImportChecksum(StatusOf({})).empty());  // no import is the empty text SuitSessionOf reads as none
+  // The same: the line order and the converter are not part of it (the session's order comes from the picks).
+  CHECK(ImportChecksum(StatusOf({s2, s0, s1})) == whole);
+  // Not the same: any suit's bytes, or a suit this PC could not load (the spec: a changed or missing file counts as a different import).
+  CHECK(ImportChecksum(StatusOf({s0, s1})) != whole);
+  Suit other = s2;
+  other.cat.sha1 = std::string(40, 'f');
+  CHECK(ImportChecksum(StatusOf({s0, s1, other})) != whole);
+  other = s2;
+  other.tpr.size += 1;
+  CHECK(ImportChecksum(StatusOf({s0, s1, other})) != whole);
+  // Its input is the suit lines, whatever else the manifest holds: a suit the picks do not list is not in a session, so not in the hash.
+  Suit stranger = s2;
+  stranger.design = "vzz_xx_x";
+  CHECK(!IsPick(stranger));
+  CHECK(ImportChecksum(StatusOf({s0, s1, s2, stranger})) == whole);
+  CHECK(ImportChecksum(StatusOf({stranger})).empty());
+  // The right label on other numbers is not that pick either.
+  for (const auto& change : std::vector<std::function<void(Suit&)>>{[](Suit& s) { s.own_model = 3; }, [](Suit& s) { s.body_tpr = 5; },
+                                                                    [](Suit& s) { s.body_cat = 5; }, [](Suit& s) { s.part_tpr = 5; },
+                                                                    [](Suit& s) { s.part_cat = 5; }, [](Suit& s) { s.character = 6; },
+                                                                    [](Suit& s) { s.colour = 3; }}) {
+    Suit bent = s0;
+    change(bent);
+    CHECK(!IsPick(bent));
+  }
+  CHECK(IsPick(s0));
+  CHECK(IsPick(s2));
+}
+
+// A session: SessionFiles leaves the loaded suits that are picks; the tables come from the picks whatever this PC holds; a model
+// whose file this PC lacks is an empty slot to the guard, so the load request goes to her first costume.
+static void TestSessionFilesAndGuard() {
+  World w;  // every entry of the fake archives an empty slot
+  FakeGuest with_files, no_files;
+  const std::vector<uint8_t> a = Content(21, 4096), b = Content(22, 2048);
+  // the import: one real pick (Ayane's vay_on_k, append) and one suit the picks do not list
+  const size_t pick_index = 5;
+  Suit in_picks = PickWithFiles(pick_index, a, b);
+  CHECK(in_picks.design == "vay_on_k" && in_picks.character == 13 && in_picks.own_model == -1);
+  Manifest m;
+  m.converter = "t";
+  m.suits.push_back(in_picks);
+  Suit outsider = PickWithFiles(0, b, a);
+  outsider.design = "vzz_xx_x";
+  outsider.tpr.name = "vzz_xx_x_0.tpr";
+  outsider.cat.name = "vzz_xx_x_0.cat";
+  m.suits.push_back(outsider);
+  Write(w.import / in_picks.tpr.name, a);
+  Write(w.import / in_picks.cat.name, b);
+  Write(w.import / outsider.tpr.name, b);
+  Write(w.import / outsider.cat.name, a);
+  WriteText(w.import / "manifest.txt", FormatManifest(m));
+  ImportStatus s = LoadImport(w.import, w.game, with_files.guest);
+  CHECK(s.suits.size() == 2);
+  const std::vector<LoadedSuit> files = SessionFiles(s);
+  CHECK(files.size() == 1);
+  if (files.size() == 1) CHECK(files[0].suit.Label() == "vay_on_k c0");
+  s.suits = files;
+  std::string error;
+  const Overlays overlays = BuildOverlays(s, w.game, with_files.guest, &error);
+  CHECK(error.empty() && overlays.size() == 1);
+
+  const auto build = [](FakeGuest& g) {
+    uint32_t next_block = 0x40000000;
+    return doa4::costumes::Apply(
+        g.guest,
+        [&](uint32_t size) {
+          const uint32_t block = next_block;
+          next_block += (size + 31) / 32 * 32;
+          return block;
+        },
+        doa4::costumes::Fitting(g.guest, PickSuits(), nullptr));
+  };
+  const doa4::costumes::ApplyResult ra = build(with_files), rb = build(no_files);
+  CHECK(with_files.bytes == no_files.bytes);  // the tables, byte for byte, whatever each PC holds
+  CHECK(ra.applied.size() == 34 && rb.applied.size() == 34);
+
+  doa4::costumes::GuardState ga = ra.guard, gb = rb.guard;
+  CHECK(MarkEmptySlots(&ga, with_files.guest, w.game, overlays).empty());
+  CHECK(MarkEmptySlots(&gb, no_files.guest, w.game, {}).empty());
+  uint32_t ayane_model = 0xFF;
+  for (const auto& ap : ra.applied) {
+    if (ap.label == "vay_on_k c0") ayane_model = ap.model;
+  }
+  CHECK(ayane_model != 0xFF);
+  // The PC with the file loads the suit; the PC without sends that request to her first costume.
+  CHECK(!ga.empty_slot[13].contains(ayane_model));
+  CHECK(gb.empty_slot[13].contains(ayane_model));
+  const auto first = [](FakeGuest& g, uint32_t c) { return uint32_t(g.guest.Read(g.guest.ReadBe32(doa4::costumes::kListTable + 4 * c))); };
+  CHECK(doa4::costumes::DecideLoad(&ga, with_files.guest, 13, ayane_model).use == ayane_model);
+  CHECK(doa4::costumes::DecideLoad(&gb, no_files.guest, 13, ayane_model).use == first(no_files, 13));
+  CHECK(doa4::costumes::DecideLoad(&gb, no_files.guest, 13, ayane_model).rule == doa4::costumes::GuardRule::kEmptySlot);
+}
+
 int main() {
   // Unbuffered: a run that dies mid-way still shows the FAIL lines printed before it.
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1569,6 +1781,10 @@ int main() {
   TestMarkClearsOldMarks();
   TestMarkAppliedTables();
   TestRealGameFolder();
+  TestPicksTable();
+  TestPicksAgainstRealManifest();
+  TestImportChecksum();
+  TestSessionFilesAndGuard();
   std::printf("suits: %d checks run\n", g_checks);
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);

@@ -374,7 +374,7 @@ std::string MetaValue(std::string_view meta, std::string_view key) {
 
 std::string MetaMismatch(std::string_view recorded, std::string_view current) {
   std::string out;
-  for (std::string_view key : {"build", "data", "fixes", "serial", "sweep", "tweaks", "guest", "unlock"}) {
+  for (std::string_view key : {"build", "data", "fixes", "serial", "sweep", "tweaks", "guest", "unlock", "suits"}) {
     const std::string a = MetaValue(recorded, key), b = MetaValue(current, key);
     // (a value "unreadable" - the build or the game data could not be hashed - agrees with nothing)
     if (a != b || a == "unreadable") out += (out.empty() ? "" : "; ") + std::string(key) + " " + a + " vs " + b;

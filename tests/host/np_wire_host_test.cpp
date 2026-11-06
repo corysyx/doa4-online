@@ -44,7 +44,7 @@ static void Group(const char* name) {
 // The values the brief fixes, pinned here from the brief and not read back from the header.
 static_assert(kHeaderBytes == 12 && kMaxDatagram == 1400 && kChunkBytes == 1200 && kMaxChunks == 255 && kMaxText == 200);
 static_assert(kMaxChunks * kChunkBytes == 306000);
-static_assert(kMagic == 0x34414F44u && kProto == 1 && kMsgBoot == 1);
+static_assert(kMagic == 0x34414F44u && kProto == 2 && kMsgBoot == 1 && kMaxSuitsText == 64);
 
 // ---- helpers (independent of the code under test) ----
 
@@ -108,12 +108,14 @@ static Hello MakeHello() {
   h.delay_auto = 0;
   h.delay_frames = 3;
   h.session_token = 0xAABBCCDDu;
+  h.suits = "abc";
   return h;
 }
 static Hello BigHello() {
   Hello h = MakeHello();
   h.release = TextOf(200, 3);
   h.files = TextOf(1000, 11);
+  h.suits = TextOf(64, 13);
   return h;
 }
 static Welcome MakeWelcome() {
@@ -123,6 +125,7 @@ static Welcome MakeWelcome() {
   w.release = "r1";
   w.text = "no";
   w.session_token = 0x0A0B0C0Du;
+  w.suits = "wxyz";
   return w;
 }
 static Welcome BigWelcome() {
@@ -158,11 +161,11 @@ static Ack MakeAck() {
 
 static bool Same(const Hello& a, const Hello& b) {
   return a.build == b.build && a.release == b.release && a.files == b.files && a.delay_auto == b.delay_auto &&
-         a.delay_frames == b.delay_frames && a.session_token == b.session_token;
+         a.delay_frames == b.delay_frames && a.session_token == b.session_token && a.suits == b.suits;
 }
 static bool Same(const Welcome& a, const Welcome& b) {
   return a.refusal == b.refusal && a.build == b.build && a.release == b.release && a.text == b.text &&
-         a.session_token == b.session_token;
+         a.session_token == b.session_token && a.suits == b.suits;
 }
 static bool Same(const Ping& a, const Ping& b) { return a.t_ms == b.t_ms; }
 static bool Same(const Ack& a, const Ack& b) { return a.msg_id == b.msg_id && a.have == b.have; }
@@ -181,12 +184,12 @@ static int NonDefault(const Hello& h) {
   const Hello d;
   return int(h.build != d.build) + int(h.release != d.release) + int(h.files != d.files) +
          int(h.delay_auto != d.delay_auto) + int(h.delay_frames != d.delay_frames) +
-         int(h.session_token != d.session_token);
+         int(h.session_token != d.session_token) + int(h.suits != d.suits);
 }
 static int NonDefault(const Welcome& w) {
   const Welcome d;
   return int(w.refusal != d.refusal) + int(w.build != d.build) + int(w.release != d.release) + int(w.text != d.text) +
-         int(w.session_token != d.session_token);
+         int(w.session_token != d.session_token) + int(w.suits != d.suits);
 }
 static int NonDefault(const BootReply& r) {
   const BootReply d;
@@ -234,9 +237,9 @@ static void CheckPrefixesAndTail(const Bytes& body, const T& sentinel, Dec dec, 
 
 static void TestHeader() {
   Group("header.golden");
-  // Derived by hand: magic 0x34414F44 little-endian is 44 4F 41 34; proto 1; kPing = 3; length 0 (00 00);
+  // Derived by hand: magic 0x34414F44 little-endian is 44 4F 41 34; proto 2; kPing = 3; length 0 (00 00);
   // token 0x01020304 little-endian is 04 03 02 01.
-  const Bytes want = {0x44, 0x4F, 0x41, 0x34, 0x01, 0x03, 0x00, 0x00, 0x04, 0x03, 0x02, 0x01};
+  const Bytes want = {0x44, 0x4F, 0x41, 0x34, 0x02, 0x03, 0x00, 0x00, 0x04, 0x03, 0x02, 0x01};
   CHECK(Encode(Type::kPing, 0x01020304u, {}) == want);
   Packet p;
   p.token = 0xDEADBEEFu;
@@ -247,7 +250,7 @@ static void TestHeader() {
 
   Group("header.golden.body");
   const Bytes b3 = {1, 2, 3};
-  const Bytes want3 = {0x44, 0x4F, 0x41, 0x34, 0x01, 0x01, 0x03, 0x00, 0xDD, 0xCC, 0xBB, 0xAA, 0x01, 0x02, 0x03};
+  const Bytes want3 = {0x44, 0x4F, 0x41, 0x34, 0x02, 0x01, 0x03, 0x00, 0xDD, 0xCC, 0xBB, 0xAA, 0x01, 0x02, 0x03};
   CHECK(Encode(Type::kHello, 0xAABBCCDDu, S(b3)) == want3);
   Packet q;
   CHECK(Decode(want3, &q) == Drop::kNone);
@@ -257,7 +260,7 @@ static void TestHeader() {
 
   Group("header.types");
   for (unsigned t = 1; t <= 11; ++t) {  // both edges of the type range are inside: 1 and 11
-    const Bytes dg = Hand(1, t, 0, 5, {});
+    const Bytes dg = Hand(kProto, t, 0, 5, {});
     Packet pk;
     CHECK(Decode(dg, &pk) == Drop::kNone && unsigned(pk.type) == t);
     CHECK(Encode(Type(t), 5, {}) == dg);
@@ -266,7 +269,7 @@ static void TestHeader() {
 
 static void TestDrops() {
   Group("drop.short");
-  const Bytes good = Hand(1, 3, 4, 7, Bytes{1, 2, 3, 4});
+  const Bytes good = Hand(kProto, 3, 4, 7, Bytes{1, 2, 3, 4});
   Packet sentinel;
   sentinel.type = Type::kBye;
   sentinel.token = 0xDEADu;
@@ -280,7 +283,7 @@ static void TestDrops() {
   CHECK(Drops(good) == Drop::kNone);
   CHECK(Drops(Bytes(good.begin(), good.begin() + 11)) == Drop::kShort);  // 11 bytes: one under the header
   CHECK(Drops(Bytes{}) == Drop::kShort);
-  CHECK(Drops(Hand(1, 3, 0, 7, {})) == Drop::kNone);  // exactly 12 bytes is a whole header
+  CHECK(Drops(Hand(kProto, 3, 0, 7, {})) == Drop::kNone);  // exactly 12 bytes is a whole header
 
   Group("drop.magic");
   for (size_t i = 0; i < 4; ++i) {  // every byte of the magic is checked, not only the first
@@ -293,41 +296,41 @@ static void TestDrops() {
   CHECK(Drops(wrong_first) == Drop::kMagic);
 
   Group("drop.proto");
-  CHECK(Drops(Hand(2, 3, 4, 7, Bytes{1, 2, 3, 4})) == Drop::kProto);
+  CHECK(Drops(Hand(3, 3, 4, 7, Bytes{1, 2, 3, 4})) == Drop::kProto);
   CHECK(Drops(Hand(0, 3, 4, 7, Bytes{1, 2, 3, 4})) == Drop::kProto);    // below the current one
   CHECK(Drops(Hand(255, 3, 4, 7, Bytes{1, 2, 3, 4})) == Drop::kProto);
 
   Group("drop.type");
-  CHECK(Drops(Hand(1, 0, 0, 7, {})) == Drop::kType);
-  CHECK(Drops(Hand(1, 12, 0, 7, {})) == Drop::kType);   // 11 is the last type, 12 the first refused
-  CHECK(Drops(Hand(1, 255, 0, 7, {})) == Drop::kType);
+  CHECK(Drops(Hand(kProto, 0, 0, 7, {})) == Drop::kType);
+  CHECK(Drops(Hand(kProto, 12, 0, 7, {})) == Drop::kType);   // 11 is the last type, 12 the first refused
+  CHECK(Drops(Hand(kProto, 255, 0, 7, {})) == Drop::kType);
 
   Group("drop.length");
-  CHECK(Drops(Hand(1, 3, 5, 7, Bytes{1, 2, 3, 4})) == Drop::kLength);       // length field 5, 4 body bytes
-  CHECK(Drops(Hand(1, 3, 3, 7, Bytes{1, 2, 3, 4})) == Drop::kLength);       // a trailing byte past the stated length
-  CHECK(Drops(Hand(1, 3, 0xFFFF, 7, Bytes{1, 2, 3, 4})) == Drop::kLength);
-  CHECK(Drops(Hand(1, 3, 1, 7, {})) == Drop::kLength);                      // a body that is not there
+  CHECK(Drops(Hand(kProto, 3, 5, 7, Bytes{1, 2, 3, 4})) == Drop::kLength);       // length field 5, 4 body bytes
+  CHECK(Drops(Hand(kProto, 3, 3, 7, Bytes{1, 2, 3, 4})) == Drop::kLength);       // a trailing byte past the stated length
+  CHECK(Drops(Hand(kProto, 3, 0xFFFF, 7, Bytes{1, 2, 3, 4})) == Drop::kLength);
+  CHECK(Drops(Hand(kProto, 3, 1, 7, {})) == Drop::kLength);                      // a body that is not there
 
   Group("drop.toolarge");
   const Bytes body1388(1388, 0xAB), body1389(1389, 0xAB), body1488(1488, 0xAB);
-  CHECK(Drops(Hand(1, 3, 1388, 7, body1388)) == Drop::kNone);               // 1400 bytes: kMaxDatagram is allowed
-  CHECK(Drops(Hand(1, 3, 1389, 7, body1389)) == Drop::kTooLarge);           // 1401 bytes, otherwise a good packet
-  CHECK(Drops(Hand(1, 3, 1488, 7, body1488)) == Drop::kTooLarge);           // 1500 bytes
+  CHECK(Drops(Hand(kProto, 3, 1388, 7, body1388)) == Drop::kNone);               // 1400 bytes: kMaxDatagram is allowed
+  CHECK(Drops(Hand(kProto, 3, 1389, 7, body1389)) == Drop::kTooLarge);           // 1401 bytes, otherwise a good packet
+  CHECK(Drops(Hand(kProto, 3, 1488, 7, body1488)) == Drop::kTooLarge);           // 1500 bytes
 
   Group("drop.order");  // a datagram that is wrong in two ways reports the first of: short, too large, magic, proto, type, length
   Bytes short_bad_magic = good;
   short_bad_magic.resize(11);
   short_bad_magic[0] = 0x45;
   CHECK(Drops(short_bad_magic) == Drop::kShort);
-  Bytes big_bad_magic = Hand(1, 3, 1389, 7, body1389);
+  Bytes big_bad_magic = Hand(kProto, 3, 1389, 7, body1389);
   big_bad_magic[0] = 0x45;
   CHECK(Drops(big_bad_magic) == Drop::kTooLarge);
-  CHECK(Drops(Hand(1, 3, 5, 7, body1389)) == Drop::kTooLarge);              // too large and a wrong length field
-  Bytes magic_proto = Hand(2, 3, 4, 7, Bytes{1, 2, 3, 4});
+  CHECK(Drops(Hand(kProto, 3, 5, 7, body1389)) == Drop::kTooLarge);              // too large and a wrong length field
+  Bytes magic_proto = Hand(3, 3, 4, 7, Bytes{1, 2, 3, 4});
   magic_proto[1] = 0x00;
   CHECK(Drops(magic_proto) == Drop::kMagic);
-  CHECK(Drops(Hand(2, 12, 4, 7, Bytes{1, 2, 3, 4})) == Drop::kProto);       // wrong proto and wrong type
-  CHECK(Drops(Hand(1, 12, 5, 7, Bytes{1, 2, 3, 4})) == Drop::kType);        // wrong type and wrong length
+  CHECK(Drops(Hand(3, 12, 4, 7, Bytes{1, 2, 3, 4})) == Drop::kProto);       // wrong proto and wrong type
+  CHECK(Drops(Hand(kProto, 12, 5, 7, Bytes{1, 2, 3, 4})) == Drop::kType);        // wrong type and wrong length
 
   Group("drop.out-untouched");
   CHECK(out_untouched);  // every drop above left *out as the caller had it
@@ -377,23 +380,25 @@ static void ExpectRoundTrip(const T& m, const Bytes& body, bool (*dec)(std::span
 
 static void TestMessages() {
   Group("msg.golden");
-  // Hello: u64 build | text release | text files | u8 delay_auto | u8 delay_frames | u32 session_token.
+  // Hello: u64 build | text release | text files | u8 delay_auto | u8 delay_frames | u32 session_token | text suits.
   const Hello hello = MakeHello();
-  CHECK(NonDefault(hello) == 6);
+  CHECK(NonDefault(hello) == 7);
   const Bytes want_hello = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,              // build
                             0x03, 0x00, 0x64, 0x65, 0x76,                                  // "dev"
                             0x04, 0x00, 0x61, 0x3D, 0x31, 0x0A,                            // "a=1\n"
                             0x00, 0x03,                                                    // delay_auto 0, delay_frames 3
-                            0xDD, 0xCC, 0xBB, 0xAA};                                       // session_token
+                            0xDD, 0xCC, 0xBB, 0xAA,                                        // session_token
+                            0x03, 0x00, 0x61, 0x62, 0x63};                                 // suits "abc"
   CHECK(EncodeHello(hello) == want_hello);
-  // Welcome: u8 refusal | u64 build | text release | text text | u32 session_token.
+  // Welcome: u8 refusal | u64 build | text release | text text | u32 session_token | text suits.
   const Welcome welcome = MakeWelcome();
-  CHECK(NonDefault(welcome) == 5);
+  CHECK(NonDefault(welcome) == 6);
   const Bytes want_welcome = {0x02,                                                        // kBuild
                               0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,              // build
                               0x02, 0x00, 0x72, 0x31,                                      // "r1"
                               0x02, 0x00, 0x6E, 0x6F,                                      // "no"
-                              0x0D, 0x0C, 0x0B, 0x0A};                                     // session_token
+                              0x0D, 0x0C, 0x0B, 0x0A,                                      // session_token
+                              0x04, 0x00, 0x77, 0x78, 0x79, 0x7A};                         // suits "wxyz"
   CHECK(EncodeWelcome(welcome) == want_welcome);
   // kPing and kPong: u32 t_ms.
   CHECK(EncodePing(Ping{0x01020304u}) == (Bytes{0x04, 0x03, 0x02, 0x01}));
@@ -468,20 +473,67 @@ static void TestMessages() {
 
   Group("msg.roundtrip.max");
   const Hello big_hello = BigHello();
-  CHECK(NonDefault(big_hello) == 6 && big_hello.release.size() == 200 && big_hello.files.size() == 1000);
+  CHECK(NonDefault(big_hello) == 7 && big_hello.release.size() == 200 && big_hello.files.size() == 1000 && big_hello.suits.size() == 64);
   ExpectRoundTrip<Hello>(big_hello, EncodeHello(big_hello), &DecodeHello);
   const Welcome big_welcome = BigWelcome();
-  CHECK(NonDefault(big_welcome) == 5 && big_welcome.release.size() == 200 && big_welcome.text.size() == 200);
+  CHECK(NonDefault(big_welcome) == 6 && big_welcome.release.size() == 200 && big_welcome.text.size() == 200);
   ExpectRoundTrip<Welcome>(big_welcome, EncodeWelcome(big_welcome), &DecodeWelcome);
   const BootReply big_boot = BigBootReply();
   CHECK(big_boot.text.size() == 200);
   ExpectRoundTrip<BootReply>(big_boot, EncodeBootReply(big_boot), &DecodeBootReply);
-  // The largest Hello still fits one datagram: 12 header + 8 + (2 + 200) + (2 + 1000) + 1 + 1 + 4 = 1230.
+  // The largest Hello still fits one datagram: 12 header + 8 + (2 + 200) + (2 + 1000) + 1 + 1 + 4 + (2 + 64) = 1296.
   const Bytes big_dg = Encode(Type::kHello, 9, S(EncodeHello(big_hello)));
-  CHECK(big_dg.size() == 1230 && big_dg.size() <= kMaxDatagram);
+  CHECK(big_dg.size() == 1296 && big_dg.size() <= kMaxDatagram);
   Packet p;
   Hello back;
   CHECK(Decode(big_dg, &p) == Drop::kNone && DecodeHello(p.body, &back) && Same(back, big_hello));
+
+  Group("msg.suits");
+  {
+    // Task 5: the import checksum. Empty (no import) and non-empty both round-trip; it is the last field, with its own limit
+    // (64, not kMaxText: the static_assert in np_wire.cpp keeps the largest Hello inside one datagram).
+    Hello h = hello;
+    h.suits.clear();
+    ExpectRoundTrip<Hello>(h, EncodeHello(h), &DecodeHello);
+    h.suits = "0123456789abcdef0123456789abcdef01234567";  // a SHA-1 in hex, what a real import sends
+    ExpectRoundTrip<Hello>(h, EncodeHello(h), &DecodeHello);
+    Hello back2;
+    CHECK(DecodeHello(S(EncodeHello(h)), &back2) && back2.suits == h.suits);
+    h.suits = std::string(64, 's');
+    CHECK(!EncodeHello(h).empty());     // the accept edge
+    h.suits = std::string(65, 's');
+    CHECK(EncodeHello(h).empty());      // the reject edge
+    Welcome w = welcome;
+    w.suits.clear();
+    ExpectRoundTrip<Welcome>(w, EncodeWelcome(w), &DecodeWelcome);
+    w.suits = std::string(64, 's');
+    CHECK(!EncodeWelcome(w).empty());
+    w.suits = std::string(65, 's');
+    CHECK(EncodeWelcome(w).empty());
+    // by hand, so only the decoder's limit can refuse: a length of 65 with all 65 bytes there
+    Bld b;
+    b.U64(1).U16(0).U16(0).U8(1).U8(2).U32(0).U16(64).Fill(64, 's');
+    Hello d;
+    CHECK(DecodeHello(S(b.b), &d) && d.suits.size() == 64);
+    Bld over;
+    over.U64(1).U16(0).U16(0).U8(1).U8(2).U32(0).U16(65).Fill(65, 's');
+    CHECK(!DecodeHello(S(over.b), &d));
+    // the old layout (no suits field) is a cut packet here
+    Bld old;
+    old.U64(1).U16(0).U16(0).U8(1).U8(2).U32(0);
+    CHECK(!DecodeHello(S(old.b), &d));
+    // truncated: a suits text that announces more than is there
+    Bld cut;
+    cut.U64(1).U16(0).U16(0).U8(1).U8(2).U32(0).U16(4).Fill(3, 's');
+    CHECK(!DecodeHello(S(cut.b), &d));
+    Bld wover;
+    wover.U8(0).U64(1).U16(0).U16(0).U32(0).U16(65).Fill(65, 's');
+    Welcome wd;
+    CHECK(!DecodeWelcome(S(wover.b), &wd));
+    Bld wold;
+    wold.U8(0).U64(1).U16(0).U16(0).U32(0);
+    CHECK(!DecodeWelcome(S(wold.b), &wd));
+  }
 
   Group("msg.text.limit");
   {
@@ -528,12 +580,12 @@ static void TestMessages() {
     // site alone (to 1000, say) must turn that site's check red.
     auto HelloBody = [](size_t release_len, size_t files_len) {  // u64 build | text release | text files | u8 | u8 | u32
       Bld b;
-      b.U64(1).U16(unsigned(release_len)).Fill(release_len, 'r').U16(unsigned(files_len)).Fill(files_len, 'f').U8(1).U8(2).U32(0);
+      b.U64(1).U16(unsigned(release_len)).Fill(release_len, 'r').U16(unsigned(files_len)).Fill(files_len, 'f').U8(1).U8(2).U32(0).U16(0);
       return b.b;
     };
     auto WelcomeBody = [](size_t release_len, size_t text_len) {  // u8 refusal | u64 build | text release | text text | u32
       Bld b;
-      b.U8(0).U64(1).U16(unsigned(release_len)).Fill(release_len, 'r').U16(unsigned(text_len)).Fill(text_len, 't').U32(0);
+      b.U8(0).U64(1).U16(unsigned(release_len)).Fill(release_len, 'r').U16(unsigned(text_len)).Fill(text_len, 't').U32(0).U16(0);
       return b.b;
     };
     auto BootBody = [](size_t text_len) {  // u32 token | u8 ok | text
@@ -583,11 +635,11 @@ static void TestMessages() {
   Group("msg.decode.enum");
   {
     Bld b;  // a Welcome with refusal 6 (the last known is 5), otherwise good
-    b.U8(6).U64(1).U16(0).U16(0).U32(0);
+    b.U8(6).U64(1).U16(0).U16(0).U32(0).U16(0);
     Welcome w;
     CHECK(!DecodeWelcome(S(b.b), &w));
     Bld ok;
-    ok.U8(5).U64(1).U16(0).U16(0).U32(0);
+    ok.U8(5).U64(1).U16(0).U16(0).U32(0).U16(0);
     CHECK(DecodeWelcome(S(ok.b), &w) && w.refusal == Refusal::kSession);
     Bld l;  // a Leave with reason 4 (the last known is 3)
     l.U8(4).U32(0);
@@ -731,7 +783,7 @@ static void TestFuzz() {
     for (auto& b : d) b = rng.Byte();
     if (len >= 5 && (i % 4 == 0 || i % 16 == 1)) {
       d[0] = 0x44; d[1] = 0x4F; d[2] = 0x41; d[3] = 0x34;
-      if (i % 4 == 0) d[4] = 1;  // (i % 16 == 1 keeps the random proto byte)
+      if (i % 4 == 0) d[4] = kProto;  // (i % 16 == 1 keeps the random proto byte)
     }
     if (len >= kHeaderBytes && i % 8 == 0) {
       d[5] = uint8_t(1 + d[5] % 11);

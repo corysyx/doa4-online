@@ -132,6 +132,19 @@ std::string CheckSuit(const GuestBytes& g, const suits::Suit& s) {
   return {};
 }
 
+std::vector<suits::Suit> Fitting(const GuestBytes& g, const std::vector<suits::Suit>& suits, std::vector<std::string>* refused) {
+  std::vector<suits::Suit> out;
+  for (const suits::Suit& s : suits) {
+    const std::string why = CheckSuit(g, s);
+    if (why.empty()) {
+      out.push_back(s);
+    } else if (refused) {
+      refused->push_back(s.Label() + ": " + why);
+    }
+  }
+  return out;
+}
+
 ApplyResult Apply(const GuestBytes& g, const AllocFn& alloc, const std::vector<suits::Suit>& suits) {
   ApplyResult result;
   result.guard = ReadGuardState(g);
@@ -215,6 +228,33 @@ ApplyResult Apply(const GuestBytes& g, const AllocFn& alloc, const std::vector<s
     }
   }
   return result;
+}
+
+std::vector<uint8_t> TableBytes(const GuestBytes& g, const GuardState& state) {
+  std::vector<uint8_t> out;
+  const auto put32 = [&](uint32_t v) {
+    for (int i = 3; i >= 0; --i) out.push_back(uint8_t(v >> (8 * i)));
+  };
+  for (uint32_t c = 0; c < kCharCount; ++c) {
+    const uint32_t max = g.Read(kMaxTable + c), len = g.Read(kLenTable + c);
+    const uint32_t list = g.ReadBe32(kListTable + 4 * c), var = g.ReadBe32(kVarTable + 4 * c);
+    const uint32_t records = g.ReadBe32(kModelTable + 8 * c + 4);
+    out.push_back(uint8_t(max));
+    out.push_back(uint8_t(len));
+    put32(list);
+    put32(var);
+    put32(records);
+    if (IsCostumeTable(list)) {
+      for (uint32_t i = 0; i < len; ++i) out.push_back(g.Read(list + i));
+    }
+    if (IsCostumeTable(var)) {
+      for (uint32_t i = 0; i < max; ++i) out.push_back(g.Read(var + i));
+    }
+    if (records != 0) {
+      for (uint32_t i = 0; i < 8 * state.records[c]; ++i) out.push_back(g.Read(records + i));
+    }
+  }
+  return out;
 }
 
 uint8_t VisibleCount(uint8_t save_count, uint8_t list_length, bool has_suits) {

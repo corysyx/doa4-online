@@ -46,6 +46,8 @@
 // Pong; a newer valid Hello from another address replaces a tentative peer (logged), never a confirmed one (kBusy).
 // Input delay: the host decides it (auto from its ping, or its manual value) and carries it in the hand-off; the
 // joiner's Hello preference is only logged/displayed.
+// Swimsuits (Task 5): the joiner's Hello and the accepting Welcome carry each side's import checksum. A difference never
+// refuses: the host works out rules::SuitSessionOf at the session start and the hand-off carries it to both.
 // Effects: log lines, file writes (events.txt, status.txt, the hand-off) and the callbacks run on the I/O thread with
 // the mutex released, in the order they were decided (M-1).
 // UPnP: with net::Config::upnp, Host maps the port and so does StartInSession (the session process maps it again);
@@ -98,6 +100,9 @@ struct Status {
   // next event that is not a refusal (and so with a new Host or Join). A host's busy and kSession refusals set it
   // without changing the event line (the pair's own event stays). status.txt carries it as its last line, refusal=<kind>.
   std::string refusal = "none";
+  // Task 5: which swimsuit case the two sides are in (rules::SuitStatusText): with another player in the lobby, from both
+  // checksums; in a session process, from the hand-off's state. "" with nobody to compare with. status.txt: suits=.
+  std::string suits_text;
 };
 
 struct Providers {
@@ -108,6 +113,7 @@ struct Providers {
   std::function<std::string()> files;           // np_files Text of the game folder (may block on first use)
   std::function<std::string()> guest_settings;  // handoff::CaptureGuestSettings over rex::cvar
   std::function<std::vector<handoff::File>(std::string* error)> save_files;  // the host's save under kSavePrefix
+  std::string suits;                            // this side's import checksum (suits::ImportChecksum), "" without an import
   std::filesystem::path handoff_path;           // <user data>/netplay/handoff.d4h
   std::function<void()> restart_into_session;   // after the hand-off is written; posts to the UI thread
   std::filesystem::path events_path;            // <user data>/netplay/events.txt
