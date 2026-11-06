@@ -153,7 +153,8 @@ struct Raised {
   uint8_t of = 0;     // her costume maximum
 };
 // Raises one player's row (`row` = the row's address) for every girl with suits; returns the girls it changed.
-// Writes only the copy, never the save.
+// Writes only the copy, never the save. A count of 0 is a place the game did not fill (a player not in the match, a
+// charId outside the table; a save's count is 2 or more) and stays 0.
 std::vector<Raised> RaiseCountRow(const GuestBytes& guest, uint32_t row, const SuitCounts& suits);
 
 // Which rule of the load-request guard a request (character, model) meets, first match wins:

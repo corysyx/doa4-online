@@ -234,6 +234,7 @@ std::vector<Raised> RaiseCountRow(const GuestBytes& g, uint32_t row, const SuitC
   for (uint32_t c = 0; c < kCharCount; ++c) {
     if (suits[c] == 0) continue;
     const uint8_t save = g.Read(row + c);
+    if (save == 0) continue;  // the game did not fill this one (a save's count is 2 or more): not made up here
     const uint8_t of = g.Read(kMaxTable + c);
     const uint8_t shows = VisibleCount(save, of, true);
     if (shows == save) continue;

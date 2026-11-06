@@ -1104,6 +1104,13 @@ static void TestRaiseCountRow() {
   g.bytes[row + 10] = 12;
   CHECK(RaiseCountRow(g.guest, row, counts).empty());
   CHECK(g.Get(row + 10) == 12);
+  // A row the game did not fill (0): not made up. A girl the writer filled with 0 stays 0 as well.
+  FakeGuest unfilled;
+  std::vector<Suit> some = KokoroSuits();
+  const SuitCounts some_counts = CountSuits(Apply(unfilled.guest, unfilled.alloc, some).applied);
+  FillRows(unfilled, 0);
+  CHECK(RaiseCountRow(unfilled.guest, kCountCopy, some_counts).empty());
+  CHECK(unfilled.written.empty() && unfilled.Get(kCountCopy + 10) == 0);
   // No suits anywhere: nothing is raised whatever the maxima are (the import without a girl's suits, or none).
   FakeGuest none;
   FillRows(none, 2);
