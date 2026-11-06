@@ -635,7 +635,7 @@ class Pair:
     def tables_check(self, lines, host, joiner):
         """Task 6: the session's costume tables and label table, compared through each copy's digest lines in game.log. They can sit
         outside .data, where no dump or sweep sees them. A difference, or a digest on one side only, is a problem for every session
-        expect. No line on either side: a session without suit tables."""
+        expect. The game logs both in every session; no line on either side is a stand-in or an older build."""
         for what, pattern in SESSION_DIGESTS:
             digests = {}
             for s in (host, joiner):

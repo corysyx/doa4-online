@@ -3263,7 +3263,7 @@ def test_pair_tables_digest(root):
     check(code == 0 and "label table digest equal: aaaa" in out, f"np_pair, equal label digests: exit {code}\n{out}")
     code, out, runs = np_pair(root, "tl2", *same, "--env-host", "FAKE_ONLINE_LABELS=aaaa", "--env-joiner", "FAKE_ONLINE_LABELS=bbbb")
     check(code == 1 and "label table digests differ: host aaaa, joiner bbbb" in out, f"np_pair, label digests differ, tables equal: exit {code}\n{out}")
-    # a session with no suit tables logs none on either side: today's sessions pass, and the pair says so
+    # no digest line on either side (the stand-in; a real session always logs them, with no suits too): not a problem, and the pair says so
     code, out, runs = np_pair(root, "td4")
     check(code == 0 and "no costume tables digest on either side" in out, f"np_pair, no digest lines: exit {code}\n{out}")
     # fails the desync expect too, whose verdict is otherwise fine (the desync in the game's shape, as test_pair_frame0's)
