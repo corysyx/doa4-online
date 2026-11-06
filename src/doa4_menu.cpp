@@ -55,6 +55,19 @@ constexpr std::array<const char*, rex::input::kPadControlCount> kPadLabels = {
     "Back",  "Start", "L-stick click", "R-stick click", "D-pad up", "D-pad down", "D-pad left",
     "D-pad right"};
 
+// What each button does in the game's Type A layout, its first Button Config choice: the action bits of the preset
+// table at 0x821FA660 read through the button masks at 0x82E46B40 (sub_822F0098 ORs them per pressed button).
+constexpr std::array<std::array<const char*, 2>, 8> kButtonNotes = {{
+    {"A", "Throw (F+P)"},
+    {"B", "Kick"},
+    {"X", "Free/Hold"},
+    {"Y", "Punch"},
+    {"LB", "Taunt (F+P+K)"},
+    {"RB", "Tag Change"},
+    {"LT", "P+K"},
+    {"RT", "F+K"},
+}};
+
 struct KeyRow {
   const char* cvar;
   const char* label;
@@ -347,6 +360,21 @@ void MenuDialog::DrawAudioTab() {
 
 void MenuDialog::DrawControlsTab() {
   DrawPadSection();
+  ImGui::Spacing();
+  ImGui::SeparatorText("What the buttons do");
+  if (ImGui::BeginTable("button_notes", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+    ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+    ImGui::TableSetupColumn("Action");
+    for (const auto& note : kButtonNotes) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(note[0]);
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(note[1]);
+    }
+    ImGui::EndTable();
+  }
+  ImGui::TextDisabled("The game's Type A layout. Its Button Config (Options) can change these.");
   ImGui::Spacing();
   DrawKeyboardSection();
 }
