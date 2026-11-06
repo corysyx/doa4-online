@@ -3326,10 +3326,110 @@ def test_compare_mixed_session(root):
     check(code == 0, f"np_pair, mixed, the CRI pass counter differs: exit {code}\n{out}")
     code, out, runs = np_pair(root, "cm6", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_spin_steps")
     check(code == 0, f"np_pair, mixed, the spin counter differs: exit {code}\n{out}")
+    # The CRI pass and spin counters are forgiven up to the bound, measured (f_rematch, r_rematch: a split of 2, final values not equal; the
+    # others 1), and no further: the poked control fc_ko split by 11. Both sides of the line, and not by name alone.
+    for name in ("pr_cri_passes", "pr_spin_steps"):
+        code, out, runs = np_pair(root, f"cb2{name}", *mixed, "--env-joiner", f"FAKE_ONLINE_PROGRESS={name}", "--env-joiner", "FAKE_ONLINE_PROGRESS_BY=2")
+        check(code == 0, f"np_pair, mixed, {name} splits by 2, the bound: exit {code}\n{out}")
+        code, out, runs = np_pair(root, f"cb3{name}", *mixed, "--env-joiner", f"FAKE_ONLINE_PROGRESS={name}", "--env-joiner", "FAKE_ONLINE_PROGRESS_BY=3")
+        check(code == 1 and "np_compare failed" in out, f"np_pair, mixed, {name} splits by 3, past the bound: exit {code}\n{out}")
+        # np_pair cuts np_compare's text at 600 characters: the reason is read from np_compare itself
+        session = lambda who: os.path.join(runs, f"cb3{name}_{who}", "ctl", "session")
+        p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_compare.py"), session("host"), session("joiner"), "--allow-unchecked", "--blocks", "0", "--mixed-session"],
+                           capture_output=True, text=True)
+        check(p.returncode == 1 and f"{name} first differs at frame 9, splits by 3, a mixed session's bound is 2" in p.stdout,
+              f"np_compare, mixed, {name} splits by 3: exit {p.returncode}\n{p.stdout}{p.stderr}")
+        code, out, runs = np_pair(root, f"cb1{name}", "--env-joiner", f"FAKE_ONLINE_PROGRESS={name}")
+        check(code == 1 and "np_compare failed" in out, f"np_pair, not mixed, {name} splits by 1: exit {code}\n{out}")
+        # the measured split runs both ways: the host higher counts the same
+        code, out, runs = np_pair(root, f"cb4{name}", *mixed, "--env-host", f"FAKE_ONLINE_PROGRESS={name}", "--env-host", "FAKE_ONLINE_PROGRESS_BY=3")
+        check(code == 1 and "np_compare failed" in out, f"np_pair, mixed, {name} splits by 3 the other way: exit {code}\n{out}")
+        code, out, runs = np_pair(root, f"cb5{name}", *mixed, "--env-host", f"FAKE_ONLINE_PROGRESS={name}", "--env-host", "FAKE_ONLINE_PROGRESS_BY=2")
+        check(code == 0, f"np_pair, mixed, {name} splits by 2 the other way: exit {code}\n{out}")
+    # The file-work counters have no bound: a PC with a suit's files really does more of it
+    code, out, runs = np_pair(root, "cb9", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_loader_jobs", "--env-joiner", "FAKE_ONLINE_PROGRESS_BY=500")
+    check(code == 0, f"np_pair, mixed, a loader counter differs by 500: exit {code}\n{out}")
     code, out, runs = np_pair(root, "cm3", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_notify")
     check(code == 1 and "np_compare failed" in out, f"np_pair, mixed, another counter differs: exit {code}\n{out}")
     code, out, runs = np_pair(root, "cm4", *mixed, "--env-joiner", "FAKE_ONLINE_DIVERGE=4")
     check(code == 1 and "differ at frame" in out, f"np_pair, mixed, a digest row differs: exit {code}\n{out}")
+
+
+def test_pair_gate_open(root):
+    # A mixed session checks the side records only while the gate is open. A gate that never opened through a fight checked no fighter at
+    # all and looks clean: that fails the pair, on every expect. "A fight was on" must not come from the gate's own comparison.
+    def side(*pairs):
+        return tuple(x for s in ("--env-host", "--env-joiner") for k, v in pairs for x in (s, f"FAKE_ONLINE_{k}={v}"))
+    tables = side(("TABLES", "aa"), ("LABELS", "bb"))
+    mixed = side(("SUITS", "mixed")) + tables
+    fight = side(("FIGHT_STATES", 3))
+    shut = side(("GATE_OPEN", 0))
+    said = "the fight gate was open on 0 frames"
+
+    code, out, runs = np_pair(root, "go1", *mixed, *fight)
+    check(code == 0 and "host fight gate: open on" in out and "joiner fight gate: open on" in out, f"np_pair, mixed, a fight, the gate opened: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "go2", *mixed, *fight, *shut)
+    check(code == 1 and said in out and "fight state took 3 values" in out, f"np_pair, mixed, a fight, the gate shut, expect ok: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "go3", *mixed, *fight, "--env-joiner", "FAKE_ONLINE_GATE_OPEN=0")
+    check(code == 1 and "the joiner: " + said in out, f"np_pair, mixed, a fight, the joiner's gate alone shut: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "go4", *mixed, *fight, *side(("NO_GATE_LINE", 1)))
+    check(code == 1 and "wrote no fight gate line" in out, f"np_pair, mixed, no gate line: exit {code}\n{out}")
+
+    # Every expect. Each run is otherwise what its expect wants, so the gate is what fails it: the open twin shows that.
+    desync = ("--expect", "desync", *side(("END", "desync"), ("DESYNC_AT", 7)), "--env-host", "FAKE_ONLINE_QUIT_AT=8",
+              "--env-joiner", "FAKE_ONLINE_QUIT_AT=10", "--env-joiner", "FAKE_ONLINE_DIVERGE=8")
+    code, out, runs = np_pair(root, "gd1", *mixed, *fight, *desync)
+    check(code == 0 and "verdict desync" in out, f"np_pair, mixed, a fight, gate open, expect desync: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "gd2", *mixed, *fight, *shut, *desync)
+    check(code == 1 and said in out, f"np_pair, mixed, a fight, gate shut, expect desync: exit {code}\n{out}")
+    slow = side(("FRAME_MS", 100))
+    lost = ("--expect", "lost", "--kill-joiner-at-frame", "5", "--env-host", "FAKE_ONLINE_END=lost", *slow)
+    code, out, runs = np_pair(root, "gl1", *mixed, *fight, *lost, quit_at=200)
+    check(code == 0 and "verdict lost" in out, f"np_pair, mixed, a fight, gate open, expect lost: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "gl2", *mixed, *fight, *shut, *lost, quit_at=200)
+    check(code == 1 and "the host: " + said in out, f"np_pair, mixed, a fight, gate shut, expect lost: exit {code}\n{out}")
+    quit_ = ("--expect", "quit", "--quit-joiner-at-frame", "8", "--env-joiner", "FAKE_ONLINE_LEFT_AT=8", "--env-joiner", "FAKE_ONLINE_LEFT_DELAY_S=0.6",
+             "--env-host", "FAKE_ONLINE_PEER_LEFT_WATCH=1", *slow)
+    code, out, runs = np_pair(root, "gq1", *mixed, *fight, *quit_, quit_at=200)
+    check(code == 0 and "verdict quit" in out, f"np_pair, mixed, a fight, gate open, expect quit: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "gq2", *mixed, *fight, *shut, *quit_, quit_at=200)
+    check(code == 1 and said in out, f"np_pair, mixed, a fight, gate shut, expect quit: exit {code}\n{out}")
+
+    # No fight, nothing to say: menus (one state value), a session ended while the match was setting up (two)
+    code, out, runs = np_pair(root, "gn1", *mixed, *shut)
+    check(code == 0 and "host fight gate: open on 0 frames" in out, f"np_pair, mixed, no fight, gate shut: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "gn2", *mixed, *side(("FIGHT_STATES", 2)), *shut)
+    check(code == 0, f"np_pair, mixed, two state values, gate shut: exit {code}\n{out}")
+    # A session with no gated region is not judged
+    code, out, runs = np_pair(root, "gn3", *side(("SUITS", "same")), *tables, *side(("GATE_OPEN", 0)))
+    check(code == 0 and "fight gate" not in out, f"np_pair, same, gate count 0: exit {code}\n{out}")
+
+    # The fact that does not read the state byte: a fighter's life falling in the fields log, the state byte standing still (a fight the
+    # state handlers did not run). A reset to full, a life that never moves, and a fall on a record with +0 clear say nothing.
+    table, size = 0x83033B40, 0x138
+
+    def fields(name, lives, active=1, row_side=0):
+        path = os.path.join(root, name + ".d4f")
+        with open(path, "wb") as f:
+            f.write(b"D4NPFLD1" + struct.pack("<II", 1, 1) + struct.pack("<II", table, size))
+            for i, life in enumerate(lives):
+                row = bytearray(size)
+                at = 156 * row_side
+                row[at] = active
+                struct.pack_into(">H", row, at + 0x24, life)
+                f.write(struct.pack("<II", i, 0) + bytes(row))
+        return path
+    falling = fields("fall", [240, 240, 200, 200])
+    code, out, runs = np_pair(root, "gf1", *mixed, *shut, *side(("FIELDS_FROM", falling)))
+    check(code == 1 and said in out and "side 0's life fell at frame 2" in out, f"np_pair, mixed, life falls, gate shut: exit {code}\n{out}")
+    side1 = fields("fall1", [240, 200, 200], row_side=1)
+    code, out, runs = np_pair(root, "gf2", *mixed, *shut, *side(("FIELDS_FROM", side1)))
+    check(code == 1 and "side 1's life fell at frame 1" in out, f"np_pair, mixed, side 1's life falls, gate shut: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "gf3", *mixed, *side(("FIELDS_FROM", falling)))
+    check(code == 0, f"np_pair, mixed, life falls, gate open: exit {code}\n{out}")
+    for name, lives, active in (("flat", [240, 240, 240], 1), ("rise", [0, 0, 240], 1), ("idle", [240, 200, 200], 0)):
+        code, out, runs = np_pair(root, "gf" + name, *mixed, *shut, *side(("FIELDS_FROM", fields(name, lives, active))))
+        check(code == 0, f"np_pair, mixed, fields {name}, gate shut: exit {code}\n{out}")
 
 
 def test_pair_sweep_state(root):

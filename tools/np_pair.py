@@ -55,6 +55,7 @@ sys.path.insert(0, HERE)  # py -3 -I does not put the script's folder on the pat
 sys.dont_write_bytecode = True
 import np_compare  # noqa: E402
 import np_dumpdiff  # noqa: E402
+import np_fields  # noqa: E402
 import np_run  # noqa: E402
 
 CREATE_NO_WINDOW = 0x08000000
@@ -68,6 +69,7 @@ DUMP0 = os.path.join("dumps", "data_000000.bin")  # the frame-0 .data dump in a 
 TERMINAL = re.compile(r"^session ended at frame (\d+): (.*)$")
 SESSION_SWEEP = re.compile(r"^session on: online, \w+, sweep (\d+) blocks/frame")  # np_session.cpp StartOnline's last line
 SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)\s*$")  # np_session.cpp StartOnline's line
+SESSION_GATE = re.compile(r"^fight gate open on (\d+) frames\s*$")  # np_session.cpp, at the session's end
 # np_digest.h DigestRegions, pinned against the source by test_digest_regions_match_source; the two the hunting switch adds are left out.
 REGIONS_TODAY = ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr"]
 REGIONS_MIXED = ["netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_83420020", "mt_8321B198", "frame_ctr", "cache_flag", "fight_state", "side0", "side1"]
@@ -764,6 +766,42 @@ class Pair:
                 if os.path.isdir(d) and any(files or dirs for _, dirs, files in os.walk(d)):
                     self.problems.append(f"the refused {s.name} copy has files under ud/netplay/{sub}")
 
+    @staticmethod
+    def fight_seen(session_dir):
+        """What says a fight was on without asking the gate, or None. The fight_state digest row: lockstep hashes that byte every frame, and
+        three values means past "out of a match" and "setting up" (a session ended during the setup has two). The fields log, when the run
+        has one: a life falling, which holds even if the state byte never moved (a fight the state handlers did not run)."""
+        path = os.path.join(session_dir, "digest.d4d")
+        if os.path.exists(path):
+            regions, frames = np_compare.read_digest(path)
+            names = [r[0] for r in regions]
+            if "fight_state" in names:
+                at = names.index("fight_state")
+                values = len({row[at] for row in frames.values()})
+                if values >= 3:
+                    return f"the fight state took {values} values"
+        fall = np_fields.life_fall(os.path.join(session_dir, "fields.d4f"))
+        if fall:
+            return f"side {fall[0]}'s life fell at frame {fall[1]}"
+        return None
+
+    def gate_check(self, lines, host, joiner, state):
+        """A mixed session's side records count only while the gate is open: one that never opened through a fight has checked no fighter
+        and looks clean. Every expect comes through here. A copy that was ended hard wrote no terminal line, and so no gate line."""
+        if state != "mixed":
+            return
+        for s in (host, joiner):
+            found = [int(m.group(1)) for m in (SESSION_GATE.match(l) for l in s.np_log()) if m]
+            if not found:
+                if s.terminal() is not None:
+                    self.problems.append(f"the {s.name} ended a mixed session and wrote no fight gate line")
+                continue
+            lines.append(f"{s.name} fight gate: open on {found[0]} frames")
+            if found[0] == 0:
+                fact = self.fight_seen(s.session_dir())
+                if fact:
+                    self.problems.append(f"the {s.name}: the fight gate was open on 0 frames, and {fact}: no fighter was checked")
+
     def compare(self, host, joiner):
         """(exit code, output lines, first differing digest frame or None) of np_compare.py on the two session folders."""
         p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "np_compare.py"), host.session_dir(), joiner.session_dir(),
@@ -792,6 +830,7 @@ class Pair:
         self.mixed = state == "mixed"
         self.tables_check(lines, host, joiner, state)
         self.frame0_check(lines, host, joiner, fail=True, mixed=state == "mixed")
+        self.gate_check(lines, host, joiner, state)
         th, tj = host.terminal(), joiner.terminal()
         if expect == "lost":  # the joiner was ended hard: it writes no terminal line
             self.judge_lost(lines, host, joiner, th, tj)

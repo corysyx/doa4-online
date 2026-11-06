@@ -218,6 +218,7 @@ struct State {
   uint32_t mxcsr_logged = 0;
   double last_hook_end_us = 0;
   uint32_t away_logged = 0;
+  std::atomic<uint32_t> gate_open_frames{0};  // frames entered in a round, read at the session's end (np_pair: 0 through a fight fails a mixed pair)
   // the packet ring and the rx / tx silence watch (game thread)
   PacketNote ring[64];
   uint32_t ring_next = 0;
@@ -926,6 +927,7 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   if (at_hook) LogNetStats(s, "at the end");
   Log("session ended at frame " + std::to_string(f) + ": " + reason);
   Log("checksums handed to GekkoNet: " + std::to_string(handed));
+  Log("fight gate open on " + std::to_string(s.gate_open_frames.load()) + " frames");
   Event(s, UnixMs(), "session ended at frame " + std::to_string(f) + ": " + reason);
   if (r.end == live::End::kDesync) Log("desync: " + r.why + " (a dump of .data was queued)");
   // the Leave to the peer (lobby channel, sent 3 times by the lobby); on a desync too (carry 2i: a lossy link can drop
@@ -1142,6 +1144,7 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   // (1) the state entering f, and its checksum
   const double h0 = Now(s);
   HashRows(s, base, f);
+  if (base[kFightState] == kFightRound) s.gate_open_frames.fetch_add(1);
   const uint32_t checksum = exec::FoldChecksum(int32_t(f), s.digest_row, s.sweep_row);
   const double h1 = Now(s);
   WriteFieldRow(s, base, f);
@@ -1877,6 +1880,7 @@ void Shutdown() {
       Log("session end: the game was closed");
       Log("session ended at frame " + std::to_string(f) + ": left");
       Log("checksums handed to GekkoNet: " + std::to_string(s.ex ? s.ex->saves_filled() : 0));
+      Log("fight gate open on " + std::to_string(s.gate_open_frames.load()) + " frames");
       Event(s, UnixMs(), "session ended at frame " + std::to_string(f) + ": left");
       if (s.live) s.live->Close();
       CloseFiles(s);

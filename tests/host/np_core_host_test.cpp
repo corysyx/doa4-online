@@ -1047,8 +1047,12 @@ static void TestFightGate() {
       "010c0000c121fe58bf31c0333e7e117e3f800000000096d6000096d6000096d60100000000f00000000000000000000000cb015bffff0003000000000200000000000001000003020200000000000000000100c100000000000000010000000000010000ff00000000000000000000000000000000000000");
   CHECK(select.size() == 0x78 && shift_a.size() == 0x78 && shift_b.size() == 0x78 && round.size() == 0x78);
   CHECK(select[0] == 1);  // the point of the capture: NOT closed by its active byte
+  // The point of this one: +0 set and life 240 say "a live fighter", the time-over shape. select and the shifts have life 0 here.
+  CHECK(round[0] == 1 && round[0x24] == 0 && round[0x25] == 240);
   // Closed: every state a run was seen in outside a round (r_lei, r_idle: 0 before and after a match, 1 setting up, 3 round over, 4, 5).
   for (const uint8_t state : {uint8_t(0), uint8_t(1), uint8_t(3), uint8_t(4), uint8_t(5)}) {
+    copy(round, state, &a);  // time ran out with both alive: the round is over and the record still looks like a round's
+    CHECK(a == std::vector<uint8_t>(0x78, 0));
     copy(select, state, &a);
     CHECK(a == std::vector<uint8_t>(0x78, 0));
     copy(shift_a, state, &a);

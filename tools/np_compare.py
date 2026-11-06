@@ -13,8 +13,9 @@ runs, with the first frame it differs at.
 sweeps hashed with different settings: not compared)
 --sweep-advisory (report sweep block differences without failing; nothing else is forgiven)
 --mixed-session (a session where each PC draws a fighter from its own files: the counters that follow file work, MIXED_PROGRESS, are
-reported without failing, because a PC with a suit's files loads more, on other frames; none is in the session's checksum. pr_reseeds,
-pr_notify and every fallback still count)
+reported without failing, because a PC with a suit's files loads more, on other frames; none is in the session's checksum. The CRI pass
+and spin counters, MIXED_BOUNDED, the same up to a split of MIXED_SPLIT_MAX on any frame, and they fail past it. pr_reseeds, pr_notify and
+every fallback still count)
 Exit status: 0 = both runs good, equal lengths, every compared frame equal, a sweep row and a
 counters row for every digest frame, no fallback, equal progress; 1 = otherwise; 2 = nothing to
 compare.
@@ -97,7 +98,12 @@ def final_progress(names, frames):
     return " ".join(f"{name}={last[i]}" for i, name in enumerate(names) if name.startswith("pr_"))
 
 
-MIXED_PROGRESS = ("pr_loader_jobs", "pr_cri_jobs", "pr_cri_passes", "pr_spin_steps")
+MIXED_PROGRESS = ("pr_loader_jobs", "pr_cri_jobs")
+# A determinism signal in any other session (np_det_middleware.cpp SpinRead), so forgiven only as far as measured: the largest split on any
+# frame of any mixed run is 2 (f_rematch, r_rematch: both signs, the final values NOT equal, so equal finals cannot be the rule; f_browse: 1).
+# The control fc_ko, a poked record, split by 11.
+MIXED_BOUNDED = ("pr_cri_passes", "pr_spin_steps")
+MIXED_SPLIT_MAX = 2
 
 
 def judge_counters(a, b, digest_a, digest_b, start, allow_unchecked, mixed=False):
@@ -128,16 +134,20 @@ def judge_counters(a, b, digest_a, digest_b, start, allow_unchecked, mixed=False
             problems.append("  the runs counted different things")
         else:
             common = sorted(f for f in frames_a if f in frames_b and f >= start)
-            first = {}
+            first, split = {}, {}
             for f in common:
                 for i, name in enumerate(names_a):
                     if name.startswith("pr_") and frames_a[f][i] != frames_b[f][i]:
                         first.setdefault(name, f)
-            forgiven = {name: f for name, f in first.items() if mixed and name in MIXED_PROGRESS}
+                        split[name] = max(split.get(name, 0), abs(frames_a[f][i] - frames_b[f][i]))
+            forgiven = {name: f for name, f in first.items()
+                        if mixed and (name in MIXED_PROGRESS or (name in MIXED_BOUNDED and split[name] <= MIXED_SPLIT_MAX))}
             first = {name: f for name, f in first.items() if name not in forgiven}
-            problems += [f"  {name} first differs at frame {f}" for name, f in sorted(first.items(), key=lambda kv: kv[1])]
+            for name, f in sorted(first.items(), key=lambda kv: kv[1]):
+                past = f", splits by {split[name]}, a mixed session's bound is {MIXED_SPLIT_MAX}" if mixed and name in MIXED_BOUNDED else ""
+                problems.append(f"  {name} first differs at frame {f}{past}")
             for name, f in sorted(forgiven.items(), key=lambda kv: kv[1]):
-                print(f"  {name} first differs at frame {f} (a mixed session: reported only)")
+                print(f"  {name} first differs at frame {f}, splits by {split[name]} (a mixed session: reported only)")
         print(f"counters: {len(common)} common frames; " +
               ("no fallbacks, progress equal" if not problems else f"{len(problems)} problems"))
     else:

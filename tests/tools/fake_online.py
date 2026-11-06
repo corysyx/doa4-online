@@ -50,7 +50,11 @@ Switches of the stand-in itself (FAKE_ONLINE_*, per copy, in its environment):
   LABELS=<hex>      the same for `session: label table digest <hex> (2448 bytes)`, as SetUpLabels does
   (SUITS also makes the digest's header the real one for that state; REGIONS=a,b replaces it)
   SWEEP=<n>         np_log's `session on: online, stand-in, sweep <n> blocks/frame`, in the real shape
-  PROGRESS=<name>   that progress counter 1 higher on this copy, in the last row
+  PROGRESS=<name>   that progress counter higher on this copy, in the last row, by PROGRESS_BY=<n> (default 1)
+  GATE_OPEN=<n>     np_log's `fight gate open on <n> frames` says n (default: every frame); the line is written when SUITS is set
+  NO_GATE_LINE=1    no such line
+  FIGHT_STATES=<k>  the digest's fight_state row takes k values, one per frame then the last held (default 1: it never moves)
+  FIELDS_FROM=<p>   that file is the session's fields.d4f
   BOOT_HOLD=1       the session starts with the real game's frame-0 hold (hold begin frame 0, banner 1.0 s later, hold end)
   LEFT_AT=<f>       after frame f the session ends `left` (a graceful quit), starts no offline relaunch and lingers until ended
   DESYNC_AT=<f> / DESYNC_OTHER=<hex> / DESYNC_RELAUNCH_S=<s>   with END=desync: the frame named, this copy's "other side"
@@ -71,6 +75,7 @@ A host refuses a join with `refuse build` (build ids differ: BUILD_ID, +1 with D
 (DOA4_NP_TEST_FILES_SALT differs) or `refuse busy` (it already has a peer).
 """
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -388,6 +393,12 @@ REAL_REGIONS = {"none": "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833
 REAL_REGIONS["same"] = REAL_REGIONS["none"]
 
 
+def gate_line(log, frames):
+    """np_session.cpp EndOnline's line."""
+    if os.environ.get("FAKE_ONLINE_SUITS") and os.environ.get("FAKE_ONLINE_NO_GATE_LINE") != "1":
+        log.write(f"fight gate open on {int(os.environ.get('FAKE_ONLINE_GATE_OPEN', frames))} frames\n")
+
+
 def write_digest(path, rows, diverge):
     regions = fake_game.REGIONS
     state = os.environ.get("FAKE_ONLINE_SUITS")
@@ -398,9 +409,14 @@ def write_digest(path, rows, diverge):
         f.write(b"D4NPDIG1" + struct.pack("<II", 1, len(regions)))
         for name, addr, length in regions:
             f.write(struct.pack("<II", addr, length) + name.encode().ljust(24, bytes(1)))
+        names_now = [r[0] for r in regions]
+        states = int(os.environ.get("FAKE_ONLINE_FIGHT_STATES", "1"))
         for i in range(rows):
             bad = 7 if diverge is not None and i >= diverge else 0
-            f.write(struct.pack("<II", i, 0) + struct.pack(f"<{len(regions)}Q", 1000 + i + bad, *[2000 + i] * (len(regions) - 1)))
+            row = [1000 + i + bad] + [2000 + i] * (len(regions) - 1)
+            if "fight_state" in names_now:
+                row[names_now.index("fight_state")] = 3000 + min(i, states - 1)
+            f.write(struct.pack("<II", i, 0) + struct.pack(f"<{len(regions)}Q", *row))
 
 
 DUMP_LO = 0x82B70000
@@ -486,6 +502,8 @@ def session(ctl):
             if labels:
                 f.write(f"[2026-11-06 05:49:16.700] [info] [core] [t1] [doa4][SUITS] session: label table digest {labels} (2448 bytes)\n")
     log.write(f"session on: online stand-in, {rows} frames, delay {delay}\n")
+    if os.environ.get("FAKE_ONLINE_FIELDS_FROM"):
+        shutil.copyfile(os.environ["FAKE_ONLINE_FIELDS_FROM"], os.path.join(sess, "fields.d4f"))
     if os.environ.get("FAKE_ONLINE_SWEEP"):
         log.write(f"session on: online, standin, sweep {os.environ['FAKE_ONLINE_SWEEP']} blocks/frame\n")
     if os.environ.get("FAKE_ONLINE_WARN") == "1":
@@ -544,6 +562,7 @@ def session(ctl):
             write_digest(os.path.join(sess, "digest.d4d"), frame + 1, diverge)
             event(f"session ended at frame {frame + 1}: left")
             log.write(f"session ended at frame {frame + 1}: left\nchecksums handed to GekkoNet: {max(0, frame + 1 - delay)}\n")
+            gate_line(log, frame + 1)
             log.close()
             events.close()
             if os.environ.get("FAKE_ONLINE_LEFT_RELAUNCH") == "1":  # a game that relaunches after a quit (a defect)
@@ -587,17 +606,18 @@ def session(ctl):
     fake_game.write_sweep(os.path.join(sess, "sweep.d4s"), frame)
     fake_game.write_counters(os.path.join(sess, "counters.d4k"), frame, os.environ.get("FAKE_ONLINE_FALLBACK") == "1", False)
     bump = os.environ.get("FAKE_ONLINE_PROGRESS")
-    if bump:  # that progress counter is 1 higher on this copy, in the last row
+    if bump:  # that progress counter is higher on this copy, in the last row
         path = os.path.join(sess, "counters.d4k")
         data = bytearray(open(path, "rb").read())
         at = len(data) - 4 * len(fake_game.COUNTERS) + 4 * fake_game.COUNTERS.index(bump)
-        struct.pack_into("<I", data, at, struct.unpack_from("<I", data, at)[0] + 1)
+        struct.pack_into("<I", data, at, struct.unpack_from("<I", data, at)[0] + int(os.environ.get("FAKE_ONLINE_PROGRESS_BY", "1")))
         open(path, "wb").write(data)
     event(f"session ended at frame {frame}: {reason}")
     log.write(f"session ended at frame {frame}: {reason}\n")
     if os.environ.get("FAKE_ONLINE_NO_CHECKSUMS") != "1":
         count = os.environ.get("FAKE_ONLINE_CHECKSUMS")
         log.write(f"checksums handed to GekkoNet: {int(count) if count else max(0, frame - delay)}\n")
+    gate_line(log, frame)
     log.close()
     events.close()
     if end == "desync" and not lost:

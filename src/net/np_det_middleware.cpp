@@ -404,8 +404,10 @@ void MiddlewareFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
 }
 
 // The trigger (a second tick-count read from one call site on the main thread in a frame) is a function
-// of the main thread's own call sequence, which lockstep keeps equal; the passes it adds are counted
-// (pr_spin_steps) and compared every frame.
+// of the main thread's own call sequence. With the same files on both PCs lockstep keeps that sequence
+// equal: the passes it adds are counted (pr_spin_steps), compared every frame, and any difference is a
+// determinism signal. With suits on one PC only it is not equal everywhere: the count splits both ways, by
+// up to 2 in the measured runs, with the checked regions equal; np_compare --mixed-session fails past that.
 void SpinRead(PPCContext& ctx, uint8_t* base, uint32_t lr) {
   if (!On(kCri) || t_on_main_pass) return;  // a tick read inside a pass is not a wait loop of the frame
   for (auto& [site, n] : g_spin_lrs) {

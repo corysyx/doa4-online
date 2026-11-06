@@ -59,6 +59,26 @@ def locate(ranges, address, length):
     return None
 
 
+def life_fall(path):
+    """(side, frame) of the first frame a fighter's life fell from the frame before with +0 set on both, or None. A fight is the only thing
+    seen to do that, and it does not read the fight state, so it can speak when the state byte says nothing. No such log: None."""
+    if not os.path.exists(path):
+        return None
+    ranges, rows = read_fields(path)
+    found = []
+    for side in (0, 1):
+        at = locate(ranges, TABLE + side * SIDE, 0x26)
+        if at is None:
+            continue
+        for f in sorted(rows):
+            before = rows.get(f - 1)
+            now = rows[f]
+            if before and now[at] and before[at] and struct.unpack_from(">H", now, at + 0x24)[0] < struct.unpack_from(">H", before, at + 0x24)[0]:
+                found.append((f, side))
+                break
+    return (min(found)[1], min(found)[0]) if found else None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("a")
