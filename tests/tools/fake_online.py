@@ -48,6 +48,8 @@ Switches of the stand-in itself (FAKE_ONLINE_*, per copy, in its environment):
   SUITS=<word>      the session's swimsuit state on np_log's session line, in the real shape: none, same, mixed (default: no such word)
   TABLES=<hex>      the session process logs `session: costume tables digest <hex> (2818 bytes)` into game.log, as SetUpSuits does
   LABELS=<hex>      the same for `session: label table digest <hex> (2448 bytes)`, as SetUpLabels does
+  SWEEP=<n>         np_log's `session on: online, stand-in, sweep <n> blocks/frame`, in the real shape
+  PROGRESS=<name>   that progress counter 1 higher on this copy, in the last row
   BOOT_HOLD=1       the session starts with the real game's frame-0 hold (hold begin frame 0, banner 1.0 s later, hold end)
   LEFT_AT=<f>       after frame f the session ends `left` (a graceful quit), starts no offline relaunch and lingers until ended
   DESYNC_AT=<f> / DESYNC_OTHER=<hex> / DESYNC_RELAUNCH_S=<s>   with END=desync: the frame named, this copy's "other side"
@@ -473,6 +475,8 @@ def session(ctl):
             if labels:
                 f.write(f"[2026-11-06 05:49:16.700] [info] [core] [t1] [doa4][SUITS] session: label table digest {labels} (2448 bytes)\n")
     log.write(f"session on: online stand-in, {rows} frames, delay {delay}\n")
+    if os.environ.get("FAKE_ONLINE_SWEEP"):
+        log.write(f"session on: online, standin, sweep {os.environ['FAKE_ONLINE_SWEEP']} blocks/frame\n")
     if os.environ.get("FAKE_ONLINE_WARN") == "1":
         log.write(fake_game.KEEPALIVE_WARN + "\n")
     if os.environ.get("FAKE_LOADER_IDLE") == "1":  # the loader-idle hang's np_log line (Task 15 close-out)
@@ -571,6 +575,13 @@ def session(ctl):
     write_digest(os.path.join(sess, "digest.d4d"), frame, diverge)
     fake_game.write_sweep(os.path.join(sess, "sweep.d4s"), frame)
     fake_game.write_counters(os.path.join(sess, "counters.d4k"), frame, os.environ.get("FAKE_ONLINE_FALLBACK") == "1", False)
+    bump = os.environ.get("FAKE_ONLINE_PROGRESS")
+    if bump:  # that progress counter is 1 higher on this copy, in the last row
+        path = os.path.join(sess, "counters.d4k")
+        data = bytearray(open(path, "rb").read())
+        at = len(data) - 4 * len(fake_game.COUNTERS) + 4 * fake_game.COUNTERS.index(bump)
+        struct.pack_into("<I", data, at, struct.unpack_from("<I", data, at)[0] + 1)
+        open(path, "wb").write(data)
     event(f"session ended at frame {frame}: {reason}")
     log.write(f"session ended at frame {frame}: {reason}\n")
     if os.environ.get("FAKE_ONLINE_NO_CHECKSUMS") != "1":

@@ -66,6 +66,7 @@ EXPECTS = ("ok", "desync", "lost", "quit", "refused-build", "refused-files", "re
 REFUSED_SESSION_REASON = "internal: the other player's game did not start the session"
 DUMP0 = os.path.join("dumps", "data_000000.bin")  # the frame-0 .data dump in a session folder (DOA4_NP_DUMP=0)
 TERMINAL = re.compile(r"^session ended at frame (\d+): (.*)$")
+SESSION_SWEEP = re.compile(r"^session on: online, \w+, sweep (\d+) blocks/frame")  # np_session.cpp StartOnline's last line
 SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)\s*$")  # np_session.cpp StartOnline's line
 SESSION_DIGESTS = (("costume tables", re.compile(r"session: costume tables digest ([0-9A-Fa-f]+) ")),  # dead_or_alive_4_app.h, game.log
                    ("label table", re.compile(r"session: label table digest ([0-9A-Fa-f]+) ")))
@@ -630,6 +631,13 @@ class Pair:
         if states["host"] != states["joiner"]:
             self.problems.append(f"the copies disagree about the session's swimsuits: host {states['host']}, joiner {states['joiner']}")
         lines.append(f"session swimsuits: host {states['host']}, joiner {states['joiner']}")
+        # ruling 15: no sweep in a mixed session, and only there. A copy without the line (the stand-in, a session that never started) says nothing.
+        for s in (host, joiner):
+            sweep = [int(m.group(1)) for m in (SESSION_SWEEP.match(l) for l in s.np_log()) if m]
+            if sweep:
+                lines.append(f"{s.name} sweep: {sweep[0]} blocks/frame")
+                if (sweep[0] == 0) != (states[s.name] == "mixed"):
+                    self.problems.append(f"the {s.name} runs {sweep[0]} sweep blocks a frame in a session with swimsuits {states[s.name]}")
         return states["host"]
 
     def tables_check(self, lines, host, joiner):
@@ -742,7 +750,8 @@ class Pair:
     def compare(self, host, joiner):
         """(exit code, output lines, first differing digest frame or None) of np_compare.py on the two session folders."""
         p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "np_compare.py"), host.session_dir(), joiner.session_dir(),
-                            "--allow-unchecked", "--blocks", "0"], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+                            "--allow-unchecked", "--blocks", "0"] + (["--mixed-session"] if getattr(self, "mixed", False) else []),
+                           capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
         out = (p.stdout + p.stderr).splitlines()
         first = None
         for l in out:
@@ -763,6 +772,7 @@ class Pair:
             lines.append(f"{s.name}: terminal {s.terminal()} checksums {s.checksums()} missing {missing}")
         # review M5: every session expect (ok, desync, lost, quit) fails on a frame-0 difference or a missing frame-0 dump
         state = self.suit_state(lines, host, joiner)
+        self.mixed = state == "mixed"
         self.tables_check(lines, host, joiner)
         self.frame0_check(lines, host, joiner, fail=True, mixed=state == "mixed")
         th, tj = host.terminal(), joiner.terminal()

@@ -180,10 +180,13 @@ struct Region {
   uint32_t address = 0;
   uint32_t length = 0;
   std::vector<Mask> masks;
+  bool active_only = false;  // a fighter record: its first byte says whether it holds a fighter
 };
 
 // Copies [address, address + length) of guest memory from `bytes` into `out`
-// with every mask zeroed; `out` is resized to the region's length.
+// with every mask zeroed; `out` is resized to the region's length. An active_only region whose first byte is 0 copies as all zeros: no
+// fighter is in it, whatever preview models left behind. Otherwise it copies as any region, the first byte included, so a peer that
+// thinks a record is active while the other does not hashes differently.
 void MaskedCopy(const Region& region, const uint8_t* bytes, std::vector<uint8_t>* out);
 
 // The per-frame field log (test only, DOA4_NP_TEST_FIELDS): raw guest bytes of named ranges, so two peers can be compared by

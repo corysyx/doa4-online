@@ -637,7 +637,7 @@ void HashRows(State& s, uint8_t* base, uint32_t f) {
   s.digest_row.assign(s.regions.size(), 0);
   for (size_t i = 0; i < s.regions.size(); ++i) {
     const Region& r = s.regions[i];
-    if (r.masks.empty()) {
+    if (r.masks.empty() && !r.active_only) {
       s.digest_row[i] = XXH3_64bits(base + r.address, r.length);
     } else {
       MaskedCopy(r, base + r.address, &s.scratch);
@@ -1460,6 +1460,7 @@ void OpenHashFiles(State& s) {
       blocks += b.masks.empty() ? 0 : 1;
       for (const Mask& m : b.masks) masked += m.length;
     }
+    if (!SweepOn(suits)) Log("sweep off: a mixed session checks " + std::to_string(s.regions.size()) + " listed regions each frame");
     Log("sweep masks: " + std::to_string(ranges.size()) + " ranges, " + std::to_string(masked) +
         " bytes in " + std::to_string(blocks) + " blocks hashed as zero; and every SDK handle stash word (the word "
         "after a \"REX\\0\" header signature) hashed as zero");
@@ -1521,6 +1522,7 @@ void StartOnline(Host host) {
       rules::SuitSessionName(s.ho.suit_state));
   s.events = _wfopen((s.dir / "events.txt").wstring().c_str(), L"a");
   ReadSweepSetting(s, TestDirEnv("DOA4_NP_SWEEP"));
+  if (!SweepOn(s.ho.suit_state)) s.sweep_per_frame = 0;  // whatever a test switch asked: both peers fold the same empty row
   s.unlock = true;
   s.guest_meta = GuestMeta(s.ho.guest_settings);
   s.unlock_meta = "1";

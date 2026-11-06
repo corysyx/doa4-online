@@ -2,7 +2,7 @@
 64 KB .data block hashes) and counters (the determinism layer's fallback and progress counters).
 Formats: src/net/np_core.h.
 
-  py -3 tools/np_compare.py RUN_A RUN_B [--from F] [--blocks N] [--allow-unchecked] [--sweep-advisory]
+  py -3 tools/np_compare.py RUN_A RUN_B [--from F] [--blocks N] [--allow-unchecked] [--sweep-advisory] [--mixed-session]
 RUN_A/RUN_B are run output folders (holding digest.d4d, sweep.d4s and counters.d4k) or run
 folders (with out/). Prints the frames compared, the first differing frame of every region (and
 the first frame of all), the sweep blocks that differ with the first frame each was seen to
@@ -12,6 +12,8 @@ runs, with the first frame it differs at.
 --allow-unchecked (runs without run_result.txt, sweep.d4s or counters.d4k, e.g. the proof's, and
 sweeps hashed with different settings: not compared)
 --sweep-advisory (report sweep block differences without failing; nothing else is forgiven)
+--mixed-session (a session where each PC draws a fighter from its own files: the counters of file jobs, MIXED_PROGRESS, are reported
+without failing, because a PC with a suit's files loads more of them; every other progress counter and every fallback still counts)
 Exit status: 0 = both runs good, equal lengths, every compared frame equal, a sweep row and a
 counters row for every digest frame, no fallback, equal progress; 1 = otherwise; 2 = nothing to
 compare.
@@ -94,7 +96,10 @@ def final_progress(names, frames):
     return " ".join(f"{name}={last[i]}" for i, name in enumerate(names) if name.startswith("pr_"))
 
 
-def judge_counters(a, b, digest_a, digest_b, start, allow_unchecked):
+MIXED_PROGRESS = ("pr_loader_jobs", "pr_cri_jobs")
+
+
+def judge_counters(a, b, digest_a, digest_b, start, allow_unchecked, mixed=False):
     """Judges the runs' counters.d4k (np_core.h): a fallback counter (fb_*) above zero anywhere in a
     run, a progress counter (pr_*) that differs between the runs at a frame both have (from `start`),
     runs that counted different things, a counters file that does not have a row for every digest
@@ -127,7 +132,11 @@ def judge_counters(a, b, digest_a, digest_b, start, allow_unchecked):
                 for i, name in enumerate(names_a):
                     if name.startswith("pr_") and frames_a[f][i] != frames_b[f][i]:
                         first.setdefault(name, f)
+            forgiven = {name: f for name, f in first.items() if mixed and name in MIXED_PROGRESS}
+            first = {name: f for name, f in first.items() if name not in forgiven}
             problems += [f"  {name} first differs at frame {f}" for name, f in sorted(first.items(), key=lambda kv: kv[1])]
+            for name, f in sorted(forgiven.items(), key=lambda kv: kv[1]):
+                print(f"  {name} first differs at frame {f} (a mixed session: reported only)")
         print(f"counters: {len(common)} common frames; " +
               ("no fallbacks, progress equal" if not problems else f"{len(problems)} problems"))
     else:
@@ -210,6 +219,7 @@ def main():
     ap.add_argument("--blocks", type=int, default=40, help="sweep blocks to list")
     ap.add_argument("--allow-unchecked", action="store_true")
     ap.add_argument("--sweep-advisory", action="store_true")
+    ap.add_argument("--mixed-session", action="store_true")
     args = ap.parse_args()
     a, b = out_dir(args.a), out_dir(args.b)
     result = 0
@@ -259,7 +269,7 @@ def main():
         result = 1
     if judge_sweep(a, b, fa, fb, args):
         result = 1
-    if judge_counters(a, b, fa, fb, args.start, args.allow_unchecked):
+    if judge_counters(a, b, fa, fb, args.start, args.allow_unchecked, args.mixed_session):
         result = 1
     sys.exit(result)
 

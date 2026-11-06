@@ -10,8 +10,7 @@ When many differing words are SDK handles (F80xxxxx) on both sides and differ by
 "handle shift +N in K words" (B - A; handle_shift(): a lazily created host object took a low slot in one run and every
 later guest handle moved, debug 82B70000).
 Library use (np_pair.py, Task 15 carry b): frame0_difference(a, b, mixed) compares two frame-0 dumps over the whole .data with the
-in-game sweep's masks (SWEEP_MASKS = np_digest.h kSweepMasks; mixed: MIXED_MASKS = np_digest.h kMixedMasks too) and every SDK handle
-stash word zeroed.
+in-game sweep's masks (SWEEP_MASKS = np_digest.h kSweepMasks; mixed: MIXED_MASKS too) and every SDK handle stash word zeroed.
 """
 import argparse
 import collections
@@ -75,7 +74,10 @@ SWEEP_MASKS = [
     (0x8357A560, 0x400),  # GPU timestamp ring 2 of the graphics object
     (0x8357D520, 4),     # D3D resource id counter
 ]
-# A mixed session's masks (src/net/np_digest.h kMixedMasks), pinned against the source by the same test.
+# A mixed session's frame-0 compare only: the game no longer hashes these (a mixed session runs no sweep, np_digest.h), but np_pair still
+# compares the whole .data at frame 0, a check on the boot that nothing in the game makes. By then the only thing an import has changed is
+# what the guest read of the archives' sizes while booting, per PC (Task 5 report section 1, Task 6 report section 4). The task slots' fiber
+# pointers are not here: they are masked in the digest, and they still agree at frame 0.
 MIXED_MASKS = [
     (0x82C5ED18, 4),
     (0x82C5ED34, 4),
@@ -89,30 +91,6 @@ MIXED_MASKS = [
     (0x830B3D04, 264),
     (0x830B3F4C, 408),
     (0x830B4254, 304),
-    (0x83100F30, 4),
-    (0x83100F4C, 4),
-    (0x83100F68, 4),
-    (0x83100F84, 4),
-    (0x83100FA0, 4),
-    (0x83100FBC, 4),
-    (0x83100FD8, 4),
-    (0x83100FF4, 4),
-    (0x83101010, 4),
-    (0x8310102C, 4),
-    (0x83101048, 4),
-    (0x83101064, 4),
-    (0x83101080, 4),
-    (0x8310109C, 4),
-    (0x831010B8, 4),
-    (0x831010D4, 4),
-    (0x831010F0, 4),
-    (0x8310110C, 4),
-    (0x83101128, 4),
-    (0x83101144, 4),
-    (0x83101160, 4),
-    (0x8310117C, 4),
-    (0x83101198, 4),
-    (0x831011B4, 4),
 ]
 BLOCK = 0x10000  # the sweep's block size (np_core.h: 64 KB blocks from LO)
 

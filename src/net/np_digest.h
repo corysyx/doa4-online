@@ -2,11 +2,13 @@
 //
 // Every session frame the check folds two rows into one checksum: the digest (DigestRegions, hashed every frame) and the sweep (rolling
 // 64 KB blocks of .data, minus SweepRanges). A session with no suits, or with the same import on both PCs, hashes what v1.0.9 hashes.
-// A mixed session (one player has an import the other lacks or has differently, so each PC draws the fighter from its own files) also
-// leaves out kMixedMasks. It never leaves out the fighter table's first 0x78 bytes per side (active, character, model, position, life,
-// state), the online generator, the match, the pads or the frame counter: the test names them.
-// NOT FINISHED: this list holds only the file-size tables and the fiber pointers, which any answer needs. On it alone a mixed session still
-// ends in a desync, at frame 2089 in the one pair run (Task 6 report, section 1, awaits a ruling on what else a mixed session leaves out).
+//
+// A mixed session (one player has an import the other lacks or has differently, so each PC draws a fighter from its own files) runs no
+// sweep and hashes a positive list instead. Measured over 8 whole runs (notes/plans/2026-11-06-public-importer-plan1-foundation/
+// task-6-report.md): what two such PCs differ in has no end, each new scenario added thousands of words, and Tag added 16 blocks inside its
+// rounds, so a list of what to leave out could not be finished and every miss would end a live match. The rows below never differed.
+// Both side records are read each frame, so a fighter's position, life and state are checked every frame where the sweep saw them once in
+// 41. What such a session gives up: anything that goes wrong in .data without reaching one of these rows goes unnoticed.
 
 #pragma once
 
@@ -58,87 +60,53 @@ inline constexpr SweepMask kSweepMasks[] = {
     {0x8357D520, 4, "D3D resource id counter (atomic increment in sub_8275D658): ids for D3D state caching"},
 };
 
-// What a costume legitimately changes: masked only when the hand-off says kMixed. np_dumpdiff.py MIXED_MASKS is the same list, pinned by
-// test_sweep_masks_match_source.
-inline constexpr const char* kWhySize = "the file's size in the partition rows (sub_823FCBA0, sub_823851F8 store it from a stat through the per-PC overlay; read only by sub_82385BD0's free-space sum; the flag it sets, 0x831A595C, stays checked)";
-inline constexpr const char* kWhySizes = "u32 per archive entry: the suits' file sizes, per PC (the overlay's table of contents, read at boot); read by CRI's sub_829BB5D0 for the host read's length";
-inline constexpr const char* kWhySectors = "u16 sectors per archive entry: as the u32 table; read by CRI's sub_829BB5D0 for the host read's offset and length";
-inline constexpr const char* kWhySlot = "the task slot's fiber pointer (sub_824F3340 stores CreateFiber's result), a heap address moved by what the loads before it took; the scheduler sub_824F31E8 only hands it to the fiber calls";
-inline constexpr SweepMask kMixedMasks[] = {
-    // MIXED MASKS BEGIN
-    {0x82C5ED18, 4, kWhySize},
-    {0x82C5ED34, 4, kWhySize},
-    {0x82C5ED50, 4, kWhySize},
-    {0x82C7F7F8, 4, kWhySize},
-    {0x82C7F814, 4, kWhySize},
-    {0x82C7F830, 4, kWhySize},
-    {0x8303A10C, 132, kWhySectors},
-    {0x8303A350, 208, kWhySectors},
-    {0x8303A664, 156, kWhySectors},
-    {0x830B3D04, 264, kWhySizes},
-    {0x830B3F4C, 408, kWhySizes},
-    {0x830B4254, 304, kWhySizes},
-    {0x83100F30, 4, kWhySlot},
-    {0x83100F4C, 4, kWhySlot},
-    {0x83100F68, 4, kWhySlot},
-    {0x83100F84, 4, kWhySlot},
-    {0x83100FA0, 4, kWhySlot},
-    {0x83100FBC, 4, kWhySlot},
-    {0x83100FD8, 4, kWhySlot},
-    {0x83100FF4, 4, kWhySlot},
-    {0x83101010, 4, kWhySlot},
-    {0x8310102C, 4, kWhySlot},
-    {0x83101048, 4, kWhySlot},
-    {0x83101064, 4, kWhySlot},
-    {0x83101080, 4, kWhySlot},
-    {0x8310109C, 4, kWhySlot},
-    {0x831010B8, 4, kWhySlot},
-    {0x831010D4, 4, kWhySlot},
-    {0x831010F0, 4, kWhySlot},
-    {0x8310110C, 4, kWhySlot},
-    {0x83101128, 4, kWhySlot},
-    {0x83101144, 4, kWhySlot},
-    {0x83101160, 4, kWhySlot},
-    {0x8310117C, 4, kWhySlot},
-    {0x83101198, 4, kWhySlot},
-    {0x831011B4, 4, kWhySlot},
-    // MIXED MASKS END
-};
+// False only in a mixed session (ruling 15).
+inline bool SweepOn(rules::SuitSession state) { return state != rules::SuitSession::kMixed; }
 
-// The digest's regions. kNone and kSame: as v1.0.9. kMixed: the same regions with every part of kMixedMasks that falls inside one added.
+// The digest's regions, read at the frame hook's first step on both peers (np_session.cpp HashRows: the state entering the frame, before
+// any input of that frame).
 inline std::vector<Region> DigestRegions(rules::SuitSession state) {
   std::vector<Region> r;
-  r.push_back({"game_obj", 0x8320D110, 0x63B0, {}});  // + 5 x 4336 B fighter blocks at +3836
+  Region slots{"task_slots", 0x83100F28, 24 * 28, {}};
+  for (uint32_t i = 0; i < 24; ++i) slots.masks.push_back({i * 28 + 16, 8});  // mftb profile words
+  if (state != rules::SuitSession::kMixed) {
+    r.push_back({"game_obj", 0x8320D110, 0x63B0, {}});  // the camera and scene object
+    r.push_back({"netmatch", 0x830C1CB0, 0x38C0, {}});
+    r.push_back({"pad_entries", 0x831011E0, 5 * 44, {}});
+    r.push_back({"pad_mgr", 0x8357C2D8, 0xD60, {}});
+    r.push_back(slots);
+    r.push_back({"mt_833F7600", 0x833F7600, 2504, {}});
+    r.push_back({"mt_8357B5C0", 0x8357B5C0, 2504, {}});
+    r.push_back({"mt_83420020", 0x83420020, 2504, {}});
+    r.push_back({"mt_8321B198", 0x8321B198, 2504, {}});
+    r.push_back({"frame_ctr", 0x831013E4, 4, {}});
+    return r;
+  }
+  // Each slot's fiber pointer (+8, sub_824F3340 stores CreateFiber's result): a heap address, moved by what the loads before it took. The
+  // scheduler sub_824F31E8 only hands it to the fiber calls. This is the one thing a costume changes in a region that stays on the list.
+  for (uint32_t i = 0; i < 24; ++i) slots.masks.push_back({i * 28 + 8, 4});
   r.push_back({"netmatch", 0x830C1CB0, 0x38C0, {}});
   r.push_back({"pad_entries", 0x831011E0, 5 * 44, {}});
   r.push_back({"pad_mgr", 0x8357C2D8, 0xD60, {}});
-  Region slots{"task_slots", 0x83100F28, 24 * 28, {}};
-  for (uint32_t i = 0; i < 24; ++i) slots.masks.push_back({i * 28 + 16, 8});  // mftb profile words
   r.push_back(slots);
   r.push_back({"mt_833F7600", 0x833F7600, 2504, {}});
-  r.push_back({"mt_8357B5C0", 0x8357B5C0, 2504, {}});
   r.push_back({"mt_83420020", 0x83420020, 2504, {}});
   r.push_back({"mt_8321B198", 0x8321B198, 2504, {}});
   r.push_back({"frame_ctr", 0x831013E4, 4, {}});
-  if (state == rules::SuitSession::kMixed) {
-    for (Region& region : r) {
-      for (const SweepMask& m : kMixedMasks) {
-        const uint64_t from = std::max<uint64_t>(m.address, region.address);
-        const uint64_t to = std::min<uint64_t>(uint64_t(m.address) + m.length, uint64_t(region.address) + region.length);
-        if (from < to) region.masks.push_back({uint32_t(from - region.address), uint32_t(to - from)});
-      }
-    }
-  }
+  // The word sub_82385BD0 sets when the archives do not fit the cache: it chooses each load's path, and the archives' sizes (per PC here) feed it.
+  r.push_back({"cache_flag", 0x831A595C, 4, {}});
+  // The fighter table (sub_823CCF10, stride 156, one record per side): +0 active, +1 character, +2 model, +4 position, +0x24 life, then state
+  // words to +0x78; past that, positions of the model on show, which differ. While +0 is 0 no fighter is in it (MaskedCopy, np_core.h).
+  r.push_back({"side0", 0x83033B40, 0x78, {}, true});
+  r.push_back({"side1", 0x83033BDC, 0x78, {}, true});
   return r;
 }
 
-// The sweep's masked ranges: kSweepMasks, then kMixedMasks when mixed.
+// The sweep's masked ranges; none in a session with no sweep.
 inline std::vector<std::pair<uint32_t, uint32_t>> SweepRanges(rules::SuitSession state) {
   std::vector<std::pair<uint32_t, uint32_t>> out;
+  if (!SweepOn(state)) return out;
   for (const SweepMask& m : kSweepMasks) out.push_back({m.address, m.length});
-  if (state == rules::SuitSession::kMixed) {
-    for (const SweepMask& m : kMixedMasks) out.push_back({m.address, m.length});
-  }
   return out;
 }
 

@@ -434,6 +434,10 @@ std::string FixSetText(uint32_t bits) {
 }
 
 void MaskedCopy(const Region& region, const uint8_t* bytes, std::vector<uint8_t>* out) {
+  if (region.active_only && region.length > 0 && bytes[0] == 0) {
+    out->assign(region.length, 0);
+    return;
+  }
   out->assign(bytes, bytes + region.length);
   for (const Mask& m : region.masks) {
     if (m.offset >= region.length) continue;

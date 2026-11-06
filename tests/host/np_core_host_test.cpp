@@ -929,133 +929,126 @@ static void TestFieldRanges() {
   CHECK(head.size() == sizeof(want) && std::memcmp(head.data(), want, sizeof(want)) == 0);
 }
 
-// mixed_masks_only_when_mixed (Task 6): a session with no suits or with the same import hashes exactly what v1.0.9 hashes; only a
-// mixed one leaves anything out, and what it leaves out never reaches the fields a fight is made of. A mask of everything passes
-// everything, so the fields it must not touch are named here from their own definitions, not from the mask list.
-static std::vector<std::pair<uint32_t, uint32_t>> Ranges(rules::SuitSession state) { return SweepRanges(state); }
-
-static bool Overlaps(const std::vector<std::pair<uint32_t, uint32_t>>& ranges, uint32_t address, uint32_t length) {
-  for (const auto& [a, n] : ranges) {
-    if (uint64_t(a) < uint64_t(address) + length && uint64_t(address) < uint64_t(a) + n) return true;
-  }
-  return false;
-}
-
+// mixed_masks_only_when_mixed (Task 6, ruling 15): a session with no suits or with the same import hashes exactly what v1.0.9 hashes, sweep
+// included. A mixed one runs no sweep and hashes a positive list, written out here by hand from the ruling, not from the code: a list
+// that grew to match the code would pass whatever it held.
 static void TestMixedMasksOnlyWhenMixed() {
   using rules::SuitSession;
   struct Row {
     const char* name;
     uint32_t address, length;
   };
-  // np_session.cpp DigestRegions as v1.0.9 has it, by hand: names, addresses, lengths.
   const Row today[] = {{"game_obj", 0x8320D110, 0x63B0}, {"netmatch", 0x830C1CB0, 0x38C0},  {"pad_entries", 0x831011E0, 5 * 44},
                        {"pad_mgr", 0x8357C2D8, 0xD60},   {"task_slots", 0x83100F28, 24 * 28}, {"mt_833F7600", 0x833F7600, 2504},
                        {"mt_8357B5C0", 0x8357B5C0, 2504}, {"mt_83420020", 0x83420020, 2504}, {"mt_8321B198", 0x8321B198, 2504},
                        {"frame_ctr", 0x831013E4, 4}};
-  const size_t count = sizeof(today) / sizeof(today[0]);
-  for (const SuitSession state : {SuitSession::kNone, SuitSession::kSame, SuitSession::kMixed}) {
+  const size_t today_count = sizeof(today) / sizeof(today[0]);
+  // kNone, kSame: today's regions, today's masks (the 24 mftb profile words and nothing else), the sweep on with the six host-timing ranges.
+  for (const SuitSession state : {SuitSession::kNone, SuitSession::kSame}) {
+    CHECK(SweepOn(state));
     const std::vector<Region> r = DigestRegions(state);
-    CHECK(r.size() == count);
-    for (size_t i = 0; i < count && i < r.size(); ++i) {
+    CHECK(r.size() == today_count);
+    size_t masks = 0;
+    for (size_t i = 0; i < today_count && i < r.size(); ++i) {
       CHECK(std::string(r[i].name) == today[i].name);
       CHECK(r[i].address == today[i].address);
       CHECK(r[i].length == today[i].length);
-    }
-  }
-  // kNone, kSame: today's masks, exactly: the 24 mftb profile words of the task slots and nothing else.
-  for (const SuitSession state : {SuitSession::kNone, SuitSession::kSame}) {
-    size_t masks = 0;
-    for (const Region& region : DigestRegions(state)) {
-      masks += region.masks.size();
-      if (std::string(region.name) != "task_slots") CHECK(region.masks.empty());
+      CHECK(!r[i].active_only);
+      masks += r[i].masks.size();
+      if (std::string(r[i].name) != "task_slots") CHECK(r[i].masks.empty());
     }
     CHECK(masks == 24);
-    const std::vector<Region> r = DigestRegions(state);
-    if (r.size() == count) {
+    if (r.size() == today_count) {
       for (uint32_t i = 0; i < 24 && i < r[4].masks.size(); ++i) {
         CHECK(r[4].masks[i].offset == i * 28 + 16);
         CHECK(r[4].masks[i].length == 8);
       }
     }
-    // the sweep's list: the six host-timing ranges of v1.0.9, nothing else
-    const auto sweep = Ranges(state);
     const std::vector<std::pair<uint32_t, uint32_t>> six = {{0x82B747D8, 8},   {0x82F6C9D0, 8},    {0x830ADBCC, 0x1C},
                                                             {0x831A7AC0, 4},   {0x8357A560, 0x400}, {0x8357D520, 4}};
-    CHECK(sweep == six);
+    CHECK(SweepRanges(state) == six);
   }
-  // kMixed: today's masks are all still there, in their place, and the listed ones are added.
+  // kMixed: exactly ruling 15's list, in this order, and no sweep.
+  CHECK(!SweepOn(SuitSession::kMixed));
+  CHECK(SweepRanges(SuitSession::kMixed).empty());
+  const Row list[] = {{"netmatch", 0x830C1CB0, 0x38C0},   {"pad_entries", 0x831011E0, 5 * 44}, {"pad_mgr", 0x8357C2D8, 0xD60},
+                      {"task_slots", 0x83100F28, 24 * 28}, {"mt_833F7600", 0x833F7600, 2504},  {"mt_83420020", 0x83420020, 2504},
+                      {"mt_8321B198", 0x8321B198, 2504},   {"frame_ctr", 0x831013E4, 4},       {"cache_flag", 0x831A595C, 4},
+                      {"side0", 0x83033B40, 0x78},         {"side1", 0x83033BDC, 0x78}};
+  const size_t list_count = sizeof(list) / sizeof(list[0]);
   const std::vector<Region> mixed = DigestRegions(SuitSession::kMixed);
-  const std::vector<Region> plain = DigestRegions(SuitSession::kNone);
-  size_t added = 0;
-  for (size_t i = 0; i < mixed.size() && i < plain.size(); ++i) {
-    CHECK(mixed[i].masks.size() >= plain[i].masks.size());
-    for (size_t k = 0; k < plain[i].masks.size() && k < mixed[i].masks.size(); ++k) {
-      CHECK(mixed[i].masks[k].offset == plain[i].masks[k].offset && mixed[i].masks[k].length == plain[i].masks[k].length);
+  CHECK(mixed.size() == list_count);
+  for (size_t i = 0; i < list_count && i < mixed.size(); ++i) {
+    CHECK(std::string(mixed[i].name) == list[i].name);
+    CHECK(mixed[i].address == list[i].address);
+    CHECK(mixed[i].length == list[i].length);
+    const bool side = std::string(list[i].name).rfind("side", 0) == 0;
+    CHECK(mixed[i].active_only == side);  // only the two records, NOT the regions beside them
+    if (std::string(list[i].name) != "task_slots") CHECK(mixed[i].masks.empty());
+  }
+  // The task slots: today's 24 profile words, and each slot's fiber pointer. Nothing else in the slot leaves the check.
+  uint32_t profile = 0, fiber = 0, other = 0;
+  for (const Region& r : mixed) {
+    if (std::string(r.name) != "task_slots") continue;
+    for (const Mask& m : r.masks) {
+      if (m.offset % 28 == 16 && m.length == 8) ++profile;
+      else if (m.offset % 28 == 8 && m.length == 4) ++fiber;
+      else ++other;
     }
-    added += mixed[i].masks.size() - plain[i].masks.size();
-    for (const Mask& m : mixed[i].masks) CHECK(uint64_t(m.offset) + m.length <= mixed[i].length);  // MaskedCopy would clip a wrong one silently
   }
-  CHECK(added > 0);
-  const auto region_named = [&](const char* name) -> const Region* {
-    for (const Region& r : mixed) {
-      if (std::string(r.name) == name) return &r;
-    }
-    return nullptr;
-  };
-  const Region* slots = region_named("task_slots");
-  bool slot_six_pointer = false;
-  if (slots) {
-    for (const Mask& m : slots->masks) slot_six_pointer |= m.offset == 6 * 28 + 8 && m.length == 4;
+  CHECK(profile == 24);
+  CHECK(fiber == 24);
+  CHECK(other == 0);
+  // What a mixed session leaves out by name: the regions a costume and the scene generator reach.
+  for (const Region& r : mixed) {
+    CHECK(std::string(r.name) != "game_obj");
+    CHECK(std::string(r.name) != "mt_8357B5C0");
   }
-  CHECK(slot_six_pointer);
-  // What a mixed session must still judge. The regions with no mask at all:
-  for (const char* name : {"game_obj", "netmatch", "pad_entries", "pad_mgr", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr"}) {
-    const Region* r = region_named(name);
-    CHECK(r && r->masks.empty());
-  }
-  const auto sweep = Ranges(SuitSession::kMixed);
-  CHECK(sweep.size() > 6);
-  // the sweep masks exactly the listed ranges beyond today's: the six first, then kMixedMasks in order
-  size_t row = 6;
-  for (const SweepMask& m : kMixedMasks) {
-    CHECK(row < sweep.size() && sweep[row].first == m.address && sweep[row].second == m.length);
-    ++row;
-    CHECK(m.length > 0);
-    CHECK(m.why && m.why[0]);  // a mask needs a reason
-  }
-  CHECK(row == sweep.size());
-  // the fighter table (np_fields.py, sub_823CCF10): active, character, model, position, life, state of both sides
-  for (uint32_t side = 0; side < 2; ++side) {
-    const uint32_t record = 0x83033B40 + side * 156;
-    CHECK(!Overlaps(sweep, record, 0x78));
-    CHECK(!Overlaps(sweep, record + 4, 12));     // position
-    CHECK(!Overlaps(sweep, record + 0x24, 2));   // life
-  }
-  // the online generator, the match, the pads, the frame counter: in no mask of the sweep either
-  CHECK(!Overlaps(sweep, 0x833F7600, 2504));
-  CHECK(!Overlaps(sweep, 0x830C1CB0, 0x38C0));
-  CHECK(!Overlaps(sweep, 0x831011E0, 5 * 44));
-  CHECK(!Overlaps(sweep, 0x8357C2D8, 0xD60));
-  CHECK(!Overlaps(sweep, 0x831013E4, 4));
-  // Ruling 14's families, by hand from the Task 5 report: masked when mixed, and only then
-  const Row families[] = {{"size word, table 1", 0x82C5ED18, 3}, {"size word, table 2", 0x82C7F7F8, 3},
-                          {"chrone sizes", 0x830B3D08, 4},       {"chrtwo sizes", 0x830B3F50, 4},
-                          {"chrthree sizes", 0x830B4258, 4},     {"chrone sectors", 0x8303A10C, 2},
-                          {"chrtwo sectors", 0x8303A356, 2},     {"chrthree sectors", 0x8303A668, 2}};
-  for (const Row& f : families) {
-    CHECK(Overlaps(sweep, f.address, f.length));
-    CHECK(!Overlaps(Ranges(SuitSession::kSame), f.address, f.length));
-    CHECK(!Overlaps(Ranges(SuitSession::kNone), f.address, f.length));
-  }
-  // No mask covers a whole 64 KB sweep block: narrow by construction. Words not on the list stay checked: the word after a size word.
-  for (const SweepMask& m : kMixedMasks) CHECK(m.length < 0x10000);
-  CHECK(!Overlaps(sweep, 0x82C5ED1C, 4));
-  CHECK(!Overlaps(sweep, 0x83100F28 + 6 * 28 + 4, 4));   // a slot's word before its pointer
-  CHECK(!Overlaps(sweep, 0x83100F28 + 6 * 28 + 12, 4));  // and after it
+}
+
+// A fighter record is hashed through MaskedCopy: while its first byte is 0 no fighter is in it (preview models write there) and every other
+// byte reads as zero; otherwise all of it counts, the first byte included, so a peer that thinks a record is active is caught by that byte.
+static void TestActiveOnlyCopy() {
+  std::vector<uint8_t> a(16), b(16), out;
+  for (size_t i = 0; i < a.size(); ++i) a[i] = uint8_t(0x40 + i), b[i] = uint8_t(0x80 + i);
+  a[0] = b[0] = 0;  // both inactive, different leftovers: the same bytes
+  Region record{"side0", 0x1000, 16, {}, true};
+  std::vector<uint8_t> copy_a, copy_b;
+  MaskedCopy(record, a.data(), &copy_a);
+  MaskedCopy(record, b.data(), &copy_b);
+  CHECK(copy_a == copy_b);
+  CHECK(copy_a == std::vector<uint8_t>(16, 0));
+  // active: every byte counts, and a difference anywhere shows
+  a[0] = b[0] = 1;
+  MaskedCopy(record, a.data(), &copy_a);
+  MaskedCopy(record, b.data(), &copy_b);
+  CHECK(copy_a != copy_b);
+  CHECK(copy_a == a);
+  // one side active and the other not, the rest of the record all zeros on both: only the active byte tells them apart
+  std::vector<uint8_t> on(16, 0), off(16, 0);
+  on[0] = 1;
+  MaskedCopy(record, on.data(), &copy_a);
+  MaskedCopy(record, off.data(), &copy_b);
+  CHECK(copy_a != copy_b);
+  // any non-zero first byte is kept as it is, NOT read as a flag
+  a[0] = 7;
+  MaskedCopy(record, a.data(), &out);
+  CHECK(out == a);
+  // an active record's masks still apply
+  Region masked{"side0", 0x1000, 16, {{4, 2}}, true};
+  a[0] = 1;
+  MaskedCopy(masked, a.data(), &out);
+  CHECK(out[3] == a[3] && out[4] == 0 && out[5] == 0 && out[6] == a[6]);
+  // a plain region whose first byte is 0 is not touched: NOT every region is a record
+  Region plain{"plain", 0x1000, 16, {}};
+  a[0] = 0;
+  MaskedCopy(plain, a.data(), &out);
+  CHECK(out == a);
 }
 
 int main() {
   TestMixedMasksOnlyWhenMixed();
+  TestActiveOnlyCopy();
   TestFieldRanges();
   TestMxcsrAndSwitches();
   TestPadBytes();

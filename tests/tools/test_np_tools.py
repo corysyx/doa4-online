@@ -3087,10 +3087,11 @@ def put_word(d, addr, value):
 
 
 def test_sweep_masks_match_source(root):
-    # np_dumpdiff.SWEEP_MASKS and MIXED_MASKS are the in-game lists (np_digest.h kSweepMasks, kMixedMasks), pinned against the source
+    # np_dumpdiff.SWEEP_MASKS is the in-game list (np_digest.h kSweepMasks), pinned against the source. MIXED_MASKS is the frame-0 compare's
+    # own: no game table to pin it to, so its rows are pinned by hand to the three size families, and to reaching none of a mixed session's list.
     mod = load("np_dumpdiff")
     src = open(os.path.join(HERE, "..", "..", "src", "net", "np_digest.h"), encoding="utf-8").read()
-    for symbol, mine in (("kSweepMasks", mod.SWEEP_MASKS), ("kMixedMasks", mod.MIXED_MASKS)):
+    for symbol, mine in (("kSweepMasks", mod.SWEEP_MASKS),):
         table = re.search(symbol + r"\[\]\s*=\s*\{(.*?)\n\};", src, re.S)
         # review M6: every row of the table (a line that opens a brace) must parse; the counts must be exact
         body = table.group(1) if table else ""
@@ -3106,6 +3107,13 @@ def test_sweep_masks_match_source(root):
         check(unparsed == [], f"np_digest.h {symbol} rows this test cannot parse: {unparsed}")
         check(len(masks) == len(row_lines) == len(mine), f"{symbol} rows {len(row_lines)}, parsed {len(masks)}, np_dumpdiff {len(mine)}")
         check(sorted(mine) == sorted(masks), f"np_dumpdiff vs np_digest.h {symbol}:\n{mine}\n{masks}")
+    check(sorted(mod.MIXED_MASKS) == sorted([(0x82C5ED18, 4), (0x82C5ED34, 4), (0x82C5ED50, 4), (0x82C7F7F8, 4), (0x82C7F814, 4), (0x82C7F830, 4),
+                                             (0x8303A10C, 132), (0x8303A350, 208), (0x8303A664, 156), (0x830B3D04, 264), (0x830B3F4C, 408), (0x830B4254, 304)]),
+          f"np_dumpdiff.MIXED_MASKS is the three size families: {mod.MIXED_MASKS}")
+    listed = [(0x830C1CB0, 0x38C0), (0x831011E0, 5 * 44), (0x8357C2D8, 0xD60), (0x83100F28, 24 * 28), (0x833F7600, 2504), (0x83420020, 2504),
+              (0x8321B198, 2504), (0x831013E4, 4), (0x831A595C, 4), (0x83033B40, 0x78), (0x83033BDC, 0x78)]
+    overlap = [(m, r) for m in mod.MIXED_MASKS for r in listed if m[0] < r[0] + r[1] and r[0] < m[0] + m[1]]
+    check(overlap == [], f"MIXED_MASKS reach nothing a mixed session lists: {overlap}")
 
 
 def test_frame0_diff(root):
@@ -3246,6 +3254,39 @@ def test_fields_compare(root):
     check(code == 2 and "no field log" in out, f"np_fields, no file: {code}\n{out}")
     code, out = run(a, a, "--field", "far:83100000:4")
     check(code == 2 and "not in the log" in out, f"np_fields, a field the log does not hold: {code}\n{out}")
+
+
+def test_compare_mixed_session(root):
+    # --mixed-session forgives the two file-job counters and nothing else. Every other counter, and the digest rows, still fail the pair.
+    code, out, runs = np_pair(root, "cm0", "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_loader_jobs")
+    check(code == 1 and "np_compare failed" in out, f"np_pair, not mixed, a loader counter differs: exit {code}\n{out}")
+    mixed = ("--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=mixed")
+    code, out, runs = np_pair(root, "cm1", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_loader_jobs")
+    check(code == 0, f"np_pair, mixed, a loader counter differs: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "cm2", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_cri_jobs")
+    check(code == 0, f"np_pair, mixed, a CRI job counter differs: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "cm3", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_cri_passes")
+    check(code == 1 and "np_compare failed" in out, f"np_pair, mixed, another counter differs: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "cm4", *mixed, "--env-joiner", "FAKE_ONLINE_DIVERGE=4")
+    check(code == 1 and "differ at frame" in out, f"np_pair, mixed, a digest row differs: exit {code}\n{out}")
+
+
+def test_pair_sweep_state(root):
+    # ruling 15: a mixed session runs no sweep, and no other session may be without one
+    def pair(name, state, sweep):
+        env = []
+        for side in ("--env-host", "--env-joiner"):
+            env += [side, f"FAKE_ONLINE_SUITS={state}", side, f"FAKE_ONLINE_SWEEP={sweep}"]
+        return np_pair(root, name, *env)
+    code, out, runs = pair("sw1", "mixed", 0)
+    check(code == 0 and "host sweep: 0 blocks/frame" in out, f"np_pair, mixed, sweep off: exit {code}\n{out}")
+    code, out, runs = pair("sw2", "mixed", 4)
+    check(code == 1 and "runs 4 sweep blocks a frame in a session with swimsuits mixed" in out, f"np_pair, mixed, sweep on: exit {code}\n{out}")
+    for state in ("none", "same"):
+        code, out, runs = pair("sw3" + state, state, 4)
+        check(code == 0 and "joiner sweep: 4 blocks/frame" in out, f"np_pair, {state}, sweep on: exit {code}\n{out}")
+        code, out, runs = pair("sw4" + state, state, 0)
+        check(code == 1 and f"runs 0 sweep blocks a frame in a session with swimsuits {state}" in out, f"np_pair, {state}, sweep off: exit {code}\n{out}")
 
 
 def test_pair_tables_digest(root):
