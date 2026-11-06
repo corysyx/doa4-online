@@ -1,0 +1,157 @@
+// DOA4's costume tables, extended with imported suits (spec section 3.3). Byte access through
+// GuestBytes, so host tests run on the image's real tables (tests/host/doa4_costume_fixtures.h).
+//
+// Per charId c:
+//   max[c]   u8   0x82C34888 + c       costumes (caps the save's unlock count)
+//   len[c]   u8   0x82C348A4 + c       list length (the sum of the variant counts)
+//   list[c]  be32 0x82C348C0 + 4c  ->  u8 model index per (costume, variant), costume-major
+//   var[c]   be32 0x82C34928 + 4c  ->  u8 variants per costume
+//   records  be32 0x82C5E738 + 8c + 4 -> {be16 body tpr, body cat, part tpr, part cat} per model;
+//            no count: a block runs to the next character's block (sub_823FE150 reads
+//            records[model] unchecked)
+//   split    {be32 tpr, be32 cat} 0x82C5E800 + 8c: the body's share of the per-player 20 MiB /
+//            4 MiB; 0/0 = the whole budget (no head part)
+//   files    {u8 archive, u8 0, be16 entry} 0x82C3B2E8 + 4 * file (1640 files);
+//            archive 3 = chrone.afs, 4 = chrtwo.afs, 5 = chrthree.afs
+// The lookup sub_82526B78(c, costume, variant) = list[c][sum(var[c][0..costume)) + variant].
+
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "doa4_costume_lists.h"
+#include "doa4_guest.h"
+#include "doa4_suits_manifest.h"
+
+namespace doa4::costumes {
+
+inline constexpr uint32_t kMaxTable = costume_lists::kMax;
+inline constexpr uint32_t kLenTable = costume_lists::kLength;
+inline constexpr uint32_t kListTable = costume_lists::kList;
+inline constexpr uint32_t kVarTable = costume_lists::kVariants;
+inline constexpr uint32_t kModelTable = 0x82C5E738;
+inline constexpr uint32_t kSplitTable = 0x82C5E800;
+inline constexpr uint32_t kFileTable = 0x82C3B2E8;
+inline constexpr uint32_t kCharCount = 25;
+inline constexpr uint32_t kFileCount = 1640;
+inline constexpr uint64_t kWholeTpr = 0x1400000;  // per player
+inline constexpr uint64_t kWholeCat = 0x400000;
+inline constexpr uint32_t kImageStart = 0x82000000;  // the XEX's sections: table pointers that
+inline constexpr uint32_t kImageEnd = 0x83000000;    // point elsewhere are not costume lists
+// From Task 1 (notes/research/swimsuit_table_readers.md): sub_8249A710 indexes a 15-entry
+// threshold table by the unlock count, so a character keeps at most 17 costumes; a costume
+// number at or above max makes the lookup read variant bytes past the array, so the list and
+// variant copies are 256 bytes with zeros after the data (a u8 costume number cannot reach past).
+inline constexpr uint32_t kMaxCostumesLimit = costume_lists::kCostumeLimit;
+inline constexpr uint32_t kTableBlock = costume_lists::kFullBlock;
+
+// A set of model indexes 0..255 (a model index is one byte). Words of 4 bytes, so GuardState has
+// no tail padding: the host test's "one past her last record" read still lands on the neighbour
+// it plants (a std::bitset would align the struct to 8 and put padding there).
+class ModelSet {
+ public:
+  bool contains(uint32_t model) const { return model < 256 && ((words_[model >> 5] >> (model & 31)) & 1u) != 0; }
+  void insert(uint32_t model) {
+    if (model < 256) words_[model >> 5] |= 1u << (model & 31);
+  }
+  uint32_t size() const {
+    uint32_t n = 0;
+    for (uint32_t w : words_) {
+      for (; w; w &= w - 1) ++n;
+    }
+    return n;
+  }
+
+ private:
+  std::array<uint32_t, 8> words_{};
+};
+
+// What the load-request guard compares against. `records`: model records per character (0 =
+// unknown, no count rule), taken from the image before any patch, then raised by Apply.
+// `empty_slot`: per character, the models whose body .tpr or body .cat is an empty costume slot
+// (16 bytes of 0x77) in the archives as the game reads them; filled by suits::MarkEmptySlots,
+// empty until then. `records` stays the LAST member (see ModelSet).
+struct GuardState {
+  std::array<ModelSet, kCharCount> empty_slot{};
+  std::array<uint32_t, kCharCount> records{};
+};
+
+// Records in character c's block: the distance to the next character's block (pointers inside
+// the image only); 0 for the last block and for c >= 25.
+uint32_t RecordCount(const GuestBytes& guest, uint32_t character);
+GuardState ReadGuardState(const GuestBytes& guest);
+
+struct FileLoc {
+  const char* archive;  // "chrone.afs", "chrtwo.afs" or "chrthree.afs"
+  uint32_t entry;
+};
+// Where a global file number lives, for the three character archives only.
+std::optional<FileLoc> FileLocation(const GuestBytes& guest, uint32_t file);
+
+// Whether a suit fits this game's tables (before any patch); empty when it does, else why not.
+// A named head part must be a pair one of her own records already uses, and both part files must
+// be character archive files.
+std::string CheckSuit(const GuestBytes& guest, const suits::Suit& suit);
+
+struct Applied {
+  uint8_t character = 0;
+  uint32_t model = 0;    // her model index for the suit
+  uint32_t costume = 0;  // her costume number for the suit (the lookup's argument)
+  std::string label;
+};
+struct ApplyResult {
+  std::vector<Applied> applied;
+  // One per character left unpatched, and one per suit refused while her others went in; each names what it refused.
+  std::vector<std::string> errors;
+  std::map<std::string, std::string> refused;  // suit label -> why, for a suit refused while her others went in
+  GuardState guard;
+};
+// Guest memory for the moved tables: a block of `size` bytes, or 0.
+using AllocFn = std::function<uint32_t(uint32_t size)>;
+
+// Adds the suits (each already passed CheckSuit) as each character's next costumes, in order:
+// fills her own empty records' head parts or appends records to a copy of her record block,
+// appends to copies of her list and variant array (one variant each, doa4_costume_lists.h: the
+// tables as they stand at this call, so after the Extras boxes), raises len and max.
+// Per character, every block is allocated before anything is written: a failed allocation
+// leaves her tables as they were. At most kMaxCostumesLimit costumes per character, and at most
+// 255 model records (model index 255 means "none" to the loader, sub_823FE870): a suit that would
+// pass either is refused by name and her earlier suits stay. The record copy is never freed or
+// moved: the loader caches a pointer into it (slot + 32, sub_823FE150).
+// Afterwards the app hands her models to TweakPatcher::CarrySuits, so a box toggled later keeps them.
+ApplyResult Apply(const GuestBytes& guest, const AllocFn& alloc, const std::vector<suits::Suit>& suits);
+
+// Which rule of the load-request guard a request (character, model) meets, first match wins:
+//  - model 255 and any character that is not one of the 25: none (255 means "none" to the loader,
+//    sub_823FE870, which then loads nothing);
+//  - kPastRecords: her record count is known and the model is at or past it (the loader reads
+//    records[model] unchecked, so it would load another character's files);
+//  - kEmptySlot: the model is marked in `empty_slot` (its body .tpr or .cat is an empty costume
+//    slot: a suit that is not imported here, asked for by an old replay or a peer);
+//  - kNone.
+enum class GuardRule { kNone, kPastRecords, kEmptySlot };
+GuardRule RuleFor(const GuardState& state, uint32_t character, uint32_t model);
+
+// The model a load request for (character, model) should use: `model` under kNone, else
+// `first_listed` (her first costume's model).
+uint32_t GuardModel(const GuardState& state, uint32_t character, uint32_t model, uint32_t first_listed);
+
+// The hook's whole decision for sub_823FE870(slot r3, character r4, model r5), on guest bytes so a
+// host test can drive it: r4 and r5 are masked to a byte, the rule is looked up, and only when one
+// fires her first listed model is read from the list table (list[c][0]); `use` is the model to
+// load. With no state installed (`state` null) nothing is changed.
+struct LoadDecision {
+  uint32_t character = 0;  // r4 & 0xFF
+  uint32_t asked = 0;      // r5 & 0xFF
+  uint32_t use = 0;        // the model to load
+  GuardRule rule = GuardRule::kNone;
+};
+LoadDecision DecideLoad(const GuardState* state, const GuestBytes& guest, uint32_t r4, uint32_t r5);
+
+}  // namespace doa4::costumes

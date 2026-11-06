@@ -46,24 +46,26 @@ bool AddCostumePatches(const GuestBytes& guest, const AllocFn& alloc, const Cost
   const uint32_t list_block = alloc(kCostumeBlockSize);
   const uint32_t variants_block = alloc(kCostumeBlockSize);
   if (!list_block || !variants_block) return false;
-  const uint32_t list = ReadBe32(guest, kCostumeList + 4 * c);
-  const uint32_t variants = ReadBe32(guest, kCostumeVariants + 4 * c);
-  const uint32_t length = guest.Read(kCostumeLength + c);
-  const uint32_t maximum = guest.Read(kCostumeMax + c);
+  const costume_lists::Tables now = costume_lists::Read(guest, c);
   const uint32_t added = uint32_t(addition.models.size());
-  for (uint32_t i = 0; i < kCostumeBlockSize; ++i) {
-    const uint8_t entry = i < length ? guest.Read(list + i)
-                          : i < length + added ? addition.models[i - length]
-                                               : uint8_t(0);
-    guest.Write(list_block + i, entry);
-    const uint8_t count = i < maximum ? guest.Read(variants + i) : i < maximum + added ? uint8_t(1) : uint8_t(0);
-    guest.Write(variants_block + i, count);
-  }
+  costume_lists::FillMoved(guest, now, addition.models, list_block, variants_block, kCostumeBlockSize);
   patches->push_back({kCostumeList + 4 * c, Be32Bytes(list_block)});
   patches->push_back({kCostumeVariants + 4 * c, Be32Bytes(variants_block)});
-  patches->push_back({kCostumeLength + c, {uint8_t(length + added)}});
-  patches->push_back({kCostumeMax + c, {uint8_t(maximum + added)}});
+  patches->push_back({kCostumeLength + c, {uint8_t(now.length + added)}});
+  patches->push_back({kCostumeMax + c, {uint8_t(now.maximum + added)}});
   return true;
+}
+
+// A costume box's state as AddCostumePatches lays it out: four patches in a row, from `at`.
+costume_lists::Tables StateFrom(const std::vector<std::vector<uint8_t>>& words) {
+  const auto be32 = [](const std::vector<uint8_t>& b) {
+    return uint32_t(b[0]) << 24 | uint32_t(b[1]) << 16 | uint32_t(b[2]) << 8 | uint32_t(b[3]);
+  };
+  return {be32(words[0]), be32(words[1]), words[2][0], words[3][0]};
+}
+
+std::vector<std::vector<uint8_t>> WordsOf(const costume_lists::Tables& t) {
+  return {Be32Bytes(t.list), Be32Bytes(t.variants), {uint8_t(t.length)}, {uint8_t(t.maximum)}};
 }
 
 }  // namespace
@@ -94,6 +96,7 @@ void TweakPatcher::CaptureOriginals(const GuestBytes& guest, const AllocFn& allo
   if (captured()) return;  // later calls would capture patched bytes
   patches_.clear();
   unavailable_.assign(AllTweaks().size(), false);
+  refuse_on_.assign(AllTweaks().size(), std::string());
   for (const Tweak& tweak : AllTweaks()) {
     patches_.push_back(tweak.patches);
     for (const CostumeAddition& addition : tweak.additions) {
@@ -116,6 +119,7 @@ std::string TweakPatcher::Apply(const GuestBytes& guest, size_t tweak, bool on,
   if (tweak >= AllTweaks().size()) return std::format("no tweak {}", tweak);
   if (!captured()) return "the original bytes were never recorded";
   if (unavailable_[tweak]) return "no guest memory for this costume";
+  if (on && !refuse_on_[tweak].empty()) return refuse_on_[tweak];
   const std::vector<Patch>& patches = patches_[tweak];
 
   // Make every read-only patch writable first; on any failure undo and write nothing.
@@ -153,6 +157,57 @@ std::string TweakPatcher::Apply(const GuestBytes& guest, size_t tweak, bool on,
     }
   }
   return error;
+}
+
+std::string TweakPatcher::CarrySuits(const GuestBytes& guest, const AllocFn& alloc, uint32_t character,
+                                     const std::vector<uint8_t>& models) {
+  if (!captured()) return "the original bytes were never recorded";
+  for (size_t t = 0; t < patches_.size(); ++t) {
+    std::vector<Patch>& patches = patches_[t];
+    size_t at = patches.size();
+    for (size_t p = 0; p + 3 < patches.size(); ++p) {
+      if (patches[p].address == kCostumeList + 4 * character) at = p;
+    }
+    if (at == patches.size()) continue;  // not this character's box
+    if (unavailable_[t]) return {};      // it never had its blocks: it stays refused, and the suits stay
+    std::vector<std::vector<uint8_t>> on_words, off_words;
+    for (size_t p = at; p < at + 4; ++p) {
+      on_words.push_back(patches[p].bytes);
+      off_words.push_back(originals_[t][p]);
+    }
+    const costume_lists::Tables box_on = StateFrom(on_words), box_off = StateFrom(off_words);
+    const costume_lists::Tables now = costume_lists::Read(guest, character);
+    const uint32_t k = uint32_t(models.size());
+    // Which state costumes::Apply just built on: the other one gets its own copy with the suits appended.
+    const bool is_on = now.maximum == box_on.maximum + k;
+    if (!is_on && now.maximum != box_off.maximum + k) {
+      return std::format("charId {}: her costume count {} is neither her box's state plus {} suits", character, now.maximum, k);
+    }
+    // Always these two blocks, whichever state the box is in, so the guest heap does not depend on the box.
+    const uint32_t list_block = alloc(costume_lists::kFullBlock);
+    const uint32_t variants_block = list_block ? alloc(costume_lists::kFullBlock) : 0;
+    if (!variants_block) {
+      unavailable_[t] = true;
+      return std::format("charId {}: no guest memory for her box to keep her suits; the box cannot be changed", character);
+    }
+    const costume_lists::Tables& other_from = is_on ? box_off : box_on;
+    costume_lists::FillMoved(guest, other_from, models, list_block, variants_block, costume_lists::kFullBlock);
+    const costume_lists::Tables other{list_block, variants_block, other_from.length + k, other_from.maximum + k};
+    const costume_lists::Tables with_on = is_on ? now : other;
+    const costume_lists::Tables with_off = is_on ? other : now;
+    if (with_on.maximum > costume_lists::kCostumeLimit) {
+      refuse_on_[t] = std::format("no room for this box beside her imported suits (at most {} costumes); it applies at the "
+                                  "next start, in place of her last suits",
+                                  costume_lists::kCostumeLimit);
+    }
+    const std::vector<std::vector<uint8_t>> on_after = WordsOf(with_on), off_after = WordsOf(with_off);
+    for (size_t p = 0; p < 4; ++p) {
+      patches[at + p].bytes = on_after[p];
+      originals_[t][at + p] = off_after[p];
+    }
+    return {};
+  }
+  return {};
 }
 
 bool TweakPatcher::IsOn(const GuestBytes& guest, size_t tweak) const {

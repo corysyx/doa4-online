@@ -542,7 +542,7 @@ int main() {
   TestSources();
   RealArchive();
   if (g_failures) {
-    std::printf("afs_overlay: %d check(s) failed\n", g_failures);
+    std::printf("%d check(s) failed\n", g_failures);
     return 1;
   }
   std::printf("afs_overlay: all checks passed\n");

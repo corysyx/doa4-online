@@ -26,6 +26,11 @@ set(DEADORALIVE4_SOURCES
     src/doa4_afs_vfs.cpp
     src/doa4_display.cpp
     src/doa4_title_word.cpp
+    src/doa4_suits_manifest.cpp
+    src/doa4_costumes.cpp
+    src/doa4_suits.cpp
+    src/doa4_suits_hooks.cpp
+    src/doa4_suits_labels.cpp
     src/doa4_unlocks.cpp
     src/doa4_tweaks.cpp
     src/doa4_backup.cpp

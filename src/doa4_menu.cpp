@@ -565,6 +565,18 @@ void MenuDialog::DrawExtrasTab() {
     }
     ImGui::EndDisabled();
   }
+
+  ImGui::SeparatorText("DOAX2 swimsuits");
+  ImGui::TextWrapped("%s", host_.suits_summary.empty() ? "DOAX2 swimsuits: none imported" : host_.suits_summary.c_str());
+  for (const std::string& note : host_.suits_notes) ImGui::TextColored(kErrorColor, "%s", note.c_str());
+  ImGui::TextWrapped("Imported suits come after each character's own and extra costumes.");
+  bool full_bust = rex::cvar::Query<bool>("doa4_suits_full_bust");
+  ImGui::BeginDisabled(extras_locked);  // its rescale writes guest memory
+  if (ImGui::Checkbox("Full DOAX2 breast movement", &full_bust)) {
+    SaveThenSet("doa4_suits_full_bust", full_bust ? "true" : "false", false);
+  }
+  ImGui::EndDisabled();
+  ImGui::TextDisabled("Up and down range of DOAX2 instead of the character's DOA4 range. Takes effect at once.");
 }
 
 void MenuDialog::DrawWipeUnlocks(const std::optional<uint32_t>& profile, bool locked) {

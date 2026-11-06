@@ -48,3 +48,6 @@ REXCVAR_DEFINE_BOOL(netplay_show_stats, false, "DOA4",
                     "Online play: show the connection stats line");
 REXCVAR_DEFINE_BOOL(netplay_upnp, true, "DOA4",
                     "Online play: open the port on the router (UPnP) when hosting");
+// Extras tab: DOAX2 swimsuits (doa4_suits_bust.h).
+REXCVAR_DEFINE_BOOL(doa4_suits_full_bust, false, "DOA4",
+                    "DOAX2 swimsuits: full DOAX2 up and down breast movement");

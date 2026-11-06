@@ -61,6 +61,9 @@
 #include "doa4_afs_overlay.h"
 #include "doa4_afs_vfs.h"
 #include "doa4_display.h"
+#include "doa4_suits.h"
+#include "doa4_suits_hooks.h"
+#include "doa4_suits_labels.h"
 #include "doa4_title_word.h"
 #include "doa4_tweaks.h"
 #include "doa4_unlocks.h"
@@ -404,6 +407,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     MountDiscRoot();
     MountCacheDevice();
     SetUpTitleWord();  // after the mounts, before any guest code runs: the game reads spr.afs and sheet 3's sprite records
+    SetUpSuits();      // after the mounts and SetUpExtras (OnPostLoadXexImage), before any guest code runs
     StartThreadSnapshotter();
     StartTestLobbyWatch();  // netplay: DOA4_NP_TEST_DIR only (np_ctl.on creates the lobby)
 
@@ -468,6 +472,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     }
     doa4::title_word::EnableWordDraw();
     title_word_line_ = doa4::title_word::FilesLine(spr.get());
+    title_spr_ = spr;
     // The digest in the log lets two players' logs be compared by eye as well.
     REXLOG_INFO("[doa4][TITLE] ONLINE under the logo: {}x{} composed into spr.afs entries {} and {}, {}", width, height,
                 doa4::title_word::kSprLogoN, doa4::title_word::kSprLogoW, title_word_line_.substr(0, title_word_line_.size() - 1));
@@ -1232,6 +1237,29 @@ class DeadOrAlive4App : public rex::ReXApp {
   // as F12 does, 20, 40, 60 and 80 s after start (the first seconds of attract
   // mode are black logo screens). For runtime checks only.
   void StartPhotoTest() {
+    // DOA4_SUITS_PHOTOS=<start ds>:<every ds>:<count> (deciseconds): a burst of photos on the UI
+    // thread through TakePhoto, for the swimsuit runs (ported from the stage-0 probe's
+    // DOA4_SWIM_PHOTOS_DS). For runtime checks only.
+    if (const char* suits_photos = std::getenv("DOA4_SUITS_PHOTOS")) {
+      int start = 0, every = 0, count = 0;
+      if (std::sscanf(suits_photos, "%d:%d:%d", &start, &every, &count) == 3 && every > 0 &&
+          count > 0) {
+        REXLOG_INFO("[doa4][SUITS] test: photos at {} ds, every {} ds, {} in all", start, every, count);
+        photo_test_thread_ = std::thread([this, start, every, count] {
+          using namespace std::chrono_literals;
+          for (int shot = 0; shot < count; ++shot) {
+            const int wait_ds = shot == 0 ? start : every;
+            for (int i = 0; i < wait_ds && !photo_stop_.load(std::memory_order_acquire); ++i) {
+              std::this_thread::sleep_for(100ms);
+            }
+            if (photo_stop_.load(std::memory_order_acquire)) return;
+            REXLOG_INFO("[doa4][SUITS] test: photo {} of {}", shot + 1, count);
+            app_context().CallInUIThreadDeferred([this] { TakePhoto(); });
+          }
+        });
+        return;
+      }
+    }
     const char* env = std::getenv("DOA4_PHOTO_TEST");
     if (!env || std::string_view(env) != "hotkey") return;
     REXLOG_INFO("[doa4][PHOTO] test: hotkey photos at 20, 40, 60 and 80 s");
@@ -1320,6 +1348,8 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.guest = guest_ready_ ? &guest_ : nullptr;
     host.patcher = &patcher_;
     host.protect = protect_;
+    host.suits_summary = suits_status_.Summary();
+    host.suits_notes = suits_status_.skipped;
     host.save_dir = SaveFolder();
     host.backup_root = BackupFolder();
     host.extras = &extras_;
@@ -1464,6 +1494,8 @@ class DeadOrAlive4App : public rex::ReXApp {
   std::string title_word_line_ = doa4::title_word::FilesLine(nullptr);  // np_files' extra line: doa4_title_word.h
   bool guest_ready_ = false;
   doa4::tweaks::TweakPatcher patcher_;
+  doa4::suits::ImportStatus suits_status_;  // DOAX2 swimsuits (SetUpSuits)
+  std::shared_ptr<const doa4::afs::Overlay> title_spr_;  // spr.afs as the title word serves it (SetUpLabels goes on top)
   doa4::tweaks::ProtectFn protect_;
   doa4::ExtrasState extras_;
   std::atomic<bool> extras_stop_{false};
@@ -1483,6 +1515,136 @@ class DeadOrAlive4App : public rex::ReXApp {
   // Guest memory access for the Extras tab, the game tweaks the config turns
   // on (applied before any guest code runs, as Xenia applies patches), and the
   // DOA4_EXTRAS_TEST watcher.
+  // DOAX2 swimsuits (<user data>/doax2_suits; spec section 3): the combined character archives
+  // replace chrone/chrtwo/chrthree.afs behind d: and cache:, then the costume tables gain the
+  // suits. Needs the mounts (OnPostSetup) and guest_ (SetUpExtras, OnPostLoadXexImage); runs
+  // before any guest code. With no import, or any failure before the tables change, the game's
+  // own archives and tables stay as they are.
+  void SetUpSuits() {
+    rex::Runtime* rt = runtime();
+    rex::memory::Memory* memory = rt ? rt->memory() : nullptr;
+    if (!memory || !rt->file_system() || !guest_ready_) {
+      REXLOG_WARN("[doa4][SUITS] no guest memory or file system; swimsuits not loaded");
+      return;
+    }
+    // The load-request guard's state: the image's record counts first; the FINAL state (Apply's
+    // counts, plus the empty-slot marks) replaces it below, still before any guest code runs.
+    doa4::costumes::GuardState guard = doa4::costumes::ReadGuardState(guest_);
+    doa4::suits::InstallGuards(guard);
+    const std::filesystem::path game_root = std::filesystem::absolute(rt->game_data_root());
+    suits_status_ = doa4::suits::LoadImport(UserData() / "doax2_suits", game_root, guest_);
+    // The combined archives that were really put in place (empty when there are none, or when
+    // installing them failed): the empty-slot marks are read through exactly these.
+    std::map<std::string, std::shared_ptr<const doa4::afs::Overlay>> installed;
+    bool any_applied = false;  // at least one suit is in the costume tables: the labels are needed
+    if (!suits_status_.suits.empty()) {
+      std::string error;
+      auto overlays = doa4::suits::BuildOverlays(suits_status_, game_root, guest_, &error);
+      if (overlays.empty()) {
+        suits_status_.Fail(error);
+      } else {
+        error = doa4::afs::InstallOverlays(*rt->file_system(), overlays,
+                                           doa4::suits::EntryLabels(suits_status_, guest_));
+        if (!error.empty()) {
+          suits_status_.Fail(error);
+        } else {
+          installed = std::move(overlays);
+        }
+      }
+    }
+    if (!suits_status_.suits.empty()) {
+      const auto alloc = [memory](uint32_t size) { return memory->SystemHeapAlloc(size); };
+      // The tables as they stand: the Extras boxes (SetUpExtras) went first.
+      const doa4::costumes::ApplyResult applied = doa4::costumes::Apply(guest_, alloc, doa4::suits::SuitsOf(suits_status_));
+      std::vector<doa4::suits::LoadedSuit> kept;
+      for (const doa4::suits::LoadedSuit& l : suits_status_.suits) {
+        bool in = false;
+        for (const auto& a : applied.applied) in = in || a.label == l.suit.Label();
+        if (in) {
+          kept.push_back(l);
+        } else {
+          const auto refused = applied.refused.find(l.suit.Label());
+          suits_status_.skipped.push_back(l.suit.Label() + ": " +
+                                          (refused != applied.refused.end() ? refused->second
+                                                                            : "its character's tables were not changed"));
+        }
+      }
+      suits_status_.suits = std::move(kept);
+      for (const std::string& e : applied.errors) REXLOG_ERROR("[doa4][SUITS] {}", e);
+      std::map<uint32_t, std::vector<uint8_t>> models;
+      for (const auto& a : applied.applied) {
+        REXLOG_INFO("[doa4][SUITS] {}: charId {:#x} costume #{} = model {}", a.label, a.character,
+                    a.costume, a.model);
+        models[a.character].push_back(uint8_t(a.model));
+      }
+      // The boxes can be toggled from the menu later: each state of her box holds her suits too.
+      for (const auto& [character, list] : models) {
+        const std::string error = patcher_.CarrySuits(guest_, alloc, character, list);
+        if (!error.empty()) REXLOG_ERROR("[doa4][SUITS] {}", error);
+      }
+      guard = applied.guard;
+      any_applied = !applied.applied.empty();
+    }
+    // The final guard state: Apply's counts (else the image's), and every model whose body files
+    // are empty slots in the archives as the game reads them (through the installed overlays).
+    const std::string guard_note = doa4::suits::MarkEmptySlots(&guard, guest_, game_root, installed);
+    if (!guard_note.empty()) REXLOG_WARN("[doa4][SUITS] load-request guard: {}", guard_note);
+    doa4::suits::InstallGuards(guard);
+    // Read back from the installed state (not from the local), so a state that was never installed shows.
+    REXLOG_INFO("[doa4][SUITS] load-request guard: {} costume records point at empty slots",
+                doa4::suits::InstalledEmptySlots());
+    if (any_applied) SetUpLabels(memory, game_root);
+    REXLOG_INFO("[doa4][SUITS] {}{}", suits_status_.Summary(),
+                suits_status_.fingerprint.empty() ? std::string()
+                                                  : " (import " + suits_status_.fingerprint + ")");
+    for (const std::string& s : suits_status_.skipped) REXLOG_WARN("[doa4][SUITS] skipped {}", s);
+  }
+
+  // Costume-select labels past COS. 10 (doa4_suits_labels.h; SetUpSuits calls it only when a suit
+  // was added to the tables). The labels COS. 11-17 are composed from the game folder's own
+  // spChrN.xpr and spChrW.xpr and served through spr.afs on both devices, on top of the title word's
+  // spr.afs when that is in place (one archive, one entry per device: the second overlay must carry
+  // the first). An extended sheet-6 sprite table is installed for good (records 0-196 the original,
+  // 197-203 the labels, or a blank cell if the art failed), and the costume list's ids 133-139 are
+  // steered to 197-203 by the hooks. Without the extended table nothing is steered and the game draws
+  // what it always did.
+  void SetUpLabels(rex::memory::Memory* memory, const std::filesystem::path& game_root) {
+    std::string art_error;
+    const std::shared_ptr<const doa4::afs::Overlay> spr =
+        doa4::labels::BuildLabelOverlay(game_root, &art_error, title_spr_);
+    if (spr) {
+      art_error = doa4::afs::InstallOverlays(
+          *runtime()->file_system(), {{doa4::labels::kSprArchive, spr}},
+          {{doa4::labels::kSprArchive,
+            {{doa4::labels::kSprChrN, "spChrN.xpr (COS. 11-17)"}, {doa4::labels::kSprChrW, "spChrW.xpr (COS. 11-17)"}}}});
+    }
+    const bool art = art_error.empty();
+    if (art) {
+      REXLOG_INFO("[doa4][SUITS] costume labels: COS. 11-17 composed into spr.afs entries 8 (spChrN.xpr) and 9 "
+                  "(spChrW.xpr){}",
+                  title_spr_ ? ", over the title word's spr.afs" : "");
+    } else {
+      REXLOG_WARN("[doa4][SUITS] costume labels: COS. 11-17 not composed ({}); costumes past COS. 10 show a "
+                  "blank label",
+                  art_error);
+    }
+    const doa4::labels::Extended extended = doa4::labels::ExtendTable(
+        guest_, [memory](uint32_t size) { return memory->SystemHeapAlloc(size); }, doa4::labels::NewRecords(art));
+    if (extended.table == 0) {
+      REXLOG_WARN("[doa4][SUITS] costume labels: {}; costumes past COS. 10 keep the game's own sprites",
+                  extended.note);
+      return;
+    }
+    doa4::suits::InstallLabelTable(extended.table);
+    // Read back from guest memory and the installed hook state (not from the locals), so a table or
+    // a hook that was never installed shows.
+    REXLOG_INFO("[doa4][SUITS] costume labels: {}; ids 133-139 of the costume list {}",
+                doa4::labels::DescribeInstalled(guest_, extended.original),
+                doa4::suits::InstalledLabelTable() == guest_.ReadBe32(doa4::labels::kSheetPointer)
+                    ? "are steered to 197-203"
+                    : "are NOT steered (the hooks have no table)");
+  }
+
   void SetUpExtras() {
     rex::Runtime* rt = runtime();
     rex::memory::Memory* memory = rt ? rt->memory() : nullptr;

@@ -30,8 +30,9 @@ DEFAULT_TIMEOUT = 600  # seconds per runner
 
 DEFAULT = (re.compile(r"PASSED: (\d+) checks, 0 failures"), re.compile(r"FAILED: \d+ checks, \d+ failures"))
 # Runners whose tests print "<name>: all checks passed" / "N check(s) failed" (no check count).
-ALL_CHECKS_PASSED = ("backup", "extras", "gamefiles", "graphics", "photo", "photo_service", "photo_watch", "photo_win",
-                     "setup_flow", "setup_win", "toml_upsert", "tweaks", "unlocks", "xdvdfs")
+ALL_CHECKS_PASSED = ("afs_overlay", "backup", "costumes", "extras", "gamefiles", "graphics", "photo", "photo_service", "photo_watch",
+                     "photo_win", "setup_flow", "setup_win", "suits", "suits_bust", "suits_labels", "suits_manifest", "toml_upsert", "tweaks",
+                     "unlocks", "xdvdfs")
 SPECIAL = {
     # speakers_host_test.cpp
     "speakers": (re.compile(r"all speakers checks passed"), re.compile(r"\d+ FAILED")),

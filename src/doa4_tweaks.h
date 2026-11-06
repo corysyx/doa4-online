@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "doa4_costume_lists.h"
 #include "doa4_guest.h"
 
 namespace doa4::tweaks {
@@ -45,10 +46,10 @@ const std::array<Tweak, 5>& AllTweaks();
 
 // The game's costume tables (notes/research/doa4_costume_system.md), by charId. The lookup sub_82526B78 reads the list,
 // the variants and the length; the select screen and the unlocks read the max.
-inline constexpr uint32_t kCostumeMax = 0x82C34888;       // u8[25]
-inline constexpr uint32_t kCostumeLength = 0x82C348A4;    // u8[25]
-inline constexpr uint32_t kCostumeList = 0x82C348C0;      // be32[25]: u8 model per (costume, variant)
-inline constexpr uint32_t kCostumeVariants = 0x82C34928;  // be32[25]: u8 variants per costume
+inline constexpr uint32_t kCostumeMax = costume_lists::kMax;            // u8[25]
+inline constexpr uint32_t kCostumeLength = costume_lists::kLength;      // u8[25]
+inline constexpr uint32_t kCostumeList = costume_lists::kList;          // be32[25]: u8 model per (costume, variant)
+inline constexpr uint32_t kCostumeVariants = costume_lists::kVariants;  // be32[25]: u8 variants per costume
 
 // Guest memory of `size` bytes, or 0.
 using AllocFn = std::function<uint32_t(uint32_t size)>;
@@ -79,12 +80,22 @@ class TweakPatcher {
   // Whether guest memory holds the tweak's bytes.
   bool IsOn(const GuestBytes& guest, size_t tweak) const;
 
+  // The imported suits come after the boxes' costumes in the same tables, and go in after the boxes applied
+  // (costumes::Apply). Call this right after, for each character Apply gave suits, with her suits' models in order: her
+  // box (at most one per character; the host test pins that), on or off, then holds them too, so toggling it later moves
+  // only its own costumes and her suits stay, numbered after them. Takes two guest blocks in either state; a character
+  // with no box takes none. With the box off and the suits leaving no room for its costumes, turning it on is refused by
+  // name. "" or what went wrong (no guest memory: the box then refuses to change, and her suits stay).
+  std::string CarrySuits(const GuestBytes& guest, const AllocFn& alloc, uint32_t character,
+                         const std::vector<uint8_t>& models);
+
  private:
   // patches_[tweak]: AllTweaks()'s patches, or for a costume tweak the words CaptureOriginals worked out.
   std::vector<std::vector<Patch>> patches_;
   // originals_[tweak][patch] = the bytes CaptureOriginals saw.
   std::vector<std::vector<std::vector<uint8_t>>> originals_;
   std::vector<bool> unavailable_;  // by tweak: no guest memory for its blocks
+  std::vector<std::string> refuse_on_;  // by tweak: why turning it on is refused (CarrySuits), or empty
 };
 
 }  // namespace doa4::tweaks

@@ -289,7 +289,10 @@ static const NotCarried kSdkNotCarried[] = {
 };
 // (Task 9 adds the Online tab's netplay_* settings: each player's own network preferences; the input delay a session
 // uses travels in the hand-off itself, not as a guest setting.)
+// doa4_suits_full_bust: not carried for now. Task 5 (plan 2026-11-06) decides it with the sessions' suit tables: with suits in a
+// session, its rescale writes guest memory, so the two players must agree on it.
 static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_show_fps", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
+                                              "doa4_suits_full_bust",
                                               "netplay_port", "netplay_delay_auto", "netplay_delay", "netplay_last_join",
                                               "netplay_show_stats", "netplay_upnp"};
 // the trust class: carried settings whose non-default value weakens a boundary of the PC that applies it

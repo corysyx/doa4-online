@@ -70,6 +70,9 @@ struct MenuHost {
   const GuestBytes* guest = nullptr;
   tweaks::TweakPatcher* patcher = nullptr;  // owned by the app
   tweaks::ProtectFn protect;
+  // DOAX2 swimsuits: the import's one-line status, and each suit not loaded with why.
+  std::string suits_summary;
+  std::vector<std::string> suits_notes;
   std::filesystem::path save_dir;  // the ups.dat save package folder, or empty
   // Where the one-time save backup goes: outside the folder the game lists
   // its saves from.
