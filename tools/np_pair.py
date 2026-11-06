@@ -68,6 +68,10 @@ DUMP0 = os.path.join("dumps", "data_000000.bin")  # the frame-0 .data dump in a 
 TERMINAL = re.compile(r"^session ended at frame (\d+): (.*)$")
 SESSION_SWEEP = re.compile(r"^session on: online, \w+, sweep (\d+) blocks/frame")  # np_session.cpp StartOnline's last line
 SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)\s*$")  # np_session.cpp StartOnline's line
+# np_digest.h DigestRegions, pinned against the source by test_digest_regions_match_source; the two the hunting switch adds are left out.
+REGIONS_TODAY = ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr"]
+REGIONS_MIXED = ["netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_83420020", "mt_8321B198", "frame_ctr", "cache_flag", "fight_state", "side0", "side1"]
+REGIONS_HUNT = ("stage_fx", "ctr_831A7AC0")
 SESSION_DIGESTS = (("costume tables", re.compile(r"session: costume tables digest ([0-9A-Fa-f]+) ")),  # dead_or_alive_4_app.h, game.log
                    ("label table", re.compile(r"session: label table digest ([0-9A-Fa-f]+) ")))
 CHECKSUMS = re.compile(r"^checksums handed to GekkoNet: (\d+)\s*$")
@@ -632,6 +636,15 @@ class Pair:
             self.problems.append(f"the copies disagree about the session's swimsuits: host {states['host']}, joiner {states['joiner']}")
         lines.append(f"session swimsuits: host {states['host']}, joiner {states['joiner']}")
         # ruling 15: no sweep in a mixed session, and only there. A copy without the line (the stand-in, a session that never started) says nothing.
+        # and the digest's header says which regions the session really hashed (a copy with no state word: not judged)
+        for s in (host, joiner):
+            words = [m.group(1) for m in (SESSION_SUITS.match(l) for l in s.np_log()) if m]
+            path = os.path.join(s.session_dir(), "digest.d4d")
+            if words and os.path.exists(path):
+                names = [r[0] for r in np_compare.read_digest(path)[0] if r[0] not in REGIONS_HUNT]
+                want = REGIONS_MIXED if words[0] == "mixed" else REGIONS_TODAY
+                if names != want:
+                    self.problems.append(f"the {s.name} hashed the regions {names} in a session with swimsuits {words[0]}, expected {want}")
         for s in (host, joiner):
             sweep = [int(m.group(1)) for m in (SESSION_SWEEP.match(l) for l in s.np_log()) if m]
             if sweep:
@@ -640,10 +653,11 @@ class Pair:
                     self.problems.append(f"the {s.name} runs {sweep[0]} sweep blocks a frame in a session with swimsuits {states[s.name]}")
         return states["host"]
 
-    def tables_check(self, lines, host, joiner):
+    def tables_check(self, lines, host, joiner, state="none"):
         """Task 6: the session's costume tables and label table, compared through each copy's digest lines in game.log. They can sit
         outside .data, where no dump or sweep sees them. A difference, or a digest on one side only, is a problem for every session
-        expect. The game logs both in every session; no line on either side is a stand-in or an older build."""
+        expect. A session with suit tables (state same or mixed) logs both, so no line on either side fails there too. With no suits the game
+        logs the costume tables' digest and no label table's; no line at all is the stand-in or an older build."""
         for what, pattern in SESSION_DIGESTS:
             digests = {}
             for s in (host, joiner):
@@ -653,7 +667,10 @@ class Pair:
                 digests[s.name] = sorted(found)[0] if found else None
             h, j = digests["host"], digests["joiner"]
             if h is None and j is None:
-                lines.append(f"no {what} digest on either side")
+                if state == "none":
+                    lines.append(f"no {what} digest on either side")
+                else:
+                    self.problems.append(f"no {what} digest on either side in a session with swimsuits {state}")
             elif h is None or j is None:
                 self.problems.append(f"{what} digest on one side only: host {h or 'none'}, joiner {j or 'none'}")
             elif h != j:
@@ -664,7 +681,7 @@ class Pair:
     def frame0_check(self, lines, host, joiner, fail, mixed=False):
         """Task 15 carry b: the two frame-0 .data dumps compared over the whole .data with the sweep's masks and the stash words
         zeroed (np_dumpdiff.frame0_difference), plus the handle-shift line. With fail, a difference or a missing dump is a
-        problem; otherwise only printed. mixed: a mixed session's masks too, as its sweep hashes it (Task 6, ruling 14)."""
+        problem; otherwise only printed. mixed: the file-size masks too (MIXED_MASKS): a mixed session runs no sweep, this compare is np_pair's own."""
         if not (host.dump0 and joiner.dump0):
             lines.append("frame-0 dump check not made (DOA4_NP_DUMP lacks frame 0 on: "
                          + ", ".join(s.name for s in (host, joiner) if not s.dump0) + ")")
@@ -773,7 +790,7 @@ class Pair:
         # review M5: every session expect (ok, desync, lost, quit) fails on a frame-0 difference or a missing frame-0 dump
         state = self.suit_state(lines, host, joiner)
         self.mixed = state == "mixed"
-        self.tables_check(lines, host, joiner)
+        self.tables_check(lines, host, joiner, state)
         self.frame0_check(lines, host, joiner, fail=True, mixed=state == "mixed")
         th, tj = host.terminal(), joiner.terminal()
         if expect == "lost":  # the joiner was ended hard: it writes no terminal line

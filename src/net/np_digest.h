@@ -7,8 +7,9 @@
 // sweep and hashes a positive list instead. Measured over 8 whole runs (notes/plans/2026-11-06-public-importer-plan1-foundation/
 // task-6-report.md): what two such PCs differ in has no end, each new scenario added thousands of words, and Tag added 16 blocks inside its
 // rounds, so a list of what to leave out could not be finished and every miss would end a live match. The rows below never differed.
-// Both side records are read each frame, so a fighter's position, life and state are checked every frame where the sweep saw them once in
-// 41. What such a session gives up: anything that goes wrong in .data without reaching one of these rows goes unnoticed.
+// During a round both side records are read each frame, so a fighter's position, life and state are checked every frame where the sweep saw
+// them once in 41. Outside a round they count for nothing: previews write to the same words. What such a session gives up: anything that
+// goes wrong in .data without reaching one of these rows goes unnoticed.
 
 #pragma once
 
@@ -60,6 +61,14 @@ inline constexpr SweepMask kSweepMasks[] = {
     {0x8357D520, 4, "D3D resource id counter (atomic increment in sub_8275D658): ids for D3D state caching"},
 };
 
+// The game's fight sequence state, a byte, the index into the handler table 0x82C657F4 that sub_823DFA10 calls each frame. Seen: 0 outside a
+// match, 1 setting a round up, 2 a round being fought (sub_823E0BD0), 3 the round is over, by KO or on time, 4 the KO's replay, 5 the result.
+// Ruling 17: a side record means a fighter only at 2. A record's own +0 does not say so: it is 1 on the character select after a match, where
+// previews cycle its character and model and write its words on a frame that depends on each PC's loads. Lives do not say so either: time
+// over ends a round with both above 0.
+inline constexpr uint32_t kFightState = 0x830ACF85;
+inline constexpr uint8_t kFightRound = 2;
+
 // False only in a mixed session (ruling 15).
 inline bool SweepOn(rules::SuitSession state) { return state != rules::SuitSession::kMixed; }
 
@@ -93,12 +102,16 @@ inline std::vector<Region> DigestRegions(rules::SuitSession state) {
   r.push_back({"mt_83420020", 0x83420020, 2504, {}});
   r.push_back({"mt_8321B198", 0x8321B198, 2504, {}});
   r.push_back({"frame_ctr", 0x831013E4, 4, {}});
-  // The word sub_82385BD0 sets when the archives do not fit the cache: it chooses each load's path, and the archives' sizes (per PC here) feed it.
+  // sub_82385BD0 sets this word when a file differs between d: and cache: (missing, or size or time) and, only then, -1 if the archives' sizes
+  // (per PC here) do not fit the free space; it chooses each load's path. cache: is a symlink to the same folder (MountCacheDevice,
+  // dead_or_alive_4_app.h), so nothing should differ and the word stays 0. On the list because nothing else would see it if that changed.
   r.push_back({"cache_flag", 0x831A595C, 4, {}});
-  // The fighter table (sub_823CCF10, stride 156, one record per side): +0 active, +1 character, +2 model, +4 position, +0x24 life, then state
-  // words to +0x78; past that, positions of the model on show, which differ. While +0 is 0 no fighter is in it (MaskedCopy, np_core.h).
-  r.push_back({"side0", 0x83033B40, 0x78, {}, true});
-  r.push_back({"side1", 0x83033BDC, 0x78, {}, true});
+  // The state always counts, so two peers who disagree on the gate are caught there; the records count only behind it (RegionCopy, np_core.h).
+  r.push_back({"fight_state", kFightState, 1, {}});
+  // The fighter table (sub_823CCF10, stride 156, one record per side): +0 set while a match is loaded, +1 character, +2 model, +4 position,
+  // +0x24 life, then state words to +0x78; past that, positions of the model on show, which differ.
+  r.push_back({"side0", 0x83033B40, 0x78, {}, kFightState, kFightRound});
+  r.push_back({"side1", 0x83033BDC, 0x78, {}, kFightState, kFightRound});
   return r;
 }
 

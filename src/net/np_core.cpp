@@ -434,16 +434,20 @@ std::string FixSetText(uint32_t bits) {
 }
 
 void MaskedCopy(const Region& region, const uint8_t* bytes, std::vector<uint8_t>* out) {
-  if (region.active_only && region.length > 0 && bytes[0] == 0) {
-    out->assign(region.length, 0);
-    return;
-  }
   out->assign(bytes, bytes + region.length);
   for (const Mask& m : region.masks) {
     if (m.offset >= region.length) continue;
     const uint32_t n = std::min(m.length, region.length - m.offset);
     std::memset(out->data() + m.offset, 0, n);
   }
+}
+
+void RegionCopy(const Region& region, const uint8_t* base, std::vector<uint8_t>* out) {
+  if (region.gate_address && base[region.gate_address] != region.gate_value) {
+    out->assign(region.length, 0);
+    return;
+  }
+  MaskedCopy(region, base + region.address, out);
 }
 
 std::vector<std::pair<uint32_t, uint32_t>> ParseFieldRanges(std::string_view text, std::string* error) {

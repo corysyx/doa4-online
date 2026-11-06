@@ -180,19 +180,22 @@ struct Region {
   uint32_t address = 0;
   uint32_t length = 0;
   std::vector<Mask> masks;
-  bool active_only = false;  // a fighter record: its first byte says whether it holds a fighter
+  uint32_t gate_address = 0;  // non-zero: the region counts only while the guest byte there holds gate_value (RegionCopy)
+  uint8_t gate_value = 0;
 };
 
 // Copies [address, address + length) of guest memory from `bytes` into `out`
-// with every mask zeroed; `out` is resized to the region's length. An active_only region whose first byte is 0 copies as all zeros: no
-// fighter is in it, whatever preview models left behind. Otherwise it copies as any region, the first byte included, so a peer that
-// thinks a record is active while the other does not hashes differently.
+// with every mask zeroed; `out` is resized to the region's length.
 void MaskedCopy(const Region& region, const uint8_t* bytes, std::vector<uint8_t>* out);
 
 // The per-frame field log (test only, DOA4_NP_TEST_FIELDS): raw guest bytes of named ranges, so two peers can be compared by
 // value on every frame. Text: "<addr>:<len>[,...]", hex. Empty text: no ranges, no error; anything malformed, a zero length or
 // a range past 0xFFFFFFFF: no ranges at all and *error says which item.
 std::vector<std::pair<uint32_t, uint32_t>> ParseFieldRanges(std::string_view text, std::string* error);
+// The bytes a region hashes, from guest memory (`base` = guest address 0): MaskedCopy, unless the region has a gate and the guest byte there
+// is not gate_value: then all zeros, whatever the region holds. The gate byte itself must be hashed by a region of its own, so that two
+// peers who disagree on the gate differ there.
+void RegionCopy(const Region& region, const uint8_t* base, std::vector<uint8_t>* out);
 // File: "D4NPFLD1", u32 version (1), u32 range count, then per range u32 address, u32 length; then per frame u32 frame, u32 0,
 // the ranges' bytes in order, as guest memory holds them (tools/np_fields.py).
 std::string EncodeFieldsHeader(const std::vector<std::pair<uint32_t, uint32_t>>& ranges);

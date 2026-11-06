@@ -3116,6 +3116,39 @@ def test_sweep_masks_match_source(root):
     check(overlap == [], f"MIXED_MASKS reach nothing a mixed session lists: {overlap}")
 
 
+def test_digest_regions_match_source(root):
+    # np_pair's region lists against np_digest.h DigestRegions, by reading its two branches in order
+    mod = load("np_pair")
+    src = open(os.path.join(HERE, "..", "..", "src", "net", "np_digest.h"), encoding="utf-8").read()
+    body = src[src.index("inline std::vector<Region> DigestRegions"):src.index("inline std::vector<std::pair<uint32_t, uint32_t>> SweepRanges")]
+    today, _, mixed = body.partition("return r;")
+    names = lambda text: [m for m in re.findall(r'r\.push_back\(\{"(\w+)"|r\.push_back\((slots)\)', text)]
+    flat = lambda text: ["task_slots" if b else a for a, b in names(text)]
+    check(flat(today) == mod.REGIONS_TODAY, f"np_pair.REGIONS_TODAY vs np_digest.h:\n{flat(today)}\n{mod.REGIONS_TODAY}")
+    check(flat(mixed) == mod.REGIONS_MIXED, f"np_pair.REGIONS_MIXED vs np_digest.h:\n{flat(mixed)}\n{mod.REGIONS_MIXED}")
+    check(len(mod.REGIONS_TODAY) == 10 and len(mod.REGIONS_MIXED) == 12, f"region counts {len(mod.REGIONS_TODAY)} {len(mod.REGIONS_MIXED)}")
+
+
+def test_pair_regions_state(root):
+    # item (c): the digest's header against the session's state, in both directions
+    dig = lambda: tuple(x for side in ("--env-host", "--env-joiner") for x in (side, "FAKE_ONLINE_TABLES=aa", side, "FAKE_ONLINE_LABELS=bb"))
+    both = lambda k, v: (("--env-host", f"{k}={v}", "--env-joiner", f"{k}={v}"))
+    code, out, runs = np_pair(root, "rg1", *both("FAKE_ONLINE_SUITS", "mixed"), *dig())
+    check(code == 0, f"np_pair, mixed, the mixed list: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "rg2", *both("FAKE_ONLINE_SUITS", "same"), *dig())
+    check(code == 0, f"np_pair, same, today's list: exit {code}\n{out}")
+    today = "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr"
+    code, out, runs = np_pair(root, "rg3", *both("FAKE_ONLINE_SUITS", "mixed"), *both("FAKE_ONLINE_REGIONS", today), *dig())
+    check(code == 1 and "in a session with swimsuits mixed, expected" in out, f"np_pair, mixed, today's list: exit {code}\n{out}")
+    mixedlist = "netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_83420020,mt_8321B198,frame_ctr,cache_flag,fight_state,side0,side1"
+    code, out, runs = np_pair(root, "rg4", *both("FAKE_ONLINE_SUITS", "same"), *both("FAKE_ONLINE_REGIONS", mixedlist), *dig())
+    check(code == 1 and "in a session with swimsuits same, expected" in out, f"np_pair, same, the mixed list: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "rg5", *both("FAKE_ONLINE_SUITS", "none"), *both("FAKE_ONLINE_REGIONS", today + ",stage_fx,ctr_831A7AC0"))
+    check(code == 0, f"np_pair, none, the hunting switch's two extra regions: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "rg6", *both("FAKE_ONLINE_SUITS", "none"), *both("FAKE_ONLINE_REGIONS", today.replace(",frame_ctr", "")))
+    check(code == 1 and "in a session with swimsuits none" in out, f"np_pair, none, a region missing: exit {code}\n{out}")
+
+
 def test_frame0_diff(root):
     mod = load("np_dumpdiff")
     a, b = dump_bytes(), dump_bytes()
@@ -3254,18 +3287,46 @@ def test_fields_compare(root):
     check(code == 2 and "no field log" in out, f"np_fields, no file: {code}\n{out}")
     code, out = run(a, a, "--field", "far:83100000:4")
     check(code == 2 and "not in the log" in out, f"np_fields, a field the log does not hold: {code}\n{out}")
+    # --rounds: only frames with the fight state at 2 on both; a record difference outside a round does not count, one inside does
+    code, out = run(a, a, "--rounds")
+    check(code == 2 and "not in the log" in out, f"np_fields --rounds, no state in the log: {code}\n{out}")
+
+    def write2(name, frames):
+        d = os.path.join(root, name)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "fields.d4f"), "wb") as f:
+            f.write(b"D4NPFLD1" + struct.pack("<II", 1, 2) + struct.pack("<II", 0x830ACF84, 4) + struct.pack("<II", table, size))
+            for fr, state, row in frames:
+                f.write(struct.pack("<II", fr, 0) + bytes([1, state, 0, 0]) + bytes(row))
+        return d
+    base2 = write2("b0", [(0, 0, base), (1, 2, base), (2, 2, base), (3, 3, base)])
+    code, out = run(base2, write2("b1", [(0, 0, life), (1, 2, base), (2, 2, base), (3, 3, life)]), "--rounds")
+    check(code == 0 and "rounds: 2 frames in a round" in out and "fight state: differs on 0 frames" in out, f"np_fields --rounds, a difference outside a round: {code}\n{out}")
+    code, out = run(base2, write2("b2", [(0, 0, base), (1, 2, base), (2, 2, life), (3, 3, base)]), "--rounds")
+    check(code == 1 and "side1 life 83033C00+2: first differs at frame 2" in out, f"np_fields --rounds, a difference in a round: {code}\n{out}")
+    code, out = run(base2, write2("b3", [(0, 0, base), (1, 3, base), (2, 2, base), (3, 3, base)]), "--rounds")
+    check(code == 1 and "fight state: differs on 1 frames, first 1 (A 2, B 3)" in out, f"np_fields --rounds, the peers disagree on the state: {code}\n{out}")
+    # both runs agree on the state, and it is never a round: an empty comparison, not a pass (probe row f7: a first fixture that disagreed on the state let the guard go)
+    none = [(0, 0, base), (1, 0, base), (2, 0, base), (3, 0, base)]
+    code, out = run(write2("b4", none), write2("b5", none), "--rounds")
+    check(code == 2 and "rounds: 0 frames in a round" in out, f"np_fields --rounds, no round at all: {code}\n{out}")
 
 
 def test_compare_mixed_session(root):
-    # --mixed-session forgives the two file-job counters and nothing else. Every other counter, and the digest rows, still fail the pair.
+    # --mixed-session forgives the four counters that follow file work and nothing else. The others, and the digest rows, still fail the pair.
     code, out, runs = np_pair(root, "cm0", "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_loader_jobs")
     check(code == 1 and "np_compare failed" in out, f"np_pair, not mixed, a loader counter differs: exit {code}\n{out}")
-    mixed = ("--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=mixed")
+    mixed = ("--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=mixed") + tuple(
+        x for side in ("--env-host", "--env-joiner") for x in (side, "FAKE_ONLINE_TABLES=aa", side, "FAKE_ONLINE_LABELS=bb"))
     code, out, runs = np_pair(root, "cm1", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_loader_jobs")
     check(code == 0, f"np_pair, mixed, a loader counter differs: exit {code}\n{out}")
     code, out, runs = np_pair(root, "cm2", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_cri_jobs")
     check(code == 0, f"np_pair, mixed, a CRI job counter differs: exit {code}\n{out}")
-    code, out, runs = np_pair(root, "cm3", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_cri_passes")
+    code, out, runs = np_pair(root, "cm5", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_cri_passes")
+    check(code == 0, f"np_pair, mixed, the CRI pass counter differs: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "cm6", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_spin_steps")
+    check(code == 0, f"np_pair, mixed, the spin counter differs: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "cm3", *mixed, "--env-joiner", "FAKE_ONLINE_PROGRESS=pr_notify")
     check(code == 1 and "np_compare failed" in out, f"np_pair, mixed, another counter differs: exit {code}\n{out}")
     code, out, runs = np_pair(root, "cm4", *mixed, "--env-joiner", "FAKE_ONLINE_DIVERGE=4")
     check(code == 1 and "differ at frame" in out, f"np_pair, mixed, a digest row differs: exit {code}\n{out}")
@@ -3276,7 +3337,7 @@ def test_pair_sweep_state(root):
     def pair(name, state, sweep):
         env = []
         for side in ("--env-host", "--env-joiner"):
-            env += [side, f"FAKE_ONLINE_SUITS={state}", side, f"FAKE_ONLINE_SWEEP={sweep}"]
+            env += [side, f"FAKE_ONLINE_SUITS={state}", side, f"FAKE_ONLINE_SWEEP={sweep}", side, "FAKE_ONLINE_TABLES=aa", side, "FAKE_ONLINE_LABELS=bb"]
         return np_pair(root, name, *env)
     code, out, runs = pair("sw1", "mixed", 0)
     check(code == 0 and "host sweep: 0 blocks/frame" in out, f"np_pair, mixed, sweep off: exit {code}\n{out}")
@@ -3304,9 +3365,16 @@ def test_pair_tables_digest(root):
     check(code == 0 and "label table digest equal: aaaa" in out, f"np_pair, equal label digests: exit {code}\n{out}")
     code, out, runs = np_pair(root, "tl2", *same, "--env-host", "FAKE_ONLINE_LABELS=aaaa", "--env-joiner", "FAKE_ONLINE_LABELS=bbbb")
     check(code == 1 and "label table digests differ: host aaaa, joiner bbbb" in out, f"np_pair, label digests differ, tables equal: exit {code}\n{out}")
-    # no digest line on either side (the stand-in; a real session always logs them, with no suits too): not a problem, and the pair says so
+    # no digest line on either side: nothing to compare with no suits, and the pair says so
     code, out, runs = np_pair(root, "td4")
     check(code == 0 and "no costume tables digest on either side" in out, f"np_pair, no digest lines: exit {code}\n{out}")
+    # item (b): a session with suit tables always logs both, so no line on either side fails there
+    for state in ("same", "mixed"):
+        code, out, runs = np_pair(root, "tdn" + state, "--env-host", f"FAKE_ONLINE_SUITS={state}", "--env-joiner", f"FAKE_ONLINE_SUITS={state}")
+        check(code == 1 and f"no costume tables digest on either side in a session with swimsuits {state}" in out
+              and f"no label table digest on either side in a session with swimsuits {state}" in out, f"np_pair, {state}, no digest lines: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "tdo", "--env-host", "FAKE_ONLINE_SUITS=none", "--env-joiner", "FAKE_ONLINE_SUITS=none", *same)
+    check(code == 0 and "costume tables digest equal" in out and "no label table digest on either side" in out, f"np_pair, none, the real shape: exit {code}\n{out}")
     # fails the desync expect too, whose verdict is otherwise fine (the desync in the game's shape, as test_pair_frame0's)
     both = ("--env-host", "FAKE_ONLINE_END=desync", "--env-joiner", "FAKE_ONLINE_END=desync", "--env-host", "FAKE_ONLINE_DESYNC_AT=7",
             "--env-joiner", "FAKE_ONLINE_DESYNC_AT=7", "--env-host", "FAKE_ONLINE_QUIT_AT=8", "--env-joiner", "FAKE_ONLINE_QUIT_AT=10")
@@ -3320,6 +3388,8 @@ def test_pair_tables_digest(root):
 def test_pair_frame0_mixed(root):
     # Task 6, ruling 14: in a mixed session the frame-0 check leaves out the mixed masks too; in any other session it does not
     big = ("--env-host", "FAKE_ONLINE_DUMP_BYTES=100000", "--env-joiner", "FAKE_ONLINE_DUMP_BYTES=100000")
+    dig = tuple(x for side in ("--env-host", "--env-joiner") for x in (side, "FAKE_ONLINE_TABLES=aa", side, "FAKE_ONLINE_LABELS=bb"))
+    big = big + dig
     mixed = ("--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=mixed")
     size = "--env-joiner", "FAKE_ONLINE_DUMP0_DIFF=82C5ED19"  # the archive's size word: masked only when mixed
     code, out, runs = np_pair(root, "fm1", *big, *mixed, *size)

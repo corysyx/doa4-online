@@ -1,9 +1,11 @@
 """Compares two peers' per-frame field logs (fields.d4f, DOA4_NP_TEST_FIELDS, src/net/np_core.h) by value, on every frame both wrote.
 A digest holds hashes; this answers "what differed, and when".
 
-  py -3 -I tools/np_fields.py RUN_A RUN_B [--field NAME:ADDR:LEN ...] [--from F]
+  py -3 -I tools/np_fields.py RUN_A RUN_B [--field NAME:ADDR:LEN ...] [--from F] [--rounds]
 RUN_A/RUN_B are session folders (holding fields.d4f). Without --field it compares the fighters' fields (FIGHTER_FIELDS), which a run logs
-with DOA4_NP_TEST_FIELDS=83033B40:138.
+with DOA4_NP_TEST_FIELDS=830ACF84:4,83033B40:138. --rounds: only frames where both runs' fight state says a round is being fought, and
+it says how many, and how many frames the two disagree on the state (the state must be in the log). Outside a round the side records hold
+what previews write, so a difference there says nothing about a fighter.
 Prints the frames compared and, per field, "equal on all N frames" or its first differing frame, both values and the number of
 frames it differs on. Exit status: 0 = every field equal on at least one frame; 1 = a field differs; 2 = nothing to compare (no file,
 no common frame, or a field the log does not hold), so an empty comparison can never pass.
@@ -15,8 +17,11 @@ import sys
 
 sys.dont_write_bytecode = True
 # The per-fighter table 0x83033B40, stride 156, one record per side (sub_823CCF10: r29 = 0x83033B40 + side * 156, the HUD's source):
-# +0 active in a match, +1 character, +2 model (u8 each), +4 position x y z w (floats), +0x24 life (u16, 240 full). The first 0x78
-# bytes never differed between two peers in any measured pair; +0x78.. holds bone positions of the model being shown, which do.
+# +0 set while a match is loaded (also on the character select after it: it does not mean a fighter is on), +1 character, +2 model (u8 each),
+# +4 position x y z w (floats), +0x24 life (u16, 240 full). In a round the first 0x78 bytes never differed between two peers in any measured
+# pair; +0x78.. holds bone positions of the model being shown, which do outside rounds. The fight state 0x830ACF85 == 2 is a round (np_digest.h).
+FIGHT_STATE = 0x830ACF85
+FIGHT_ROUND = 2
 TABLE = 0x83033B40
 SIDE = 156
 FIGHTER_FIELDS = [f for side in (0, 1) for f in (
@@ -60,6 +65,7 @@ def main(argv=None):
     ap.add_argument("b")
     ap.add_argument("--field", action="append", default=[], help="NAME:ADDR:LEN, hex")
     ap.add_argument("--from", dest="start", type=int, default=0)
+    ap.add_argument("--rounds", action="store_true")
     args = ap.parse_args(argv)
     fields = []
     for text in args.field:
@@ -82,6 +88,18 @@ def main(argv=None):
     if not common:
         return 2
     result = 0
+    if args.rounds:
+        at = locate(ra, FIGHT_STATE, 1)
+        if at is None:
+            print(f"--rounds: the fight state {FIGHT_STATE:08X} is not in the log")
+            return 2
+        disagree = [f for f in common if xa[f][at] != xb[f][at]]
+        print(f"fight state: differs on {len(disagree)} frames" + (f", first {disagree[0]} (A {xa[disagree[0]][at]}, B {xb[disagree[0]][at]})" if disagree else ""))
+        result = 1 if disagree else 0
+        common = [f for f in common if xa[f][at] == FIGHT_ROUND and xb[f][at] == FIGHT_ROUND]
+        print(f"rounds: {len(common)} frames in a round")
+        if not common:
+            return 2
     for name, address, length in fields:
         at = locate(ra, address, length)
         if at is None:

@@ -98,7 +98,7 @@ BLOCK = 0x10000  # the sweep's block size (np_core.h: 64 KB blocks from LO)
 def masked(data, mixed=False):
     """A copy of a .data dump (guest LO..) as the sweep hashes it: every SDK handle stash word zeroed (decided on the dump's
     own bytes as they are, stash_words) and every SWEEP_MASKS range zeroed (the parts of a range inside the dump); mixed: every
-    MIXED_MASKS range too, as a mixed session's sweep does."""
+    MIXED_MASKS range too, for np_pair's frame-0 compare of a mixed session (the game runs no sweep there)."""
     d = bytearray(data)
     for w in stash_words(data):
         d[w:w + 4] = bytes(4)

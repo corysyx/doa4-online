@@ -637,10 +637,10 @@ void HashRows(State& s, uint8_t* base, uint32_t f) {
   s.digest_row.assign(s.regions.size(), 0);
   for (size_t i = 0; i < s.regions.size(); ++i) {
     const Region& r = s.regions[i];
-    if (r.masks.empty() && !r.active_only) {
+    if (r.masks.empty() && !r.gate_address) {
       s.digest_row[i] = XXH3_64bits(base + r.address, r.length);
     } else {
-      MaskedCopy(r, base + r.address, &s.scratch);
+      RegionCopy(r, base, &s.scratch);
       s.digest_row[i] = XXH3_64bits(s.scratch.data(), s.scratch.size());
     }
   }

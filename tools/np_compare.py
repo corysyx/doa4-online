@@ -12,8 +12,9 @@ runs, with the first frame it differs at.
 --allow-unchecked (runs without run_result.txt, sweep.d4s or counters.d4k, e.g. the proof's, and
 sweeps hashed with different settings: not compared)
 --sweep-advisory (report sweep block differences without failing; nothing else is forgiven)
---mixed-session (a session where each PC draws a fighter from its own files: the counters of file jobs, MIXED_PROGRESS, are reported
-without failing, because a PC with a suit's files loads more of them; every other progress counter and every fallback still counts)
+--mixed-session (a session where each PC draws a fighter from its own files: the counters that follow file work, MIXED_PROGRESS, are
+reported without failing, because a PC with a suit's files loads more, on other frames; none is in the session's checksum. pr_reseeds,
+pr_notify and every fallback still count)
 Exit status: 0 = both runs good, equal lengths, every compared frame equal, a sweep row and a
 counters row for every digest frame, no fallback, equal progress; 1 = otherwise; 2 = nothing to
 compare.
@@ -96,7 +97,7 @@ def final_progress(names, frames):
     return " ".join(f"{name}={last[i]}" for i, name in enumerate(names) if name.startswith("pr_"))
 
 
-MIXED_PROGRESS = ("pr_loader_jobs", "pr_cri_jobs")
+MIXED_PROGRESS = ("pr_loader_jobs", "pr_cri_jobs", "pr_cri_passes", "pr_spin_steps")
 
 
 def judge_counters(a, b, digest_a, digest_b, start, allow_unchecked, mixed=False):

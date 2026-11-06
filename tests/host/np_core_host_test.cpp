@@ -953,7 +953,7 @@ static void TestMixedMasksOnlyWhenMixed() {
       CHECK(std::string(r[i].name) == today[i].name);
       CHECK(r[i].address == today[i].address);
       CHECK(r[i].length == today[i].length);
-      CHECK(!r[i].active_only);
+      CHECK(r[i].gate_address == 0);
       masks += r[i].masks.size();
       if (std::string(r[i].name) != "task_slots") CHECK(r[i].masks.empty());
     }
@@ -974,7 +974,7 @@ static void TestMixedMasksOnlyWhenMixed() {
   const Row list[] = {{"netmatch", 0x830C1CB0, 0x38C0},   {"pad_entries", 0x831011E0, 5 * 44}, {"pad_mgr", 0x8357C2D8, 0xD60},
                       {"task_slots", 0x83100F28, 24 * 28}, {"mt_833F7600", 0x833F7600, 2504},  {"mt_83420020", 0x83420020, 2504},
                       {"mt_8321B198", 0x8321B198, 2504},   {"frame_ctr", 0x831013E4, 4},       {"cache_flag", 0x831A595C, 4},
-                      {"side0", 0x83033B40, 0x78},         {"side1", 0x83033BDC, 0x78}};
+                      {"fight_state", 0x830ACF85, 1},      {"side0", 0x83033B40, 0x78},        {"side1", 0x83033BDC, 0x78}};
   const size_t list_count = sizeof(list) / sizeof(list[0]);
   const std::vector<Region> mixed = DigestRegions(SuitSession::kMixed);
   CHECK(mixed.size() == list_count);
@@ -983,7 +983,8 @@ static void TestMixedMasksOnlyWhenMixed() {
     CHECK(mixed[i].address == list[i].address);
     CHECK(mixed[i].length == list[i].length);
     const bool side = std::string(list[i].name).rfind("side", 0) == 0;
-    CHECK(mixed[i].active_only == side);  // only the two records, NOT the regions beside them
+    CHECK(mixed[i].gate_address == (side ? 0x830ACF85u : 0u));  // only the two records, NOT the regions beside them: the state itself always counts
+    CHECK(mixed[i].gate_value == (side ? 2 : 0));
     if (std::string(list[i].name) != "task_slots") CHECK(mixed[i].masks.empty());
   }
   // The task slots: today's 24 profile words, and each slot's fiber pointer. Nothing else in the slot leaves the check.
@@ -1006,49 +1007,81 @@ static void TestMixedMasksOnlyWhenMixed() {
   }
 }
 
-// A fighter record is hashed through MaskedCopy: while its first byte is 0 no fighter is in it (preview models write there) and every other
-// byte reads as zero; otherwise all of it counts, the first byte included, so a peer that thinks a record is active is caught by that byte.
-static void TestActiveOnlyCopy() {
-  std::vector<uint8_t> a(16), b(16), out;
-  for (size_t i = 0; i < a.size(); ++i) a[i] = uint8_t(0x40 + i), b[i] = uint8_t(0x80 + i);
-  a[0] = b[0] = 0;  // both inactive, different leftovers: the same bytes
-  Region record{"side0", 0x1000, 16, {}, true};
-  std::vector<uint8_t> copy_a, copy_b;
-  MaskedCopy(record, a.data(), &copy_a);
-  MaskedCopy(record, b.data(), &copy_b);
-  CHECK(copy_a == copy_b);
-  CHECK(copy_a == std::vector<uint8_t>(16, 0));
-  // active: every byte counts, and a difference anywhere shows
-  a[0] = b[0] = 1;
-  MaskedCopy(record, a.data(), &copy_a);
-  MaskedCopy(record, b.data(), &copy_b);
-  CHECK(copy_a != copy_b);
-  CHECK(copy_a == a);
-  // one side active and the other not, the rest of the record all zeros on both: only the active byte tells them apart
-  std::vector<uint8_t> on(16, 0), off(16, 0);
-  on[0] = 1;
-  MaskedCopy(record, on.data(), &copy_a);
-  MaskedCopy(record, off.data(), &copy_b);
-  CHECK(copy_a != copy_b);
-  // any non-zero first byte is kept as it is, NOT read as a flag
-  a[0] = 7;
-  MaskedCopy(record, a.data(), &out);
-  CHECK(out == a);
-  // an active record's masks still apply
-  Region masked{"side0", 0x1000, 16, {{4, 2}}, true};
-  a[0] = 1;
-  MaskedCopy(masked, a.data(), &out);
-  CHECK(out[3] == a[3] && out[4] == 0 && out[5] == 0 && out[6] == a[6]);
-  // a plain region whose first byte is 0 is not touched: NOT every region is a record
-  Region plain{"plain", 0x1000, 16, {}};
-  a[0] = 0;
-  MaskedCopy(plain, a.data(), &out);
-  CHECK(out == a);
+static std::vector<uint8_t> Hex(const char* text) {
+  std::vector<uint8_t> out;
+  const auto v = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+  for (const char* p = text; p[0] && p[1]; p += 2) out.push_back(uint8_t(v(p[0]) * 16 + v(p[1])));
+  return out;
+}
+
+// Ruling 17: a side record counts only while the fight state 0x830ACF85 says a round is on. +0 of a record does not say that: it is 1 on the
+// character select after a match. The records below are captures, T2.15: an imagined blank would pass the wrong gate as well.
+static void TestFightGate() {
+  const std::vector<Region> mixed = DigestRegions(rules::SuitSession::kMixed);
+  Region side;
+  for (const Region& r : mixed) {
+    if (std::string(r.name) == "side1") side = r;
+  }
+  // The production gate's value on a small guest: a state byte at 0x10, the record at 0x100.
+  CHECK(side.gate_address == kFightState);
+  CHECK(side.length == 0x78);
+  side.gate_address = 0x10;
+  side.address = 0x100;
+  std::vector<uint8_t> mem(0x200, 0), a, b;
+  const auto copy = [&](const std::vector<uint8_t>& record, uint8_t state, std::vector<uint8_t>* out) {
+    std::fill(mem.begin(), mem.end(), uint8_t(0));
+    mem[0x10] = state;
+    if (record.size() <= 0x100) std::copy(record.begin(), record.end(), mem.begin() + 0x100);
+    RegionCopy(side, mem.data(), out);
+  };
+  // r_lei frame 7100: the character select after the match, state 0, +0 = 1, the character byte cycling, side 0 a stale life.
+  const std::vector<uint8_t> select = Hex(
+      "0106000040d022d8bf313b0b40778b933f8000000000471c0000c4330000471c0000000000000025000000250000000023800081ffff000c000000010000000100000000000002020203000100000101000100b200000000000000020000000000010000ff00000000000000000000000000000000000000");
+  // m_hh frame 4705, side 1, the two peers: one frame's shift on a preview, +0 = 0.
+  const std::vector<uint8_t> shift_a = Hex(
+      "00150c003f8000003f800000000000003f80000000008000000080000000800000010100000000000000000000000000018e00e40000000d00010000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+  const std::vector<uint8_t> shift_b = Hex(
+      "00150c003f8000003f800000000000003f80000000008000000080000000800001010100000000000000000000000000000300e40000000d00000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+  // r_lei frame 4000: a round.
+  const std::vector<uint8_t> round = Hex(
+      "010c0000c121fe58bf31c0333e7e117e3f800000000096d6000096d6000096d60100000000f00000000000000000000000cb015bffff0003000000000200000000000001000003020200000000000000000100c100000000000000010000000000010000ff00000000000000000000000000000000000000");
+  CHECK(select.size() == 0x78 && shift_a.size() == 0x78 && shift_b.size() == 0x78 && round.size() == 0x78);
+  CHECK(select[0] == 1);  // the point of the capture: NOT closed by its active byte
+  // Closed: every state a run was seen in outside a round (r_lei, r_idle: 0 before and after a match, 1 setting up, 3 round over, 4, 5).
+  for (const uint8_t state : {uint8_t(0), uint8_t(1), uint8_t(3), uint8_t(4), uint8_t(5)}) {
+    copy(select, state, &a);
+    CHECK(a == std::vector<uint8_t>(0x78, 0));
+    copy(shift_a, state, &a);
+    copy(shift_b, state, &b);
+    CHECK(a == b);
+  }
+  // Open: the record as it is, and a shift shows.
+  copy(round, 2, &a);
+  CHECK(a == round);
+  copy(shift_a, 2, &a);
+  copy(shift_b, 2, &b);
+  CHECK(a != b);
+  // The gate reads the state, NOT the record: a round with a record that says inactive is still read.
+  copy(shift_a, 2, &a);
+  CHECK(a == shift_a);
+  // A region with no gate is read whatever the state: NOT every region is a record.
+  Region plain{"plain", 0x100, 0x78, {}};
+  copy(round, 0, &a);
+  mem[0] = 5;  // what guest address 0 holds, for a mutant that reads a gate there
+  RegionCopy(plain, mem.data(), &b);
+  CHECK(b == round);
+  // Masks still apply to an open region.
+  Region masked = side;
+  masked.masks = {{4, 2}};
+  mem[0x10] = 2;
+  std::copy(round.begin(), round.end(), mem.begin() + 0x100);
+  RegionCopy(masked, mem.data(), &a);
+  CHECK(a.size() == 0x78 && a[3] == round[3] && a[4] == 0 && a[5] == 0 && a[6] == round[6]);
 }
 
 int main() {
   TestMixedMasksOnlyWhenMixed();
-  TestActiveOnlyCopy();
+  TestFightGate();
   TestFieldRanges();
   TestMxcsrAndSwitches();
   TestPadBytes();

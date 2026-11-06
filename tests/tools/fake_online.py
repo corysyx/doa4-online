@@ -48,6 +48,7 @@ Switches of the stand-in itself (FAKE_ONLINE_*, per copy, in its environment):
   SUITS=<word>      the session's swimsuit state on np_log's session line, in the real shape: none, same, mixed (default: no such word)
   TABLES=<hex>      the session process logs `session: costume tables digest <hex> (2818 bytes)` into game.log, as SetUpSuits does
   LABELS=<hex>      the same for `session: label table digest <hex> (2448 bytes)`, as SetUpLabels does
+  (SUITS also makes the digest's header the real one for that state; REGIONS=a,b replaces it)
   SWEEP=<n>         np_log's `session on: online, stand-in, sweep <n> blocks/frame`, in the real shape
   PROGRESS=<name>   that progress counter 1 higher on this copy, in the last row
   BOOT_HOLD=1       the session starts with the real game's frame-0 hold (hold begin frame 0, banner 1.0 s later, hold end)
@@ -382,14 +383,24 @@ def lobby(ctl):
         time.sleep(0.1)
 
 
+REAL_REGIONS = {"none": "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr",
+                "mixed": "netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_83420020,mt_8321B198,frame_ctr,cache_flag,fight_state,side0,side1"}
+REAL_REGIONS["same"] = REAL_REGIONS["none"]
+
+
 def write_digest(path, rows, diverge):
+    regions = fake_game.REGIONS
+    state = os.environ.get("FAKE_ONLINE_SUITS")
+    names = os.environ.get("FAKE_ONLINE_REGIONS") or REAL_REGIONS.get(state)
+    if names:
+        regions = [(n, 0x82B70000 + 16 * k, 4) for k, n in enumerate(names.split(","))]
     with open(path, "wb") as f:
-        f.write(b"D4NPDIG1" + struct.pack("<II", 1, len(fake_game.REGIONS)))
-        for name, addr, length in fake_game.REGIONS:
+        f.write(b"D4NPDIG1" + struct.pack("<II", 1, len(regions)))
+        for name, addr, length in regions:
             f.write(struct.pack("<II", addr, length) + name.encode().ljust(24, bytes(1)))
         for i in range(rows):
             bad = 7 if diverge is not None and i >= diverge else 0
-            f.write(struct.pack("<II", i, 0) + struct.pack(f"<{len(fake_game.REGIONS)}Q", 1000 + i + bad, 2000 + i))
+            f.write(struct.pack("<II", i, 0) + struct.pack(f"<{len(regions)}Q", 1000 + i + bad, *[2000 + i] * (len(regions) - 1)))
 
 
 DUMP_LO = 0x82B70000
