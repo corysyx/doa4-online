@@ -66,6 +66,9 @@ EXPECTS = ("ok", "desync", "lost", "quit", "refused-build", "refused-files", "re
 REFUSED_SESSION_REASON = "internal: the other player's game did not start the session"
 DUMP0 = os.path.join("dumps", "data_000000.bin")  # the frame-0 .data dump in a session folder (DOA4_NP_DUMP=0)
 TERMINAL = re.compile(r"^session ended at frame (\d+): (.*)$")
+SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)\s*$")  # np_session.cpp StartOnline's line
+SESSION_DIGESTS = (("costume tables", re.compile(r"session: costume tables digest ([0-9A-Fa-f]+) ")),  # dead_or_alive_4_app.h, game.log
+                   ("label table", re.compile(r"session: label table digest ([0-9A-Fa-f]+) ")))
 CHECKSUMS = re.compile(r"^checksums handed to GekkoNet: (\d+)\s*$")
 FRAME_LINE = re.compile(r"^frame (\d+)\b")
 TIMING_SLACK_MS = 50
@@ -617,10 +620,43 @@ class Pair:
             self.problems.append(f"the joiner's status.txt says refusal={st.get('refusal')!r}, expected 'session' "
                                  f"(the lobby answered the host's session Hello)")
 
-    def frame0_check(self, lines, host, joiner, fail):
+    def suit_state(self, lines, host, joiner):
+        """The session's swimsuit state from the two np_logs ("mixed" adds the mixed masks to the frame-0 check). A copy with no
+        such word reads "none", today's check. The two copies saying different things is a problem."""
+        states = {}
+        for s in (host, joiner):
+            found = [m.group(1) for m in (SESSION_SUITS.match(l) for l in s.np_log()) if m]
+            states[s.name] = found[0] if found else "none"
+        if states["host"] != states["joiner"]:
+            self.problems.append(f"the copies disagree about the session's swimsuits: host {states['host']}, joiner {states['joiner']}")
+        lines.append(f"session swimsuits: host {states['host']}, joiner {states['joiner']}")
+        return states["host"]
+
+    def tables_check(self, lines, host, joiner):
+        """Task 6: the session's costume tables and label table, compared through each copy's digest lines in game.log. They can sit
+        outside .data, where no dump or sweep sees them. A difference, or a digest on one side only, is a problem for every session
+        expect. No line on either side: a session without suit tables."""
+        for what, pattern in SESSION_DIGESTS:
+            digests = {}
+            for s in (host, joiner):
+                found = {m.group(1) for m in (pattern.search(l) for l in read_lines(os.path.join(s.run, "game.log"))) if m}
+                if len(found) > 1:
+                    self.problems.append(f"the {s.name} logged more than one {what} digest: {', '.join(sorted(found))}")
+                digests[s.name] = sorted(found)[0] if found else None
+            h, j = digests["host"], digests["joiner"]
+            if h is None and j is None:
+                lines.append(f"no {what} digest on either side")
+            elif h is None or j is None:
+                self.problems.append(f"{what} digest on one side only: host {h or 'none'}, joiner {j or 'none'}")
+            elif h != j:
+                self.problems.append(f"{what} digests differ: host {h}, joiner {j}")
+            else:
+                lines.append(f"{what} digest equal: {h}")
+
+    def frame0_check(self, lines, host, joiner, fail, mixed=False):
         """Task 15 carry b: the two frame-0 .data dumps compared over the whole .data with the sweep's masks and the stash words
         zeroed (np_dumpdiff.frame0_difference), plus the handle-shift line. With fail, a difference or a missing dump is a
-        problem; otherwise only printed."""
+        problem; otherwise only printed. mixed: a mixed session's masks too, as its sweep hashes it (Task 6, ruling 14)."""
         if not (host.dump0 and joiner.dump0):
             lines.append("frame-0 dump check not made (DOA4_NP_DUMP lacks frame 0 on: "
                          + ", ".join(s.name for s in (host, joiner) if not s.dump0) + ")")
@@ -634,9 +670,10 @@ class Pair:
                 return
             with open(path, "rb") as f:
                 data[s.name] = f.read()
-        diff = np_dumpdiff.frame0_difference(data["host"], data["joiner"])
+        diff = np_dumpdiff.frame0_difference(data["host"], data["joiner"], mixed)
         if diff is None:
-            lines.append(f"frame-0 .data dumps equal ({len(data['host'])} bytes; sweep masks and stash words applied)")
+            lines.append(f"frame-0 .data dumps equal ({len(data['host'])} bytes; sweep masks and stash words applied"
+                         + ("; mixed masks applied)" if mixed else ")"))
             return
         shift = np_dumpdiff.handle_shift(data["host"], data["joiner"])
         msg = f"frame-0 .data dumps differ at {diff[0]:08X} (block {diff[1]:08X})" + \
@@ -725,7 +762,9 @@ class Pair:
                 return
             lines.append(f"{s.name}: terminal {s.terminal()} checksums {s.checksums()} missing {missing}")
         # review M5: every session expect (ok, desync, lost, quit) fails on a frame-0 difference or a missing frame-0 dump
-        self.frame0_check(lines, host, joiner, fail=True)
+        state = self.suit_state(lines, host, joiner)
+        self.tables_check(lines, host, joiner)
+        self.frame0_check(lines, host, joiner, fail=True, mixed=state == "mixed")
         th, tj = host.terminal(), joiner.terminal()
         if expect == "lost":  # the joiner was ended hard: it writes no terminal line
             self.judge_lost(lines, host, joiner, th, tj)

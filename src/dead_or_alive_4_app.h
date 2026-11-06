@@ -1678,6 +1678,12 @@ class DeadOrAlive4App : public rex::ReXApp {
       return;
     }
     doa4::suits::InstallLabelTable(extended.table);
+    if (doa4::np::Online()) {  // the block is on the heap, where the sweep does not look: the two peers' logs can be compared (np_pair)
+      std::vector<uint8_t> records(doa4::labels::kExtendedBytes);
+      for (uint32_t i = 0; i < doa4::labels::kExtendedBytes; ++i) records[i] = guest_.read(extended.table + i);
+      REXLOG_INFO("[doa4][SUITS] session: label table digest {} ({} bytes)", doa4::gamefiles::Sha1Hex(records.data(), records.size()),
+                  records.size());
+    }
     // Read back from guest memory and the installed hook state (not from the locals), so a table or
     // a hook that was never installed shows.
     REXLOG_INFO("[doa4][SUITS] costume labels: {}; ids 133-139 of the costume list {}",

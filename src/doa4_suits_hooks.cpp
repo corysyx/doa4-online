@@ -78,6 +78,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -492,7 +493,14 @@ bool FullBustWanted() {
     using namespace std::chrono;
     return (duration_cast<seconds>(steady_clock::now().time_since_epoch()).count() / flip) % 2 != 0;
   }
-  return rex::cvar::Query<bool>("doa4_suits_full_bust");
+  // In a session: the hand-off's value, taken once, never the cvar. The SDK's F4 overlay writes the cvar on one PC at any moment
+  // (Extras' lock does not reach it), and a rescale writes guest memory. Offline: the cvar, so the ESC toggle acts at once.
+  static const std::optional<bool> session = [] {
+    const std::optional<bool> value = doa4::np::SessionFullBust();
+    if (value) REXLOG_INFO("[doa4][SUITS] session: full bust is {} for this session, from the hand-off", *value);
+    return value;
+  }();
+  return session ? *session : rex::cvar::Query<bool>("doa4_suits_full_bust");
 }
 
 }  // namespace

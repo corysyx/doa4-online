@@ -3087,24 +3087,25 @@ def put_word(d, addr, value):
 
 
 def test_sweep_masks_match_source(root):
-    # np_dumpdiff.SWEEP_MASKS is the in-game sweep's mask list (np_session.cpp kSweepMasks), pinned against the source
+    # np_dumpdiff.SWEEP_MASKS and MIXED_MASKS are the in-game lists (np_digest.h kSweepMasks, kMixedMasks), pinned against the source
     mod = load("np_dumpdiff")
-    src = open(os.path.join(HERE, "..", "..", "src", "net", "np_session.cpp"), encoding="utf-8").read()
-    table = re.search(r"kSweepMasks\[\]\s*=\s*\{(.*?)\n\};", src, re.S)
-    # review M6: every row of the table (a line that opens a brace) must parse; the counts must be exact
-    body = table.group(1) if table else ""
-    row_lines = [l.strip() for l in body.splitlines() if l.strip().startswith("{")]
-    masks, unparsed = [], []
-    for l in row_lines:
-        m = re.match(r"\{\s*0x([0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+|\d+),", l)
-        if m:
-            masks.append((int(m.group(1), 16), int(m.group(2), 0)))
-        else:
-            unparsed.append(l)
-    check(table is not None and len(row_lines) > 0, "np_session.cpp: the kSweepMasks table was found and has rows")
-    check(unparsed == [], f"np_session.cpp kSweepMasks rows this test cannot parse: {unparsed}")
-    check(len(masks) == len(row_lines) == len(mod.SWEEP_MASKS), f"kSweepMasks rows {len(row_lines)}, parsed {len(masks)}, SWEEP_MASKS {len(mod.SWEEP_MASKS)}")
-    check(sorted(mod.SWEEP_MASKS) == sorted(masks), f"np_dumpdiff.SWEEP_MASKS vs np_session.cpp kSweepMasks:\n{mod.SWEEP_MASKS}\n{masks}")
+    src = open(os.path.join(HERE, "..", "..", "src", "net", "np_digest.h"), encoding="utf-8").read()
+    for symbol, mine in (("kSweepMasks", mod.SWEEP_MASKS), ("kMixedMasks", mod.MIXED_MASKS)):
+        table = re.search(symbol + r"\[\]\s*=\s*\{(.*?)\n\};", src, re.S)
+        # review M6: every row of the table (a line that opens a brace) must parse; the counts must be exact
+        body = table.group(1) if table else ""
+        row_lines = [l.strip() for l in body.splitlines() if l.strip().startswith("{")]
+        masks, unparsed = [], []
+        for l in row_lines:
+            m = re.match(r"\{\s*0x([0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+|\d+),", l)
+            if m:
+                masks.append((int(m.group(1), 16), int(m.group(2), 0)))
+            else:
+                unparsed.append(l)
+        check(table is not None and len(row_lines) > 0, f"np_digest.h: the {symbol} table was found and has rows")
+        check(unparsed == [], f"np_digest.h {symbol} rows this test cannot parse: {unparsed}")
+        check(len(masks) == len(row_lines) == len(mine), f"{symbol} rows {len(row_lines)}, parsed {len(masks)}, np_dumpdiff {len(mine)}")
+        check(sorted(mine) == sorted(masks), f"np_dumpdiff vs np_digest.h {symbol}:\n{mine}\n{masks}")
 
 
 def test_frame0_diff(root):
@@ -3198,6 +3199,104 @@ def test_handle_shift(root):
     p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_dumpdiff.py"), pa, pb], capture_output=True, text=True, timeout=60)
     check(p.returncode == 0 and "handle shift" not in p.stdout and "0 differing ranges" in p.stdout,
           f"np_dumpdiff: equal dumps, no shift line:\n{p.stdout}{p.stderr}")
+
+
+def test_fields_compare(root):
+    # np_fields.py reads what np_core.cpp EncodeFieldsHeader + np_session.cpp WriteFieldRow write (the header bytes are pinned in
+    # np_core_host_test TestFieldRanges). An empty comparison must not pass.
+    table, size = 0x83033B40, 0x138
+
+    def write(name, frames):
+        d = os.path.join(root, name)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "fields.d4f"), "wb") as f:
+            f.write(b"D4NPFLD1" + struct.pack("<II", 1, 1) + struct.pack("<II", table, size))
+            for fr, row in frames:
+                f.write(struct.pack("<II", fr, 0) + bytes(row))
+        return d
+
+    def run(a, b, *args):
+        p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_fields.py"), a, b, *args], capture_output=True, text=True)
+        return p.returncode, p.stdout + p.stderr
+
+    base = bytearray(size)
+    struct.pack_into(">H", base, 0x24, 240)
+    good = [(f, base) for f in range(5)]
+    a = write("a", good)
+    code, out = run(a, write("same", good))
+    check(code == 0 and "fields: 5 common frames (0..4)" in out and out.count("equal on all 5 frames") == 6, f"np_fields, equal: {code}\n{out}")
+    life = bytearray(base)
+    struct.pack_into(">H", life, 156 + 0x24, 112)  # side 1's life: NOT side 0's offset
+    code, out = run(a, write("life", good[:3] + [(3, life), (4, base)]))
+    check(code == 1 and "side1 life 83033C00+2: first differs at frame 3 (A 0000, B 0070); 1 frames differ" in out
+          and "side0 life 83033B64+2: equal" in out, f"np_fields, side 1's life differs: {code}\n{out}")
+    pos = bytearray(base)
+    pos[4] = 0x41
+    code, out = run(a, write("pos", [(0, pos)] + good[1:]))
+    check(code == 1 and "side0 position 83033B44+C: first differs at frame 0" in out, f"np_fields, side 0's position differs: {code}\n{out}")
+    bone = bytearray(base)
+    bone[0x7C] = 1  # past the first 0x78 bytes: the model's bones, not a fighter field
+    code, out = run(a, write("bone", [(0, bone)] + good[1:]))
+    check(code == 0, f"np_fields, a bone differs, the fighter fields do not: {code}\n{out}")
+    code, out = run(a, write("bone2", [(0, bone)] + good[1:]), "--field", "bone:83033BBC:4")
+    check(code == 1 and "bone 83033BBC+4: first differs at frame 0" in out, f"np_fields, a field named by the caller: {code}\n{out}")
+    code, out = run(a, write("late", [(9, base)]))
+    check(code == 2 and "0 common frames" in out, f"np_fields, no common frame: {code}\n{out}")
+    code, out = run(a, os.path.join(root, "absent"))
+    check(code == 2 and "no field log" in out, f"np_fields, no file: {code}\n{out}")
+    code, out = run(a, a, "--field", "far:83100000:4")
+    check(code == 2 and "not in the log" in out, f"np_fields, a field the log does not hold: {code}\n{out}")
+
+
+def test_pair_tables_digest(root):
+    # Task 6 carry b: the session's costume tables are outside .data once moved, so the two peers' digest lines are the check of
+    # them. A difference fails every session expect, like a frame-0 difference.
+    same = ("--env-host", "FAKE_ONLINE_TABLES=3f24002a", "--env-joiner", "FAKE_ONLINE_TABLES=3f24002a")
+    code, out, runs = np_pair(root, "td1", *same)
+    check(code == 0 and "costume tables digest equal: 3f24002a" in out, f"np_pair, equal table digests: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "td2", "--env-host", "FAKE_ONLINE_TABLES=3f24002a", "--env-joiner", "FAKE_ONLINE_TABLES=2b816649")
+    check(code == 1 and "costume tables digests differ: host 3f24002a, joiner 2b816649" in out, f"np_pair, table digests differ: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "td3", "--env-host", "FAKE_ONLINE_TABLES=3f24002a")
+    check(code == 1 and "costume tables digest on one side only: host 3f24002a, joiner none" in out, f"np_pair, one side logged a digest: exit {code}\n{out}")
+    # the label table's line is read the same way, and on its own
+    code, out, runs = np_pair(root, "tl1", *same, "--env-host", "FAKE_ONLINE_LABELS=aaaa", "--env-joiner", "FAKE_ONLINE_LABELS=aaaa")
+    check(code == 0 and "label table digest equal: aaaa" in out, f"np_pair, equal label digests: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "tl2", *same, "--env-host", "FAKE_ONLINE_LABELS=aaaa", "--env-joiner", "FAKE_ONLINE_LABELS=bbbb")
+    check(code == 1 and "label table digests differ: host aaaa, joiner bbbb" in out, f"np_pair, label digests differ, tables equal: exit {code}\n{out}")
+    # a session with no suit tables logs none on either side: today's sessions pass, and the pair says so
+    code, out, runs = np_pair(root, "td4")
+    check(code == 0 and "no costume tables digest on either side" in out, f"np_pair, no digest lines: exit {code}\n{out}")
+    # fails the desync expect too, whose verdict is otherwise fine (the desync in the game's shape, as test_pair_frame0's)
+    both = ("--env-host", "FAKE_ONLINE_END=desync", "--env-joiner", "FAKE_ONLINE_END=desync", "--env-host", "FAKE_ONLINE_DESYNC_AT=7",
+            "--env-joiner", "FAKE_ONLINE_DESYNC_AT=7", "--env-host", "FAKE_ONLINE_QUIT_AT=8", "--env-joiner", "FAKE_ONLINE_QUIT_AT=10")
+    code, out, runs = np_pair(root, "td5", "--expect", "desync", *both, "--env-joiner", "FAKE_ONLINE_DIVERGE=8", *same)
+    check(code == 0, f"np_pair, a desync with equal tables keeps its verdict: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "td6", "--expect", "desync", *both, "--env-joiner", "FAKE_ONLINE_DIVERGE=8",
+                              "--env-host", "FAKE_ONLINE_TABLES=3f24002a", "--env-joiner", "FAKE_ONLINE_TABLES=2b816649")
+    check(code == 1 and "costume tables digests differ" in out, f"np_pair, a desync with different tables fails: exit {code}\n{out}")
+
+
+def test_pair_frame0_mixed(root):
+    # Task 6, ruling 14: in a mixed session the frame-0 check leaves out the mixed masks too; in any other session it does not
+    big = ("--env-host", "FAKE_ONLINE_DUMP_BYTES=100000", "--env-joiner", "FAKE_ONLINE_DUMP_BYTES=100000")
+    mixed = ("--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=mixed")
+    size = "--env-joiner", "FAKE_ONLINE_DUMP0_DIFF=82C5ED19"  # the archive's size word: masked only when mixed
+    code, out, runs = np_pair(root, "fm1", *big, *mixed, *size)
+    check(code == 0 and "frame-0 .data dumps equal" in out and "mixed masks applied" in out, f"np_pair, mixed, a size word differs: exit {code}\n{out}")
+    for state in ("none", "same"):
+        env = ("--env-host", f"FAKE_ONLINE_SUITS={state}", "--env-joiner", f"FAKE_ONLINE_SUITS={state}")
+        code, out, runs = np_pair(root, "fm2" + state, *big, *env, *size)
+        check(code == 1 and "frame-0 .data dumps differ at 82C5ED19" in out, f"np_pair, {state}, a size word differs: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "fm3", *big, *size)  # a stand-in with no state word: today's check
+    check(code == 1 and "frame-0 .data dumps differ at 82C5ED19" in out, f"np_pair, no state word, a size word differs: exit {code}\n{out}")
+    # NOT masked when mixed: a byte just past the word, and any byte elsewhere. A mask of everything would pass these.
+    code, out, runs = np_pair(root, "fm4", *big, *mixed, "--env-joiner", "FAKE_ONLINE_DUMP0_DIFF=82C5ED1C")
+    check(code == 1 and "frame-0 .data dumps differ at 82C5ED1C" in out, f"np_pair, mixed, past the size word: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "fm5", *big, *mixed, "--env-joiner", "FAKE_ONLINE_DUMP0_DIFF=82B8ABCD")
+    check(code == 1 and "frame-0 .data dumps differ at 82B8ABCD" in out, f"np_pair, mixed, elsewhere: exit {code}\n{out}")
+    # the two copies disagree about the state: never a pass, whatever the dumps say
+    code, out, runs = np_pair(root, "fm6", *big, "--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=same")
+    check(code == 1 and "the copies disagree about the session's swimsuits: host mixed, joiner same" in out, f"np_pair, states differ: exit {code}\n{out}")
 
 
 def test_pair_frame0(root):

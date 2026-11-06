@@ -9,8 +9,9 @@ sides for its first words.
 When many differing words are SDK handles (F80xxxxx) on both sides and differ by one constant, one more line names it:
 "handle shift +N in K words" (B - A; handle_shift(): a lazily created host object took a low slot in one run and every
 later guest handle moved, debug 82B70000).
-Library use (np_pair.py, Task 15 carry b): frame0_difference(a, b) compares two frame-0 dumps over the whole .data with the
-in-game sweep's masks (SWEEP_MASKS = np_session.cpp kSweepMasks) and every SDK handle stash word zeroed.
+Library use (np_pair.py, Task 15 carry b): frame0_difference(a, b, mixed) compares two frame-0 dumps over the whole .data with the
+in-game sweep's masks (SWEEP_MASKS = np_digest.h kSweepMasks; mixed: MIXED_MASKS = np_digest.h kMixedMasks too) and every SDK handle
+stash word zeroed.
 """
 import argparse
 import collections
@@ -64,7 +65,7 @@ def stash_words(data, before=None):
     return out
 
 
-# The in-game sweep's masks (src/net/np_session.cpp kSweepMasks: guest address, length), pinned against the source by the
+# The in-game sweep's masks (src/net/np_digest.h kSweepMasks: guest address, length), pinned against the source by the
 # tool test test_sweep_masks_match_source.
 SWEEP_MASKS = [
     (0x82B747D8, 8),     # wait-list words of the CRT thread-notify critical section 0x82B747D0
@@ -74,16 +75,56 @@ SWEEP_MASKS = [
     (0x8357A560, 0x400),  # GPU timestamp ring 2 of the graphics object
     (0x8357D520, 4),     # D3D resource id counter
 ]
+# A mixed session's masks (src/net/np_digest.h kMixedMasks), pinned against the source by the same test.
+MIXED_MASKS = [
+    (0x82C5ED18, 4),
+    (0x82C5ED34, 4),
+    (0x82C5ED50, 4),
+    (0x82C7F7F8, 4),
+    (0x82C7F814, 4),
+    (0x82C7F830, 4),
+    (0x8303A10C, 132),
+    (0x8303A350, 208),
+    (0x8303A664, 156),
+    (0x830B3D04, 264),
+    (0x830B3F4C, 408),
+    (0x830B4254, 304),
+    (0x83100F30, 4),
+    (0x83100F4C, 4),
+    (0x83100F68, 4),
+    (0x83100F84, 4),
+    (0x83100FA0, 4),
+    (0x83100FBC, 4),
+    (0x83100FD8, 4),
+    (0x83100FF4, 4),
+    (0x83101010, 4),
+    (0x8310102C, 4),
+    (0x83101048, 4),
+    (0x83101064, 4),
+    (0x83101080, 4),
+    (0x8310109C, 4),
+    (0x831010B8, 4),
+    (0x831010D4, 4),
+    (0x831010F0, 4),
+    (0x8310110C, 4),
+    (0x83101128, 4),
+    (0x83101144, 4),
+    (0x83101160, 4),
+    (0x8310117C, 4),
+    (0x83101198, 4),
+    (0x831011B4, 4),
+]
 BLOCK = 0x10000  # the sweep's block size (np_core.h: 64 KB blocks from LO)
 
 
-def masked(data):
+def masked(data, mixed=False):
     """A copy of a .data dump (guest LO..) as the sweep hashes it: every SDK handle stash word zeroed (decided on the dump's
-    own bytes as they are, stash_words) and every SWEEP_MASKS range zeroed (the parts of a range inside the dump)."""
+    own bytes as they are, stash_words) and every SWEEP_MASKS range zeroed (the parts of a range inside the dump); mixed: every
+    MIXED_MASKS range too, as a mixed session's sweep does."""
     d = bytearray(data)
     for w in stash_words(data):
         d[w:w + 4] = bytes(4)
-    for addr, length in SWEEP_MASKS:
+    for addr, length in SWEEP_MASKS + (MIXED_MASKS if mixed else []):
         s, e = max(0, addr - LO), min(len(d), addr - LO + length)
         if s < e:
             d[s:e] = bytes(e - s)
@@ -101,9 +142,9 @@ def first_difference(a, b):
     return None if len(a) == len(b) else n
 
 
-def frame0_difference(a, b):
+def frame0_difference(a, b, mixed=False):
     """(first differing guest address, its 64 KB sweep block's address) of two frame-0 dumps after masked(); None if equal."""
-    at = first_difference(masked(a), masked(b))
+    at = first_difference(masked(a, mixed), masked(b, mixed))
     if at is None:
         return None
     return LO + at, LO + (at // BLOCK) * BLOCK

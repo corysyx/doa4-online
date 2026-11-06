@@ -186,6 +186,14 @@ struct Region {
 // with every mask zeroed; `out` is resized to the region's length.
 void MaskedCopy(const Region& region, const uint8_t* bytes, std::vector<uint8_t>* out);
 
+// The per-frame field log (test only, DOA4_NP_TEST_FIELDS): raw guest bytes of named ranges, so two peers can be compared by
+// value on every frame. Text: "<addr>:<len>[,...]", hex. Empty text: no ranges, no error; anything malformed, a zero length or
+// a range past 0xFFFFFFFF: no ranges at all and *error says which item.
+std::vector<std::pair<uint32_t, uint32_t>> ParseFieldRanges(std::string_view text, std::string* error);
+// File: "D4NPFLD1", u32 version (1), u32 range count, then per range u32 address, u32 length; then per frame u32 frame, u32 0,
+// the ranges' bytes in order, as guest memory holds them (tools/np_fields.py).
+std::string EncodeFieldsHeader(const std::vector<std::pair<uint32_t, uint32_t>>& ranges);
+
 // Digest file: "D4NPDIG1", u32 version (1), u32 region count, then per region
 // u32 address, u32 length, char name[24]; then per frame u32 frame, u32 0,
 // u64 hash per region.

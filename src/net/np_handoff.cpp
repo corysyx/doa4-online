@@ -49,7 +49,9 @@ constexpr const char* kSdkSettings[] = {
 };
 
 // The port's own carried settings beyond the tweaks. doa4_suits_full_bust: its rescale writes guest memory, so both players run
-// one value; a player's toggle cannot end a match, because the host's value is what runs and the tab is locked in a session.
+// one value. Two things write the cvar on a player's PC: the Extras tab, locked in a session, and the SDK's F4 settings overlay,
+// which is not. So in a session the reader (FullBustWanted, doa4_suits_hooks.cpp) takes the hand-off's value once and never the
+// cvar again: a toggle cannot end a match.
 constexpr const char* kPortSettings[] = {"doa4_suits_full_bust"};
 
 // The TRUST class: carried settings whose NON-DEFAULT value weakens a boundary of the PC that applies it (the census
@@ -465,6 +467,19 @@ std::string CaptureGuestSettings(const std::function<std::string(const std::stri
     text += '\n';
   }
   return text;
+}
+
+std::optional<std::string> GuestSettingValue(std::string_view text, std::string_view name) {
+  size_t pos = 0;
+  while (pos < text.size()) {
+    size_t end = text.find('\n', pos);
+    if (end == std::string_view::npos) end = text.size();
+    const std::string_view line = text.substr(pos, end - pos);
+    const size_t eq = line.find('=');
+    if (eq != std::string_view::npos && line.substr(0, eq) == name) return std::string(line.substr(eq + 1));
+    pos = end + 1;
+  }
+  return std::nullopt;
 }
 
 std::string ApplyGuestSettings(std::string_view text,

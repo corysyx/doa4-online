@@ -1502,6 +1502,26 @@ static void TestGuestNames() {
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) CHECK(uniq.count(t.cvar));
 }
 
+// The reader of a session's bust setting (np::SessionFullBust) takes it from the hand-off's text. T2.2: the likeliest wrong
+// versions are a prefix match, the first line whatever its name, and a value cut at the next '='.
+static void TestGuestSettingValue() {
+  Group("guest setting value: the exact name's value, whole, from any line");
+  const char* text = "doa4_suits_full_bust_old=false\nvsync=1\ndoa4_suits_full_bust=true\nwindow_title=a=b\nempty=\n";
+  CHECK(ho::GuestSettingValue(text, "doa4_suits_full_bust") == std::optional<std::string>("true"));  // NOT the _old line's false
+  CHECK(ho::GuestSettingValue(text, "vsync") == std::optional<std::string>("1"));
+  CHECK(ho::GuestSettingValue(text, "window_title") == std::optional<std::string>("a=b"));
+  CHECK(ho::GuestSettingValue(text, "empty") == std::optional<std::string>(""));  // a value that is empty is a value
+  CHECK(!ho::GuestSettingValue(text, "doa4_suits_full").has_value());
+  CHECK(!ho::GuestSettingValue(text, "nothing").has_value());
+  CHECK(!ho::GuestSettingValue("", "vsync").has_value());
+  CHECK(ho::GuestSettingValue("vsync=2", "vsync") == std::optional<std::string>("2"));  // a last line without a newline
+  // and the real text: what Capture writes, the reader finds
+  const std::string captured = ho::CaptureGuestSettings(
+      [](const std::string& name) { return name == "doa4_suits_full_bust" ? std::string("true") : std::string("0"); });
+  CHECK(!captured.empty());
+  CHECK(ho::GuestSettingValue(captured, "doa4_suits_full_bust") == std::optional<std::string>("true"));
+}
+
 static void TestCapture() {
   Group("capture: one query per name, in list order; the text is name=value lines in that order");
   const std::map<std::string, std::string> m = Store();
@@ -2218,6 +2238,7 @@ int main(int argc, char** argv) {
   TestDuplicates();
   TestFuzz();
   TestGuestNames();
+  TestGuestSettingValue();
   TestCapture();
   TestApply();
   TestTrustClass();

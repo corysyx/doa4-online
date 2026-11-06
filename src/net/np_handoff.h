@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -73,9 +74,12 @@ std::string Unpack(std::span<const uint8_t> bytes, Handoff* out);
 
 // Guest-visible settings (R7). The names, in a fixed order: the SDK cvars of Task 4's census, every tweaks::AllTweaks() cvar,
 // then doa4_suits_full_bust: its rescale writes guest memory, so the session runs the host's value on both PCs, like a box. It
-// is no trust matter, so it is carried, not forced (the Extras tab that changes it is locked in a session, and a player's own
-// value comes back when the session ends).
+// is no trust matter, so it is carried, not forced. The Extras tab that changes it is locked in a session, but the SDK's F4
+// settings overlay also writes the cvar, so in a session the reader takes the hand-off's value once (GuestSettingValue,
+// FullBustWanted) and a player's own value comes back when the session ends.
 const std::vector<std::string>& GuestSettingNames();
+// The value of `name` in a guest settings text (the name ends at the first '='), or nothing when no line carries it.
+std::optional<std::string> GuestSettingValue(std::string_view text, std::string_view name);
 // The TRUST class (fix round 1): carried settings whose non-default value weakens a boundary of the PC that applies
 // it (the guest-writable game folder, patches loaded from disk, debug monitors, memory protection, host thread
 // priority and affinity, a remote command line, a remote heap size). They are forced to their default on both

@@ -44,6 +44,10 @@ Switches of the stand-in itself (FAKE_ONLINE_*, per copy, in its environment):
   ROLE=decoy        (the tests) only logs its pid into its ctl/pids.txt and sleeps 120 s: a stand-in the harness does not own
   DUMP0_DIFF / HANDLE_SHIFT / STASH   the frame-0 dump this copy writes when DOA4_NP_DUMP lists 0 (write_dump0, Task 15 carry b)
   NO_DUMP=1         no frame-0 dump even when DOA4_NP_DUMP lists 0
+  DUMP_BYTES=<hex>  the dump's size (default three blocks): the mixed masks start past that
+  SUITS=<word>      the session's swimsuit state on np_log's session line, in the real shape: none, same, mixed (default: no such word)
+  TABLES=<hex>      the session process logs `session: costume tables digest <hex> (2818 bytes)` into game.log, as SetUpSuits does
+  LABELS=<hex>      the same for `session: label table digest <hex> (2448 bytes)`, as SetUpLabels does
   BOOT_HOLD=1       the session starts with the real game's frame-0 hold (hold begin frame 0, banner 1.0 s later, hold end)
   LEFT_AT=<f>       after frame f the session ends `left` (a graceful quit), starts no offline relaunch and lingers until ended
   DESYNC_AT=<f> / DESYNC_OTHER=<hex> / DESYNC_RELAUNCH_S=<s>   with END=desync: the frame named, this copy's "other side"
@@ -397,7 +401,7 @@ def write_dump0(path):
     FAKE_ONLINE_DUMP0_DIFF=<hex guest address>  that byte is flipped;
     FAKE_ONLINE_HANDLE_SHIFT=<n>                the 12 handles F80000xx at SHIFT_AT are n higher (the debug-82B70000 shape);
     FAKE_ONLINE_STASH=<hex handle>              the stash word after the signature at STASH_AT holds that handle."""
-    data = bytearray((i * 7 + 3) & 0xFF for i in range(DUMP_BYTES))
+    data = bytearray((i * 7 + 3) & 0xFF for i in range(int(os.environ.get("FAKE_ONLINE_DUMP_BYTES", "0"), 16) or DUMP_BYTES))
     shift = int(os.environ.get("FAKE_ONLINE_HANDLE_SHIFT", "0") or 0)
     for k in range(12):
         struct.pack_into(">I", data, SHIFT_AT - DUMP_LO + 16 * k, 0xF8000100 + 4 * k + shift)
@@ -456,6 +460,18 @@ def session(ctl):
     def event(text):
         events.write(f"{int(time.time() * 1000)} {text}\n")
 
+    suits = os.environ.get("FAKE_ONLINE_SUITS")
+    if suits:  # np_session.cpp StartOnline's line
+        log.write(f"session: stand-in, delay {delay}, token 00000000, peer 127.0.0.1:7200, seed 1, swimsuits {suits}\n")
+    tables = os.environ.get("FAKE_ONLINE_TABLES")
+    game_log = fake_game.arg_value("--log_file=")
+    labels = os.environ.get("FAKE_ONLINE_LABELS")
+    if (tables or labels) and game_log:  # dead_or_alive_4_app.h SetUpSuits' and SetUpLabels' lines
+        with open(game_log, "a") as f:
+            if tables:
+                f.write(f"[2026-11-06 05:49:16.599] [info] [core] [t1] [doa4][SUITS] session: costume tables digest {tables} (2818 bytes)\n")
+            if labels:
+                f.write(f"[2026-11-06 05:49:16.700] [info] [core] [t1] [doa4][SUITS] session: label table digest {labels} (2448 bytes)\n")
     log.write(f"session on: online stand-in, {rows} frames, delay {delay}\n")
     if os.environ.get("FAKE_ONLINE_WARN") == "1":
         log.write(fake_game.KEEPALIVE_WARN + "\n")

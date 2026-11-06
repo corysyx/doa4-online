@@ -442,6 +442,48 @@ void MaskedCopy(const Region& region, const uint8_t* bytes, std::vector<uint8_t>
   }
 }
 
+std::vector<std::pair<uint32_t, uint32_t>> ParseFieldRanges(std::string_view text, std::string* error) {
+  std::vector<std::pair<uint32_t, uint32_t>> out;
+  if (text.empty()) return out;
+  const auto hex = [](std::string_view t, uint32_t* v) {
+    if (t.empty() || t.size() > 8) return false;
+    *v = 0;
+    for (const char c : t) {
+      const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (d < 0) return false;
+      *v = *v * 16 + uint32_t(d);
+    }
+    return true;
+  };
+  size_t at = 0;
+  for (;;) {
+    const size_t end = std::min(text.find(',', at), text.size());
+    const std::string_view item = text.substr(at, end - at);
+    const size_t colon = item.find(':');
+    uint32_t address = 0, length = 0;
+    if (colon == std::string_view::npos || !hex(item.substr(0, colon), &address) || !hex(item.substr(colon + 1), &length) ||
+        length == 0 || uint64_t(address) + length > 0x100000000ull) {
+      *error = "bad range '" + std::string(item) + "'";
+      out.clear();
+      return out;
+    }
+    out.push_back({address, length});
+    if (end == text.size()) return out;
+    at = end + 1;
+  }
+}
+
+std::string EncodeFieldsHeader(const std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
+  std::string s = "D4NPFLD1";
+  PutLe32(&s, 1);
+  PutLe32(&s, uint32_t(ranges.size()));
+  for (const auto& [address, length] : ranges) {
+    PutLe32(&s, address);
+    PutLe32(&s, length);
+  }
+  return s;
+}
+
 std::string EncodeDigestHeader(const std::vector<Region>& regions) {
   std::string s = "D4NPDIG1";
   PutLe32(&s, 1);
