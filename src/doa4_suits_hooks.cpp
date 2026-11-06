@@ -515,22 +515,31 @@ REX_HOOK_RAW(sub_82373E50) {
 
 // sub_823701F0(slot r3, bits r4): sub_8234F030 calls it with bit 1 at its two budget sites (lr 0x8234F308, 0x8234F314) when 3 fighters run, or 2 with a
 // cost sum over 37000; cloths with PROPERTY 0x200 then have no collision. A vanilla Kasumi mirror match goes over (74432). This port runs on PCs that have the time, so
-// those two calls are skipped. The other callers go through. DOA4_SUITS_NATIVE_CLOTH_BUDGET=1 keeps the game's rule (A/B tests). Online both sides must agree.
+// those two calls are skipped. The other callers go through (sub_8234F030's four bits-1-and-4 calls and sub_82644628 / sub_826F8298, bits 2). Online both sides
+// must agree: DOA4_SUITS_NATIVE_CLOTH_BUDGET keeps the game's rule for A/B tests, and goes through TestSwitch, so in a session it counts only with DOA4_NP_TEST_DIR
+// set (R22): a player's environment cannot make one peer run the other rule.
 // Test switch DOA4_SUITS_CLOTH_TRACE=1, read once: logs calls; r29 still holds the caller's cost sum at this entry.
 REX_HOOK_RAW(sub_823701F0) {
   static const bool trace = std::getenv("DOA4_SUITS_CLOTH_TRACE") != nullptr;
+  static const bool native_budget = doa4::np::TestSwitch("DOA4_SUITS_NATIVE_CLOTH_BUDGET") != nullptr;
+  const uint32_t lr = uint32_t(ctx.lr);
+  const bool skip = !native_budget && (lr == 0x8234F308 || lr == 0x8234F314);
   if (trace) {
     static std::atomic<uint64_t> calls{0};
     const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed);
-    if (n < 8 || n % 1200 == 0) {
-      REXLOG_INFO("[doa4][SUITS] cloth budget: call {} lr {:#x} slot {} bits {} cost sum {} fighters {}", n, uint32_t(ctx.lr), ctx.r3.s32, ctx.r4.u32, ctx.r29.u32, ctx.r27.s32);
+    // The two budget sites also log whenever (fighters, cost sum) changes: a sampled line alone can miss the fight.
+    static std::atomic<uint64_t> last_budget_key{~0ull};
+    bool changed = false;
+    if (lr == 0x8234F308 || lr == 0x8234F314) {
+      const uint64_t key = (uint64_t(ctx.r27.u32 & 0xFF) << 32) | ctx.r29.u32;
+      changed = last_budget_key.exchange(key, std::memory_order_relaxed) != key;
+    }
+    if (n < 8 || n % 1200 == 0 || changed) {
+      REXLOG_INFO("[doa4][SUITS] cloth budget: call {} lr {:#x} slot {} bits {} cost sum {} fighters {} skipped {}", n, lr, ctx.r3.s32, ctx.r4.u32, ctx.r29.u32,
+                  ctx.r27.s32, skip ? "yes" : "no");
     }
   }
-  static const bool native_budget = std::getenv("DOA4_SUITS_NATIVE_CLOTH_BUDGET") != nullptr;
-  const uint32_t lr = uint32_t(ctx.lr);
-  if (!native_budget && (lr == 0x8234F308 || lr == 0x8234F314)) {
-    return;
-  }
+  if (skip) return;
   __imp__sub_823701F0(ctx, base);
 }
 
