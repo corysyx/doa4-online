@@ -1,0 +1,129 @@
+# M2: P1 Tina COS. 8 vs P2 Bayman COS. 1, throws
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 A
+90 -
+4 A
+120 -
+4 - RIGHT
+30 -
+4 - A
+300 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+shot
+4 A A
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+shot
+4 A A
+360 -
+shot
+4 RIGHT
+30 -
+4 A
+600 -
+shot
+30 RIGHT -
+4 A -
+60 - -
+shot
+40 - -
+shot
+140 - -
+30 - LEFT
+4 - A
+60 - -
+shot
+40 - -
+shot
+140 - -
+30 RIGHT -
+4 LEFT+A -
+60 - -
+shot
+40 - -
+shot
+140 - -
+30 - LEFT
+4 - A
+60 - -
+shot
+40 - -
+shot
+140 - -
+30 RIGHT -
+4 A -
+60 - -
+shot
+40 - -
+shot
+140 - -
+30 - LEFT
+4 - A
+60 - -
+shot
+40 - -
+shot
+140 - -
+30 RIGHT -
+4 LEFT+A -
+60 - -
+shot
+40 - -
+shot
+140 - -
+30 - LEFT
+4 - A
+60 - -
+shot
+40 - -
+shot
+140 - -
+random 600 21 0 1
+shot
+random 600 22 0 1
+shot
+random 600 23 0 1
+shot
+quit
