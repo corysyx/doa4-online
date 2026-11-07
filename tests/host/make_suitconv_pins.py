@@ -1,7 +1,8 @@
 """Writes tests/host/suitconv_pins.h: bit-exact pins for the suit converter's numeric kit (src/doa4_suitconv_num.h),
-and tests/host/suitconv_sort_pins.h: numpy's default argsort and argmin (src/doa4_suitconv_sort.h).
+and tests/host/suitconv_sort_pins.h: numpy's default argsort and argmin (src/doa4_suitconv_sort.h),
+and tests/host/suitconv_tpr_pins.h: the recipe tpr.py's dec_hend3n and world_mats (src/doa4_suitconv_tpr.h).
 
-  <CPython 3.12.1 with numpy 1.26.3> -I -B tests/host/make_suitconv_pins.py [out.h [sort_out.h]]
+  <CPython 3.12.1 with numpy 1.26.3> -I -B tests/host/make_suitconv_pins.py [out.h [sort_out.h [tpr_out.h]]]
 
 The converter being ported runs on CPython 3.12.1 and numpy 1.26.3, so the pins come from exactly that interpreter (it
 refuses to run on any other). Every input is synthetic: seeded random values plus searched and hand-picked edge cases.
@@ -867,3 +868,244 @@ for c in sort_cases:
 print('sort pins:', len(sort_cases), 'arrays,', sort_differs, f'({SORT_DIFF_FRACTION:.4f}) differ from stable;',
       'by n (arrays, differ):', by_n, '; NaN-pool arrays', nan_cases, '; argmin NOT pins separating: last-of-ties',
       argmin_last_differs, 'NaN-skipping', argmin_nan_differs)
+
+# ===============================================================================================================
+# suitconv_tpr_pins.h: dec_hend3n and world_mats of the recipe's tpr.py (src/doa4_suitconv_tpr.h DecHend3n, WorldMats).
+# This script opens no file, so the three functions below are a VERBATIM copy of recipe_m1/tpr.py (SHA-1
+# 9d11ca4827cbc781c8833bd55045e43fb30d14c7): dec_hend3n (lines 429-434), mat_floats (191-192), world_mats (204-219).
+# They are Python's own code run on the interpreter the converter follows; the pins are their outputs.
+def dec_hend3n(v):
+    def s(x, bits):
+        if x & (1 << (bits - 1)):
+            x -= 1 << bits
+        return x / ((1 << (bits - 1)) - 1)
+    return (s(v & 0x7FF, 11), s((v >> 11) & 0x7FF, 11), s((v >> 22) & 0x3FF, 10))
+
+
+def mat_floats(m):
+    return list(struct.unpack('>16f', m)) if isinstance(m, (bytes, bytearray)) else list(m)
+
+
+def world_mats(nodes):
+    """row-vector convention: world = local * world(parent)."""
+    out = [None] * len(nodes)
+
+    def mul(a, b):
+        return [sum(a[r * 4 + k] * b[k * 4 + c] for k in range(4)) for r in range(4) for c in range(4)]
+
+    def w(i):
+        if out[i] is None:
+            m = mat_floats(nodes[i].mat)
+            p = nodes[i].parent
+            out[i] = m if p < 0 else mul(m, w(p))
+        return out[i]
+    for i in range(len(nodes)):
+        w(i)
+    return out
+
+
+class _Nd:
+    """Only .mat and .parent are read by world_mats."""
+    def __init__(self, mat, parent):
+        self.mat = mat
+        self.parent = parent
+
+
+def world_mats_naive_sum(nodes):
+    """NOT tpr.py: world_mats with the naive left-to-right float sum from 0.0 in place of builtin sum (the wrong
+    implementation a pin must be able to tell from the right one)."""
+    out = [None] * len(nodes)
+
+    def mul(a, b):
+        res = []
+        for r in range(4):
+            for c in range(4):
+                s = 0.0
+                for k in range(4):
+                    s += a[r * 4 + k] * b[k * 4 + c]
+                res.append(s)
+        return res
+
+    def w(i):
+        if out[i] is None:
+            m = mat_floats(nodes[i].mat)
+            p = nodes[i].parent
+            out[i] = m if p < 0 else mul(m, w(p))
+        return out[i]
+    for i in range(len(nodes)):
+        w(i)
+    return out
+
+
+def dec_hend3n_wrong(v):
+    """NOT tpr.py: the divisor 1 << (bits - 1) in place of (1 << (bits - 1)) - 1."""
+    def s(x, bits):
+        if x & (1 << (bits - 1)):
+            x -= 1 << bits
+        return x / (1 << (bits - 1))
+    return (s(v & 0x7FF, 11), s((v >> 11) & 0x7FF, 11), s((v >> 22) & 0x3FF, 10))
+
+
+def f32(x):
+    return struct.unpack('>f', struct.pack('>f', x))[0]
+
+
+def raw_mat(vals):
+    return struct.pack('>16f', *vals)
+
+
+def rot(axis, deg):
+    """A rotation matrix in the row-vector convention, float32 entries."""
+    a = math.radians(deg)
+    c, s = f32(math.cos(a)), f32(math.sin(a))
+    m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    if axis == 'x':
+        m[5], m[6], m[9], m[10] = c, s, -s, c
+    elif axis == 'y':
+        m[0], m[2], m[8], m[10] = c, -s, s, c
+    else:
+        m[0], m[1], m[4], m[5] = c, s, -s, c
+    return m
+
+
+def with_translation(m, t):
+    m = list(m)
+    m[12], m[13], m[14] = f32(t[0]), f32(t[1]), f32(t[2])
+    return m
+
+
+def with_scale(m, sc):
+    m = list(m)
+    for r in range(3):
+        for c in range(3):
+            m[r * 4 + c] = f32(m[r * 4 + c] * sc)
+    return m
+
+
+def mat_mul_f32(a, b):
+    return [f32(sum(a[r * 4 + k] * b[k * 4 + c] for k in range(4))) for r in range(4) for c in range(4)]
+
+
+trng = random.Random(SEED + 4)
+IDENT = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+wm_cases = []  # each: list of (raw 64 bytes, parent)
+
+
+def chain(mats):
+    return [(raw_mat(m), i - 1) for i, m in enumerate(mats)]
+
+
+wm_cases.append([(raw_mat(IDENT), -1)])
+wm_cases.append([(raw_mat(with_translation(IDENT, (1.5, -2.25, 3.0))), -1)])
+for ax in 'xyz':  # a rotation about each axis under a translated root
+    wm_cases.append(chain([with_translation(IDENT, (1.0, 2.0, 3.0)), rot(ax, 30.0),
+                           with_translation(rot(ax, -45.0), (0.5, 0.25, -1.0))]))
+for deg in (90.0, 180.0, 270.0, 17.0):  # exact and inexact angles
+    wm_cases.append(chain([rot('x', deg), rot('y', deg), rot('z', deg), with_translation(rot('x', deg), (1, 1, 1))]))
+neg0 = list(IDENT)
+neg0[1] = -0.0
+neg0[2] = -0.0
+neg0[4] = -0.0
+neg0[8] = -0.0
+neg0[12], neg0[13], neg0[14] = -0.0, -0.0, -0.0
+wm_cases.append(chain([neg0, neg0, rot('z', 90.0), neg0]))  # -0.0 entries
+for _ in range(100):
+    n = trng.randint(3, 6)
+    mats = []
+    for _k in range(n):
+        m = IDENT
+        for ax in trng.sample('xyz', trng.randint(1, 3)):
+            m = mat_mul_f32(m, rot(ax, trng.uniform(-180.0, 180.0)))
+        if trng.random() < 0.5:
+            m = with_scale(m, trng.choice([0.5, 1.0, 1.25, 2.0, 0.1, 3.7]))
+        m = with_translation(m, (trng.uniform(-50, 50), trng.uniform(-50, 50), trng.uniform(-50, 50)))
+        mats.append(m)
+    wm_cases.append(chain(mats))
+for _ in range(30):  # branching trees, parents after children, several roots
+    n = trng.randint(4, 8)
+    mats = []
+    par = []
+    for k in range(n):
+        m = rot(trng.choice('xyz'), trng.uniform(-180.0, 180.0))
+        m = with_translation(m, (trng.uniform(-10, 10), trng.uniform(-10, 10), trng.uniform(-10, 10)))
+        mats.append(m)
+        par.append(-1 if k == 0 or trng.random() < 0.1 else trng.randrange(0, k))
+    order = list(range(n))
+    trng.shuffle(order)  # old node order[new] sits at index new
+    pos = {old: new for new, old in enumerate(order)}
+    nodes = [None] * n
+    for old in range(n):
+        nodes[pos[old]] = (raw_mat(mats[old]), -1 if par[old] < 0 else pos[par[old]])
+    wm_cases.append(nodes)
+
+wm_count, wm_mat, wm_par, wm_out, wm_naive = [], bytearray(), [], [], []
+wm_differs = 0
+wm_forward = 0
+for case in wm_cases:
+    nodes = [_Nd(m, p) for m, p in case]
+    got = world_mats(nodes)
+    naive = world_mats_naive_sum(nodes)
+    wm_count.append(len(case))
+    for (m, p), g, nv in zip(case, got, naive):
+        wm_mat += m
+        wm_par.append(p)
+        wm_out += [db(x) for x in g]
+        wm_naive += [db(x) for x in nv]
+        wm_differs += sum(1 for x, y in zip(g, nv) if db(x) != db(y))
+    wm_forward += sum(1 for i, (m, p) in enumerate(case) if p > i)
+assert wm_differs > 20, f'only {wm_differs} world-matrix entries tell builtin sum from the naive sum'
+assert wm_forward > 10, 'no pin has a parent after its child'
+
+E11 = [0x000, 0x001, 0x3FF, 0x400, 0x401, 0x7FF]
+E10 = [0x000, 0x001, 0x1FF, 0x200, 0x201, 0x3FF]
+hend_words = [(c << 22) | (b << 11) | a for a in E11 for b in E11 for c in E10]
+hend_words += [0x00000000, 0xFFFFFFFF, 0x80000000, 0x7FFFFFFF, 0x12345678, 0xDEADBEEF]
+hend_out = []
+hend_wrong = []
+for v in hend_words:
+    hend_out += [db(x) for x in dec_hend3n(v)]
+    hend_wrong += [db(x) for x in dec_hend3n_wrong(v)]
+assert sum(1 for a, b in zip(hend_out, hend_wrong) if a != b) > 100, 'HEND3N pins do not separate the divisor'
+assert dec_hend3n(0x400)[0] == -1024 / 1023 and dec_hend3n(0x200 << 22)[2] == -512 / 511
+
+tout = []
+
+
+def temit(s):
+    tout.append(s)
+
+
+def tints(name, ctype, values, comment, per_line=16, hexw=0):
+    vals = list(values)
+    temit(f'// {comment}\nstatic const {ctype} {name}[] = {{\n')
+    for i in range(0, len(vals), per_line):
+        temit(','.join((f'0x{v:0{hexw}x}' if hexw else str(v)) for v in vals[i:i + per_line]) + ',\n')
+    temit('};\n')
+    temit(f'static constexpr size_t {name}Count = {len(vals)};\n\n')
+
+
+temit('// Generated by tests/host/make_suitconv_pins.py under CPython 3.12.1 (numpy 1.26.3 loaded). Do not edit.\n'
+      '// Synthetic inputs only. Pins for the converter port of the recipe tpr.py (src/doa4_suitconv_tpr.h): the outputs of\n'
+      '// the recipe\'s own dec_hend3n and world_mats (a verbatim copy in the generator; tpr.py SHA-1\n'
+      '// 9d11ca4827cbc781c8833bd55045e43fb30d14c7). Read by suitconv_tpr_host_test.cpp.\n'
+      f'// Master seed {SEED + 4}. World matrices: {len(wm_cases)} cases, {sum(wm_count)} nodes; {wm_differs} output entries differ from\n'
+      '// the naive float sum, so the pins tell builtin sum() (num::PySum) from it; every matrix entry is a float32 value.\n')
+temit('#pragma once\n\n#include <cstddef>\n#include <cstdint>\n\nnamespace suitconv_tpr_pins {\n\n')
+tints('kWmCount', 'uint32_t', wm_count, 'World matrices: node count of each case.', 16)
+tints('kWmMat', 'uint8_t', list(wm_mat), 'World matrices: every node raw 64 matrix bytes (16 big-endian float32), cases back to back.', 32, 2)
+tints('kWmParent', 'int16_t', wm_par, 'World matrices: every node parent index within its case (-1 = root).', 32)
+tints('kWmOut', 'uint64_t', wm_out, 'world_mats() result, 16 doubles (bits) per node, cases back to back.', 6, 16)
+tints('kWmNaive', 'uint64_t', wm_naive, 'The same with the naive float sum (the wrong implementation), for the separation check.', 6, 16)
+tints('kHendWord', 'uint32_t', hend_words, 'HEND3N: every combination of {0, 1, max positive, sign bit, sign bit + 1, all ones} in the two 11-bit lanes and the 10-bit lane, then six more words.', 8, 8)
+tints('kHendOut', 'uint64_t', hend_out, 'dec_hend3n() of each word: three doubles (bits) per word.', 6, 16)
+tints('kHendWrong', 'uint64_t', hend_wrong, 'The same with the divisor 1 << (bits - 1) (the wrong implementation).', 6, 16)
+temit('}  // namespace suitconv_tpr_pins\n')
+
+tpr_path = sys.argv[3] if len(sys.argv) > 3 else os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                            'suitconv_tpr_pins.h')
+tpr_text = ''.join(tout)
+with open(tpr_path, 'w', newline='\n', encoding='ascii') as f:
+    f.write(tpr_text)
+print(f'wrote {tpr_path} ({len(tpr_text)} bytes)')
+print('tpr pins: world-mat cases', len(wm_cases), 'nodes', sum(wm_count), 'entries differing from naive sum', wm_differs,
+      'forward-parent nodes', wm_forward, 'hend words', len(hend_words))
