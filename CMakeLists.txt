@@ -133,3 +133,13 @@ endif()
 # compiler or flag change can fuse a*b+c differently on one player's build. Phase 0 measured no
 # contraction without it (phase0_facts.md 3); this keeps it that way.
 target_compile_options(dead_or_alive_4 PRIVATE -ffp-contract=off)
+# Suit converter (Plan 2, "Same bytes on every PC"): the converter's sources must give the same bytes on every PC,
+# so they are built with FMA switched off (these options come after -march=x86-64-v3 from CMAKE_CXX_FLAGS), no
+# contraction, no fast-math and no errno. Each includes src/doa4_suitconv_fp.h first, which refuses to compile
+# when FMA or fast-math is on. Later converter sources are appended to this list.
+set(DOA4_SUITCONV_SOURCES
+    src/doa4_suitconv_num.cpp
+)
+target_sources(dead_or_alive_4 PRIVATE ${DOA4_SUITCONV_SOURCES})
+set_source_files_properties(${DOA4_SUITCONV_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "-mno-fma;-ffp-contract=off;-fno-fast-math;-fno-math-errno")
