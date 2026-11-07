@@ -2,7 +2,7 @@
 rem Builds and runs the suit converter numeric kit host test with clang-cl (no CMake), under the converter's
 rem floating-point flags for every translation unit (x86-64-v3 with FMA switched off, no contraction, no fast-math,
 rem no errno). Converter objects go to %TEMP%\doa4_suitconv_test\obj\ (named after their source), where
-rem suitconv_fp_scan.py looks for them; the test's own object goes to ...\testobj\.
+rem suitconv_fp_scan.py scans them before the test runs; the test's own object goes to ...\testobj\.
 rem DOA4_SUITCONV_OUT, if set, replaces that output folder (the mutation probes build their copies elsewhere).
 rem Prints "PASSED: N checks, 0 failures" (or FAILED) as its last line.
 setlocal
@@ -26,8 +26,18 @@ clang-cl %CXXFLAGS% /c "%~dp0suitconv_num_host_test.cpp" /Fo"%OUT%\testobj\suitc
 if errorlevel 1 goto failed
 clang-cl /nologo "%OUT%\testobj\suitconv_num_host_test.obj" "%OUT%\obj\doa4_suitconv_num.obj" /Fe"%OUT%\suitconv_num_host_test.exe" >> "%OUT%\build.log" 2>&1
 if errorlevel 1 goto failed
+rem The FP scan of every converter object comes first: any FMA instruction or C runtime math call (or a scan that
+rem cannot run) fails the runner with the default summary shape, as one failed check, and the test does not run.
+py -3 -I "%~dp0suitconv_fp_scan.py" "%OUT%\obj" > "%OUT%\scan.log" 2>&1
+if errorlevel 1 goto scanfailed
+type "%OUT%\scan.log"
 "%OUT%\suitconv_num_host_test.exe"
 exit /b %errorlevel%
+:scanfailed
+type "%OUT%\scan.log"
+echo FP SCAN FAILED: a converter object has an FMA instruction or a C runtime math call, or the scan could not run
+echo FAILED: 1 checks, 1 failures
+exit /b 1
 :failed
 type "%OUT%\build.log"
 echo BUILD FAILED

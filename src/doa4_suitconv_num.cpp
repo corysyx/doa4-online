@@ -42,7 +42,11 @@
 
 #include "doa4_suitconv_num.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define DOA4_SUITCONV_ARM64 1
+#else
 #include <immintrin.h>
+#endif
 
 #include <algorithm>
 #include <bit>
@@ -90,10 +94,35 @@ double CRound(double x) {
 // ---------------------------------------------------------------------------------------------------------------
 // Floating-point environment.
 
-FpEnvGuard::FpEnvGuard() : saved_(_mm_getcsr()) { _mm_setcsr(kConvertMxcsr); }
-FpEnvGuard::~FpEnvGuard() { _mm_setcsr(saved_); }
+namespace {
 
-uint32_t Mxcsr() { return _mm_getcsr(); }
+#if defined(DOA4_SUITCONV_ARM64)
+// FPCR (arm64). Compile-checked for aarch64; the host tests run on x86-64 only.
+uint32_t ReadControlWord() { return static_cast<uint32_t>(__builtin_arm_rsr64("fpcr")); }
+void WriteControlWord(uint32_t v) { __builtin_arm_wsr64("fpcr", v); }
+#else
+uint32_t ReadControlWord() { return _mm_getcsr(); }
+void WriteControlWord(uint32_t v) { _mm_setcsr(v); }
+#endif
+
+}  // namespace
+
+[[clang::noinline]] void RunUnderConvertEnv(void (*fn)(void*), void* ctx) {
+  const uint32_t saved = ReadControlWord();
+  WriteControlWord(kConvertMxcsr);
+  try {
+    fn(ctx);
+  } catch (...) {
+    WriteControlWord(saved);
+    throw;
+  }
+  WriteControlWord(saved);
+}
+
+FpEnvGuard::FpEnvGuard() : saved_(ReadControlWord()) { WriteControlWord(kConvertMxcsr); }
+FpEnvGuard::~FpEnvGuard() { WriteControlWord(saved_); }
+
+uint32_t Mxcsr() { return ReadControlWord(); }
 
 double ContractionProbe(double a, double b, double c) { return a * b + c; }
 

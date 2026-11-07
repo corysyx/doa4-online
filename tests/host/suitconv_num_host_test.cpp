@@ -3,7 +3,8 @@
 // under CPython 3.12.1 + numpy 1.26.3). Built and run by run_suitconv_num_test.bat with the converter's compile flags.
 //
 // Groups: num_pins_match_python (bit equality per pin; where the pins name a plausible wrong implementation, NOT that
-// value either), exp_atan2_within_one_ulp, fp_env_guard_restores, contraction_probe_unfused.
+// value either), exp_atan2_within_one_ulp, fp_env_guard_restores, run_under_convert_env, contraction_probe_unfused.
+// The runner also scans the converter objects (suitconv_fp_scan.py) and fails before this test runs on any hit.
 // Last line: "PASSED: N checks, 0 failures" or "FAILED: N checks, M failures".
 
 #include "../../src/doa4_suitconv_num.h"
@@ -384,6 +385,57 @@ static void FpEnvGuardRestores() {
   Check(after == before, "after the guard MXCSR is 0x%08x, want the old 0x%08x", after, before);
 }
 
+// RunUnderConvertEnv: the caller runs FTZ + DAZ + round-up; the callback must see kConvertMxcsr and compute the three
+// FP-environment pins exactly, and the caller's control word must be back afterwards, also when the callback throws.
+struct EnvProbe {
+  uint32_t inside = 0;
+  double result[3] = {0, 0, 0};
+  bool throw_after = false;
+};
+
+static void EnvProbeBody(void* ctx) {
+  EnvProbe& p = *static_cast<EnvProbe*>(ctx);
+  p.inside = Mxcsr();
+  for (int k = 0; k < 3; ++k) {
+    const double ab[2] = {D(P::kFpEnv[3 * k]), D(P::kFpEnv[3 * k + 1])};
+    p.result[k] = NpSum1D(ab);
+  }
+  if (p.throw_after) throw ConvertError("thrown inside RunUnderConvertEnv");
+}
+
+static void RunUnderConvertEnvCheck() {
+  const uint32_t original = _mm_getcsr();
+  const uint32_t odd = kConvertMxcsr | 0x8000u /* FTZ */ | 0x0040u /* DAZ */ | 0x4000u /* round up */;
+  static const char* kName[] = {"FTZ (a denormal result)", "DAZ (denormal inputs)", "round-up"};
+  for (int throwing = 0; throwing < 2; ++throwing) {
+    const char* how = throwing ? "throwing callback" : "returning callback";
+    EnvProbe probe;
+    probe.throw_after = throwing != 0;
+    _mm_setcsr(odd);
+    const uint32_t before = Mxcsr();
+    std::string caught = "nothing";
+    try {
+      RunUnderConvertEnv(EnvProbeBody, &probe);
+    } catch (const ConvertError& e) {
+      caught = e.what();
+    } catch (...) {
+      caught = "another exception type";
+    }
+    const uint32_t after = Mxcsr();
+    _mm_setcsr(original);
+    Check((before & 0xE040u) == 0xC040u, "%s: the odd mode was not in force before the call: MXCSR 0x%08x", how, before);
+    Check(probe.inside == kConvertMxcsr, "%s: inside RunUnderConvertEnv MXCSR is 0x%08x, want 0x%08x", how,
+          probe.inside, kConvertMxcsr);
+    for (int k = 0; k < 3; ++k)
+      Check(B(probe.result[k]) == P::kFpEnv[3 * k + 2], "%s: %s pin inside: got 0x%016llx, want 0x%016llx", how,
+            kName[k], U(B(probe.result[k])), U(P::kFpEnv[3 * k + 2]));
+    Check(after == before, "%s: after RunUnderConvertEnv MXCSR is 0x%08x, want the caller's 0x%08x", how, after,
+          before);
+    const char* want_caught = throwing ? "thrown inside RunUnderConvertEnv" : "nothing";
+    Check(caught == want_caught, "%s: the caller caught \"%s\", want \"%s\"", how, caught.c_str(), want_caught);
+  }
+}
+
 static void ContractionProbeUnfused() {
   const double a = 1.0 + 0x1p-30, b = 1.0 - 0x1p-30, c = -1.0;
   const uint64_t got = B(ContractionProbe(a, b, c));
@@ -415,6 +467,7 @@ int main() {
     Group("contraction_probe_unfused", ContractionProbeUnfused);
   }
   Group("fp_env_guard_restores", FpEnvGuardRestores);
+  Group("run_under_convert_env", RunUnderConvertEnvCheck);
   std::printf("%s: %d checks, %d failures\n", g_failures ? "FAILED" : "PASSED", g_checks, g_failures);
   return g_failures ? 1 : 0;
 }

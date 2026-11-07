@@ -141,5 +141,11 @@ set(DOA4_SUITCONV_SOURCES
     src/doa4_suitconv_num.cpp
 )
 target_sources(dead_or_alive_4 PRIVATE ${DOA4_SUITCONV_SOURCES})
+# -mno-fma exists only for x86 targets (clang refuses it for aarch64); arm64 has no implicit FMA once
+# contraction is off.
+set(DOA4_SUITCONV_COMPILE_OPTIONS -ffp-contract=off -fno-fast-math -fno-math-errno)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64|x64)$")
+    list(PREPEND DOA4_SUITCONV_COMPILE_OPTIONS -mno-fma)
+endif()
 set_source_files_properties(${DOA4_SUITCONV_SOURCES} PROPERTIES
-    COMPILE_OPTIONS "-mno-fma;-ffp-contract=off;-fno-fast-math;-fno-math-errno")
+    COMPILE_OPTIONS "${DOA4_SUITCONV_COMPILE_OPTIONS}")

@@ -3,7 +3,8 @@
 //
 // The rules every converter source follows (src/doa4_suitconv_fp.h, CMakeLists.txt DOA4_SUITCONV_SOURCES):
 // no FMA, no contraction, no fast-math, no transcendental function from the C runtime (Exp and Atan2 are ports of
-// musl v1.2.4), and conversion runs inside an FpEnvGuard (MXCSR 0x1F80: round to nearest, no FTZ / DAZ).
+// musl v1.2.4), and every conversion runs through RunUnderConvertEnv (MXCSR 0x1F80: round to nearest, no FTZ /
+// DAZ; on arm64 FPCR 0).
 // Each function cites the source it follows by file and line at the version tag; the copies read are in
 // notes/plans/2026-11-07-public-importer-plan2-converter/ref_src/. Pinned against the real interpreter by
 // tests/host/suitconv_num_host_test.cpp (pins from tests/host/make_suitconv_pins.py). Pure C++ (no SDK).
@@ -28,13 +29,26 @@ class ConvertError : public std::runtime_error {
 
 namespace doa4::suitconv::num {
 
-// The MXCSR value conversion runs under: all exceptions masked, round to nearest, FTZ and DAZ off, no flags.
+// The floating-point control word conversion runs under. x86-64: MXCSR 0x1F80 (all exceptions masked, round to
+// nearest, FTZ and DAZ off, no flags). arm64: FPCR 0 (round to nearest, no flush-to-zero, no default NaN, no traps).
+#if defined(__aarch64__) || defined(_M_ARM64)
+inline constexpr uint32_t kConvertMxcsr = 0;
+#else
 inline constexpr uint32_t kConvertMxcsr = 0x1F80;
+#endif
 
-// Sets MXCSR to kConvertMxcsr on the calling thread for its lifetime and restores the value it found on exit.
-// The compiler orders the guard against calls, not against arithmetic it can see in the same function (it assumes
-// the default environment and may move a visible multiply across the guard). Open it in a function that then calls
-// the conversion, with no floating-point work of its own between the guard and those calls.
+// THE way converter work runs: sets the control word to kConvertMxcsr on the calling thread, calls fn(ctx), and
+// restores the caller's value on every exit, an exception from fn included (it is rethrown). Every converter entry
+// point (ConvertSuit and the like) runs its stages through this, in a translation unit other than this one.
+// It is defined out of line and never inlined, and fn is called through a pointer, so the compiler cannot move any
+// floating-point operation of fn across the control-word writes. (An FpEnvGuard in the same function as the
+// arithmetic cannot promise that: the compiler assumes the default environment and may move a visible multiply
+// across the guard's calls.)
+void RunUnderConvertEnv(void (*fn)(void*), void* ctx);
+
+// Sets the control word to kConvertMxcsr for its lifetime and restores the value it found on exit. For tests and for
+// code whose floating-point work is all behind calls into other translation units; converter entry points use
+// RunUnderConvertEnv instead.
 class FpEnvGuard {
  public:
   FpEnvGuard();
@@ -46,7 +60,7 @@ class FpEnvGuard {
   uint32_t saved_;
 };
 
-// The calling thread's MXCSR.
+// The calling thread's control word: MXCSR on x86-64, the low 32 bits of FPCR on arm64.
 uint32_t Mxcsr();
 
 // a*b + c computed in a converter translation unit: +0.0 for (1+2^-30, 1-2^-30, -1) when the build does not fuse
