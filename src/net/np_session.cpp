@@ -219,6 +219,7 @@ struct State {
   double last_hook_end_us = 0;
   uint32_t away_logged = 0;
   std::atomic<uint32_t> gate_open_frames{0};  // frames entered in a round, read at the session's end (np_pair: 0 through a fight fails a mixed pair)
+  std::atomic<uint32_t> gen_sync_frames{0}, gen_sync_locked{0};  // DOA4_NP_TEST_GEN_SYNC: frames synced, and of them with the generator's lock held
   // the packet ring and the rx / tx silence watch (game thread)
   PacketNote ring[64];
   uint32_t ring_next = 0;
@@ -424,6 +425,10 @@ void Enqueue(Job job) {
   }
   s.job_cv.notify_one();
 }
+
+// DOA4_NP_TEST_MIXED_OFF=sync,slot (test dir only): a mixed session without the generator's resync, or without the load slots' fix (doa4_costumes.h),
+// so one build shows the failure beside its fix.
+bool MixedOff(const char* what) { return TestDirEnv("DOA4_NP_TEST_MIXED_OFF").find(what) != std::string::npos; }
 
 // DOA4_NP_POKE=<frame>:<addr>:set:<hex bytes>|add:<n>[;...] (a debug test switch, online, test dir only): at the
 // frame boundary of <frame>, after hashing, write the bytes at the guest address, or add n to the big-endian u32 there.
@@ -916,6 +921,10 @@ void LogNetStats(State& s, const std::string& when) {
 
 // The end of an online session (game thread, or Abort before the first frame): the terminal lines, the Leave, the
 // det layer off, the overlay, and the offline relaunch after 5 s (8 s for a desync, R16).
+void LogGeneratorSync(State& s) {
+  if (s.gen_sync_frames.load()) Log("scene generator made equal on " + std::to_string(s.gen_sync_frames.load()) + " frames, its lock held on " + std::to_string(s.gen_sync_locked.load()));
+}
+
 void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   if (s.ended.exchange(true)) return;
   s.running.store(false);
@@ -927,6 +936,7 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   if (at_hook) LogNetStats(s, "at the end");
   Log("session ended at frame " + std::to_string(f) + ": " + reason);
   Log("checksums handed to GekkoNet: " + std::to_string(handed));
+  LogGeneratorSync(s);
   Log("fight gate open on " + std::to_string(s.gate_open_frames.load()) + " frames");
   Event(s, UnixMs(), "session ended at frame " + std::to_string(f) + ": " + reason);
   if (r.end == live::End::kDesync) Log("desync: " + r.why + " (a dump of .data was queued)");
@@ -1166,6 +1176,16 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   if (!force.empty() && std::strtoul(force.c_str(), nullptr, 10) == f) {
     base[kMtState + 100] ^= 0x01;
     Log("forced desync: one byte of the MT state 0x833F7600 flipped at frame " + std::to_string(f));
+  }
+  // A mixed session: the scene generator made equal on both peers at this boundary, after the row and the field log, so the log shows what the
+  // frame before it drew (np_digest.h says why, and what it leaves). The workers never run beside this thread (np_det_workers.cpp, mode 3);
+  // the count of frames that find the generator's lock held says so at run time, and np_pair fails a pair on it.
+  static const bool no_resync = MixedOff("sync");
+  if (ResyncsSceneGenerator(s.ho.suit_state) && !no_resync) {
+    const uint8_t* lock = base + kSceneMtLockCount;
+    if (lock[0] != 0xFF || lock[1] != 0xFF || lock[2] != 0xFF || lock[3] != 0xFF) s.gen_sync_locked.fetch_add(1);
+    DeriveSceneGenerator(base + kMainMt, f, base + kSceneMt);
+    s.gen_sync_frames.fetch_add(1);
   }
   PokeAt(base, f);
   SetCvarAt(f);
@@ -1675,6 +1695,11 @@ void PrepareReplayRules() {
 
 bool Online() { return S().mode == Mode::kOnline; }
 
+bool SessionSuitsMixed() {
+  static const bool off = MixedOff("slot");
+  return Online() && S().ho.suit_state == rules::SuitSession::kMixed && !off;
+}
+
 std::optional<bool> SessionFullBust() {
   if (!Online()) return std::nullopt;
   const std::optional<std::string> value = handoff::GuestSettingValue(S().ho.guest_settings, "doa4_suits_full_bust");
@@ -1881,6 +1906,7 @@ void Shutdown() {
       Log("session ended at frame " + std::to_string(f) + ": left");
       Log("checksums handed to GekkoNet: " + std::to_string(s.ex ? s.ex->saves_filled() : 0));
       Log("fight gate open on " + std::to_string(s.gate_open_frames.load()) + " frames");
+      LogGeneratorSync(s);
       Event(s, UnixMs(), "session ended at frame " + std::to_string(f) + ": left");
       if (s.live) s.live->Close();
       CloseFiles(s);

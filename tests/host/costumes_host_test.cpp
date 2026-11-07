@@ -1120,6 +1120,86 @@ static void TestDecideLoad() {
   CHECK(d.use == 9 && list_reads > 0);
 }
 
+// A mixed session: the game's load slots keep the model it asked for, on both PCs; only the loader's tick reads the files' model.
+static void TestMixedSlotKey() {
+  FakeGuest g;
+  const uint32_t kasumi_list = 0x40000000;
+  g.guest.Write(kasumi_list, 9);
+  SetBe32(g, kListTable + 4 * 5, kasumi_list);
+  GuardState s;
+  s.records[5] = 32;
+  s.empty_slot[5].insert(7);
+
+  CHECK(kLoadSlots == 0x830ADBEC && kLoadSlotBytes == 44);  // read from sub_823FE870 and a dump: rows at base 0x830ADBE8 + 4, stride 44
+
+  // The request: only an empty slot in a mixed session keeps what was asked.
+  const LoadDecision empty = DecideLoad(&s, g.guest, 5, 7), past = DecideLoad(&s, g.guest, 5, 40), plain = DecideLoad(&s, g.guest, 5, 8);
+  CHECK(RequestModel(empty, true) == 7);
+  CHECK(RequestModel(empty, false) == 9);  // kNone, kSame, offline: today's rewrite
+  CHECK(RequestModel(past, true) == 9);    // past her records is not a matter of who has which file: it stays rewritten
+  CHECK(RequestModel(past, false) == 9);
+  CHECK(RequestModel(plain, true) == 8);
+  CHECK(RequestModel(plain, false) == 8);
+
+  // A row: slot 2, loading (5, 7). Its neighbours must stay as they are.
+  const uint32_t row = kLoadSlots + 2 * kLoadSlotBytes;
+  const auto set_row = [&](uint8_t status, uint8_t character, uint8_t model, uint8_t c2, uint8_t m2) {
+    g.guest.Write(row, status);
+    g.guest.Write(row + 3, character);
+    g.guest.Write(row + 4, model);
+    g.guest.Write(row + 5, c2);
+    g.guest.Write(row + 6, m2);
+  };
+  const uint32_t neighbour_a = kLoadSlots + 1 * kLoadSlotBytes + 4, neighbour_b = kLoadSlots + 3 * kLoadSlotBytes + 4;
+  g.guest.Write(neighbour_a, 7);
+  g.guest.Write(neighbour_b, 7);
+
+  set_row(1, 5, 7, 255, 255);
+  LoaderTick t = BeginLoaderTick(&s, g.guest, 2, true);
+  CHECK(t.swapped && g.Get(row + 4) == 9);  // the tick reads the model whose files this PC has
+  CHECK(g.Get(neighbour_a) == 7 && g.Get(neighbour_b) == 7);
+  EndLoaderTick(t, g.guest, 2);
+  CHECK(g.Get(row + 4) == 7);               // the row reads what was asked again
+  CHECK(g.Get(row + 6) == 255);             // the tick did not finish: nothing to correct
+
+  set_row(1, 5, 7, 255, 255);
+  t = BeginLoaderTick(&s, g.guest, 2, true);
+  g.guest.Write(row, 255);  // the tick finished: sub_823FE150 copies +3, +4 to +5, +6 and goes idle
+  g.guest.Write(row + 5, g.Get(row + 3));
+  g.guest.Write(row + 6, g.Get(row + 4));
+  EndLoaderTick(t, g.guest, 2);
+  CHECK(g.Get(row + 4) == 7 && g.Get(row + 5) == 5 && g.Get(row + 6) == 7);  // the game's matcher now finds (5, 7) here, as on the PC with the suit
+
+  set_row(1, 5, 7, 255, 255);
+  t = BeginLoaderTick(&s, g.guest, 2, true);
+  g.guest.Write(row + 3, 255);  // the tick reset the row (sub_823FEB30): nothing to put back
+  g.guest.Write(row + 4, 255);
+  EndLoaderTick(t, g.guest, 2);
+  CHECK(g.Get(row + 4) == 255);
+
+  set_row(1, 5, 7, 4, 9);  // +5, +6 hold another fighter's (4, 9): the word 9 is not this row's to correct
+  t = BeginLoaderTick(&s, g.guest, 2, true);
+  EndLoaderTick(t, g.guest, 2);
+  CHECK(g.Get(row + 5) == 4 && g.Get(row + 6) == 9);
+
+  set_row(1, 5, 7, 5, 4);  // the same fighter's other model still loaded: +6 says what is there, not what this tick is after
+  t = BeginLoaderTick(&s, g.guest, 2, true);
+  EndLoaderTick(t, g.guest, 2);
+  CHECK(g.Get(row + 5) == 5 && g.Get(row + 6) == 4);
+
+  // Not swapped: every other session, an idle row, a model this PC has, a model past the records, no guard.
+  const struct { uint8_t status, model; bool mixed; const GuardState* state; } quiet[] = {
+      {1, 7, false, &s}, {255, 7, true, &s}, {1, 8, true, &s}, {1, 40, true, &s}, {1, 7, true, nullptr}};
+  for (const auto& q : quiet) {
+    set_row(q.status, 5, q.model, 255, 255);
+    t = BeginLoaderTick(q.state, g.guest, 2, q.mixed);
+    CHECK(!t.swapped && g.Get(row + 4) == q.model);
+    g.guest.Write(row + 6, q.model);  // whatever the tick does
+    EndLoaderTick(t, g.guest, 2);
+    CHECK(g.Get(row + 4) == q.model && g.Get(row + 6) == q.model);
+  }
+}
+
 static void TestGuardModelEdge() {
   // GuardState has no padding after `records`: the planted neighbour below sits at records[25].
   static_assert(sizeof(GuardState) == sizeof(uint32_t) * kCharCount * 9);
@@ -1262,6 +1342,7 @@ int main() {
   TestModelSet();
   TestGuardEmptySlot();
   TestDecideLoad();
+  TestMixedSlotKey();
   TweaksThenSuitsStayWithinLimit();
   TestBoxToggledAfterSuits();
   TestVisibleCount();

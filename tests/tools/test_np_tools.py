@@ -3355,6 +3355,25 @@ def test_compare_mixed_session(root):
     check(code == 1 and "differ at frame" in out, f"np_pair, mixed, a digest row differs: exit {code}\n{out}")
 
 
+def test_pair_scene_resync(root):
+    # A mixed session makes the scene generator equal at each frame boundary: the pair says so, and fails when it did not, or found the lock held.
+    def side(*pairs):
+        return tuple(x for s in ("--env-host", "--env-joiner") for k, v in pairs for x in (s, f"FAKE_ONLINE_{k}={v}"))
+    tables = side(("TABLES", "aa"), ("LABELS", "bb"))
+    mixed = side(("SUITS", "mixed")) + tables
+    code, out, runs = np_pair(root, "rs1", *mixed)
+    check(code == 0 and "host scene generator: made equal on" in out and "joiner scene generator: made equal on" in out, f"np_pair, mixed, resync on: exit {code}\n{out}")
+    check("its lock held on 0" in out, f"np_pair, mixed, resync on, the count: {out}")
+    code, out, runs = np_pair(root, "rs2", *mixed, *side(("NO_RESYNC_LINE", 1)))
+    check(code == 1 and "wrote no scene generator line" in out, f"np_pair, mixed, no resync line: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "rs3", *mixed, "--env-joiner", "FAKE_ONLINE_NO_RESYNC_LINE=1")
+    check(code == 1 and "the joiner ended a mixed session and wrote no scene generator line" in out, f"np_pair, mixed, the joiner's resync line missing: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "rs4", *mixed, "--env-host", "FAKE_ONLINE_RESYNC_LOCKED=2")
+    check(code == 1 and "the host: the scene generator's lock was held at 2 frame boundaries" in out, f"np_pair, mixed, the lock held on the host: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "rs5", *side(("SUITS", "same")), *tables)
+    check(code == 0 and "scene generator" not in out, f"np_pair, same import: the line is not looked for: exit {code}\n{out}")
+
+
 def test_pair_gate_open(root):
     # A mixed session checks the side records only while the gate is open. A gate that never opened through a fight checked no fighter at
     # all and looks clean: that fails the pair, on every expect. "A fight was on" must not come from the gate's own comparison.

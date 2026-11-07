@@ -310,4 +310,28 @@ LoadDecision DecideLoad(const GuardState* state, const GuestBytes& guest, uint32
   return d;
 }
 
+uint32_t RequestModel(const LoadDecision& d, bool mixed) { return mixed && d.rule == GuardRule::kEmptySlot ? d.asked : d.use; }
+
+LoaderTick BeginLoaderTick(const GuardState* state, const GuestBytes& guest, uint32_t slot, bool mixed) {
+  LoaderTick tick;
+  if (!mixed || !state) return tick;
+  const uint32_t row = kLoadSlots + slot * kLoadSlotBytes;
+  if (guest.Read(row) == 255) return tick;  // idle: sub_823FE150 returns at once
+  const LoadDecision d = DecideLoad(state, guest, guest.Read(row + 3), guest.Read(row + 4));
+  if (d.rule != GuardRule::kEmptySlot) return tick;
+  tick.swapped = true;
+  tick.character = uint8_t(d.character);
+  tick.asked = uint8_t(d.asked);
+  tick.file = uint8_t(d.use);
+  guest.Write(row + 4, tick.file);
+  return tick;
+}
+
+void EndLoaderTick(const LoaderTick& tick, const GuestBytes& guest, uint32_t slot) {
+  if (!tick.swapped) return;
+  const uint32_t row = kLoadSlots + slot * kLoadSlotBytes;
+  if (guest.Read(row + 3) == tick.character && guest.Read(row + 4) == tick.file) guest.Write(row + 4, tick.asked);
+  if (guest.Read(row + 5) == tick.character && guest.Read(row + 6) == tick.file) guest.Write(row + 6, tick.asked);
+}
+
 }  // namespace doa4::costumes

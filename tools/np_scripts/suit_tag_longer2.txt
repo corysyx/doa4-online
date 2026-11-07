@@ -1,0 +1,214 @@
+# Task 7b: The same, other seeds
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 RIGHT
+30 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 A A
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+shot
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+shot
+4 A
+180 -
+shot
+600 -
+shot
+shot
+random 600 207 0 1
+shot
+random 600 208 0 1
+shot
+random 600 209 0 1
+shot
+random 600 210 0 1
+shot
+random 600 211 0 1
+shot
+random 600 212 0 1
+shot
+random 600 213 0 1
+shot
+random 600 214 0 1
+shot
+random 600 215 0 1
+shot
+random 600 216 0 1
+shot
+random 600 217 0 1
+shot
+random 600 218 0 1
+shot
+random 600 219 0 1
+shot
+random 600 220 0 1
+shot
+random 600 221 0 1
+shot
+random 600 222 0 1
+shot
+random 600 223 0 1
+shot
+random 600 224 0 1
+shot
+random 600 225 0 1
+shot
+random 600 226 0 1
+shot
+random 600 227 0 1
+shot
+random 600 228 0 1
+shot
+random 600 229 0 1
+shot
+random 600 230 0 1
+shot
+random 600 231 0 1
+shot
+random 600 232 0 1
+shot
+random 600 233 0 1
+shot
+random 600 234 0 1
+shot
+random 600 235 0 1
+shot
+random 600 236 0 1
+shot
+random 600 237 0 1
+shot
+random 600 238 0 1
+shot
+random 600 239 0 1
+shot
+random 600 240 0 1
+shot
+random 600 241 0 1
+shot
+random 600 242 0 1
+shot
+random 600 243 0 1
+shot
+random 600 244 0 1
+shot
+random 600 245 0 1
+shot
+random 600 246 0 1
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+quit

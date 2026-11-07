@@ -70,6 +70,7 @@ TERMINAL = re.compile(r"^session ended at frame (\d+): (.*)$")
 SESSION_SWEEP = re.compile(r"^session on: online, \w+, sweep (\d+) blocks/frame")  # np_session.cpp StartOnline's last line
 SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)\s*$")  # np_session.cpp StartOnline's line
 SESSION_GATE = re.compile(r"^fight gate open on (\d+) frames\s*$")  # np_session.cpp, at the session's end
+SESSION_RESYNC = re.compile(r"^scene generator made equal on (\d+) frames, its lock held on (\d+)\s*$")  # the same place, a mixed session
 # np_digest.h DigestRegions, pinned against the source by test_digest_regions_match_source; the two the hunting switch adds are left out.
 REGIONS_TODAY = ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr"]
 REGIONS_MIXED = ["netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_83420020", "mt_8321B198", "frame_ctr", "cache_flag", "fight_state", "side0", "side1"]
@@ -801,6 +802,14 @@ class Pair:
                 fact = self.fight_seen(s.session_dir())
                 if fact:
                     self.problems.append(f"the {s.name}: the fight gate was open on 0 frames, and {fact}: no fighter was checked")
+            # The scene generator's resync: on, and never with another thread inside the generator (np_digest.h).
+            sync = [m for m in (SESSION_RESYNC.match(l) for l in s.np_log()) if m]
+            if not sync:
+                self.problems.append(f"the {s.name} ended a mixed session and wrote no scene generator line")
+                continue
+            lines.append(f"{s.name} scene generator: made equal on {sync[0].group(1)} frames, its lock held on {sync[0].group(2)}")
+            if int(sync[0].group(2)):
+                self.problems.append(f"the {s.name}: the scene generator's lock was held at {sync[0].group(2)} frame boundaries")
 
     def compare(self, host, joiner):
         """(exit code, output lines, first differing digest frame or None) of np_compare.py on the two session folders."""

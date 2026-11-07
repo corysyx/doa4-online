@@ -84,6 +84,7 @@
 #include <string_view>
 #include <vector>
 
+#include <rex/system/xthread.h>
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -101,6 +102,7 @@ extern "C" {
 REX_EXTERN(__imp__sub_82373E50);
 REX_EXTERN(__imp__sub_823701F0);
 REX_EXTERN(__imp__sub_823FE870);
+REX_EXTERN(__imp__sub_823FE150);
 REX_EXTERN(__imp__sub_82455E08);
 REX_EXTERN(__imp__sub_823841D0);
 REX_EXTERN(__imp__sub_82528190);
@@ -453,7 +455,7 @@ REX_HOOK_RAW(sub_823FE870) {
   const doa4::GuestBytes guest{[base](uint32_t address) { return base[address]; }, {}};
   const doa4::costumes::LoadDecision d = doa4::costumes::DecideLoad(state, guest, ctx.r4.u32, ctx.r5.u32);
   if (d.use != d.asked) {
-    ctx.r5.u64 = d.use;
+    ctx.r5.u64 = doa4::costumes::RequestModel(d, doa4::np::SessionSuitsMixed());
     if (g_model_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
       if (d.rule == doa4::costumes::GuardRule::kEmptySlot) {
         REXLOG_WARN(
@@ -467,6 +469,29 @@ REX_HOOK_RAW(sub_823FE870) {
     }
   }
   __imp__sub_823FE870(ctx, base);
+}
+
+// sub_823FE150(slot r3): the loader's tick, once per slot per frame, from sub_823FBE18 on the update thread. In a mixed session this is the one
+// place that turns a slot's model into a record of files, so it alone sees the model this PC has (costumes::BeginLoaderTick).
+REX_HOOK_RAW(sub_823FE150) {
+  const uint32_t slot = ctx.r3.u32 & 0xFF;
+  if (slot >= 4 || !doa4::np::SessionSuitsMixed()) {
+    __imp__sub_823FE150(ctx, base);
+    return;
+  }
+  const doa4::GuestBytes guest{[base](uint32_t address) { return base[address]; },
+                               [base](uint32_t address, uint8_t value) { base[address] = value; }};
+  const doa4::costumes::LoaderTick tick = doa4::costumes::BeginLoaderTick(g_state.load(std::memory_order_acquire), guest, slot, true);
+  if (tick.swapped) {
+    // The measured invariant the swap rests on: nothing else runs beside this thread here.
+    static std::atomic<bool> off_main{false};
+    const auto* thread = rex::system::XThread::IsInThread() ? rex::system::XThread::GetCurrentThread() : nullptr;
+    if ((!thread || !thread->main_thread()) && !off_main.exchange(true)) {
+      REXLOG_WARN("[doa4][SUITS] load slot {}: the loader's tick ran off the main thread, so another thread can see its model swapped", slot);
+    }
+  }
+  __imp__sub_823FE150(ctx, base);
+  doa4::costumes::EndLoaderTick(tick, guest, slot);
 }
 
 // The morph dispatcher (r3 = a morph state, +0 = its bound MPP block) runs for every morph of every fighter each frame,

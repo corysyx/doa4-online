@@ -1,0 +1,129 @@
+# Task 7b: Tag with M4's fighters: Hitomi COS. 11, Kokoro COS. 9, tags by hand, then random blocks
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 RIGHT
+30 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 DOWN
+30 -
+4 RIGHT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 A A
+60 -
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+shot
+4 A
+180 -
+shot
+600 -
+shot
+200 -
+shot
+4 A+B
+296 -
+shot
+4 A+B
+296 -
+shot
+4 - A+B
+296 -
+shot
+4 - A+B
+296 -
+shot
+shot
+random 600 307 0 1
+shot
+random 600 308 0 1
+shot
+random 600 309 0 1
+shot
+random 600 310 0 1
+shot
+random 600 311 0 1
+shot
+random 600 312 0 1
+shot
+random 600 313 0 1
+shot
+random 600 314 0 1
+shot
+random 600 315 0 1
+shot
+random 600 316 0 1
+quit

@@ -195,4 +195,25 @@ struct LoadDecision {
 };
 LoadDecision DecideLoad(const GuardState* state, const GuestBytes& guest, uint32_t r4, uint32_t r5);
 
+// The game's load slots: 4 rows of 44 bytes from kLoadSlots. +0 status (255 idle), +3 character and +4 model being loaded or asked for, +5 and +6
+// the same once loaded. The game compares these with what it wants (sub_823FE9D0, from the fight's plan sub_823E4748 among others), so in a mixed
+// session they must read the same on both PCs: a redirect written into them makes a tag to that fighter miss on the PC without the suit, and
+// refuses the tag there alone (notes/plans/2026-11-06-public-importer-plan1-foundation/task-7b-report.md). So in a mixed session the request keeps
+// the model it was asked for, and only the loader's tick sub_823FE150, which turns the row's model into a record of files, reads the other one.
+inline constexpr uint32_t kLoadSlots = 0x830ADBEC;
+inline constexpr uint32_t kLoadSlotBytes = 44;
+
+// What the request hook passes to sub_823FE870 as the model: `use`, except an empty slot in a mixed session, which keeps `asked`.
+uint32_t RequestModel(const LoadDecision& d, bool mixed);
+
+// Around one call of sub_823FE150(slot): only in a mixed session, while the row is loading a model that is an empty slot here, the row's +4 reads
+// the model whose files this PC has; afterwards it reads what was asked again, and so does +6 if the tick just wrote it. Every other session and
+// row: nothing is touched. The hook is on the main thread, and the workers never run beside it in a session (np_det_workers.cpp, mode 3).
+struct LoaderTick {
+  bool swapped = false;
+  uint8_t character = 0, asked = 0, file = 0;
+};
+LoaderTick BeginLoaderTick(const GuardState* state, const GuestBytes& guest, uint32_t slot, bool mixed);
+void EndLoaderTick(const LoaderTick& tick, const GuestBytes& guest, uint32_t slot);
+
 }  // namespace doa4::costumes

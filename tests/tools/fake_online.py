@@ -53,6 +53,8 @@ Switches of the stand-in itself (FAKE_ONLINE_*, per copy, in its environment):
   PROGRESS=<name>   that progress counter higher on this copy, in the last row, by PROGRESS_BY=<n> (default 1)
   GATE_OPEN=<n>     np_log's `fight gate open on <n> frames` says n (default: every frame); the line is written when SUITS is set
   NO_GATE_LINE=1    no such line
+  NO_RESYNC_LINE=1  no `scene generator made equal` line (written when SUITS is mixed)
+  RESYNC_LOCKED=<n> that line says the lock was held at n boundaries
   FIGHT_STATES=<k>  the digest's fight_state row takes k values, one per frame then the last held (default 1: it never moves)
   FIELDS_FROM=<p>   that file is the session's fields.d4f
   BOOT_HOLD=1       the session starts with the real game's frame-0 hold (hold begin frame 0, banner 1.0 s later, hold end)
@@ -397,6 +399,8 @@ def gate_line(log, frames):
     """np_session.cpp EndOnline's line."""
     if os.environ.get("FAKE_ONLINE_SUITS") and os.environ.get("FAKE_ONLINE_NO_GATE_LINE") != "1":
         log.write(f"fight gate open on {int(os.environ.get('FAKE_ONLINE_GATE_OPEN', frames))} frames\n")
+    if os.environ.get("FAKE_ONLINE_SUITS") == "mixed" and os.environ.get("FAKE_ONLINE_NO_RESYNC_LINE") != "1":
+        log.write(f"scene generator made equal on {frames} frames, its lock held on {int(os.environ.get('FAKE_ONLINE_RESYNC_LOCKED', 0))}\n")
 
 
 def write_digest(path, rows, diverge):

@@ -115,6 +115,40 @@ inline std::vector<Region> DigestRegions(rules::SuitSession state) {
   return r;
 }
 
+// The scene generator 0x8357B5C0 (sub_8276B5F0 and its four siblings): 624 big-endian state words, +2496 next word's guest address, +2500 draws
+// left before the refill sub_82334CE8; a critical section at +2504, its lock count at +2520 (-1 is free). The main generator 0x833F7600, the
+// same shape, is on every session's check.
+inline constexpr uint32_t kSceneMt = 0x8357B5C0;
+inline constexpr uint32_t kMainMt = 0x833F7600;
+inline constexpr uint32_t kMtBytes = 2504;
+inline constexpr uint32_t kSceneMtLockCount = kSceneMt + 2520;
+
+// A mixed session makes the scene generator equal on both PCs at each frame boundary (np_session.cpp, after the hash). Why it must: a suit's model
+// loads on another frame than COS. 1's, its one-time draws move with it, and the stream parts; in Tag it does not meet again. The camera's shake
+// (sub_82318730) draws from this stream, and a fighter's tag-out step in a fight moved with the camera (a no-suit session with the stream one draw
+// ahead on one PC, `P1`, and the same with only the camera's draws private, `B1`: task-7b-report.md). So a frame can part the stream only from the
+// first draw that differs in that frame to the frame's end: what reads the stream later in that frame reads a different number. Measured: a frame
+// ends with the stream apart on 37 of 12199 round frames on one script and 2111 of 7014 on another, from the morph and face timers and the audio
+// pickers. The camera block stayed equal on all of the 16680 round frames logged, so those draws come after the camera's.
+inline bool ResyncsSceneGenerator(rules::SuitSession state) { return state == rules::SuitSession::kMixed; }
+
+// The state, from what both peers hold equal: the main generator's bytes and the frame. left = 1 makes the next draw refill, so it stays a state
+// the game's own code can read. Writes kMtBytes and nothing past them: the lock is at +2504.
+inline void DeriveSceneGenerator(const uint8_t* main_state, uint32_t frame, uint8_t* scene_state) {
+  uint32_t h = 2166136261u;
+  for (uint32_t i = 0; i < kMtBytes; ++i) h = (h ^ main_state[i]) * 16777619u;
+  uint32_t x = (h ^ frame) * 16777619u;
+  const auto put = [scene_state](uint32_t at, uint32_t v) {
+    scene_state[at] = uint8_t(v >> 24), scene_state[at + 1] = uint8_t(v >> 16), scene_state[at + 2] = uint8_t(v >> 8), scene_state[at + 3] = uint8_t(v);
+  };
+  for (uint32_t i = 0; i < 624; ++i) {
+    put(i * 4, x);
+    x = 1812433253u * (x ^ (x >> 30)) + i + 1;
+  }
+  put(2496, kSceneMt);
+  put(2500, 1);
+}
+
 // The sweep's masked ranges; none in a session with no sweep.
 inline std::vector<std::pair<uint32_t, uint32_t>> SweepRanges(rules::SuitSession state) {
   std::vector<std::pair<uint32_t, uint32_t>> out;

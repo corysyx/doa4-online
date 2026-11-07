@@ -1,0 +1,214 @@
+# Task 7b: The Tag script with 40 random blocks: 35910 frames
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 RIGHT
+30 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 A A
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+shot
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+shot
+4 A
+180 -
+shot
+600 -
+shot
+shot
+random 600 107 0 1
+shot
+random 600 108 0 1
+shot
+random 600 109 0 1
+shot
+random 600 110 0 1
+shot
+random 600 111 0 1
+shot
+random 600 112 0 1
+shot
+random 600 113 0 1
+shot
+random 600 114 0 1
+shot
+random 600 115 0 1
+shot
+random 600 116 0 1
+shot
+random 600 117 0 1
+shot
+random 600 118 0 1
+shot
+random 600 119 0 1
+shot
+random 600 120 0 1
+shot
+random 600 121 0 1
+shot
+random 600 122 0 1
+shot
+random 600 123 0 1
+shot
+random 600 124 0 1
+shot
+random 600 125 0 1
+shot
+random 600 126 0 1
+shot
+random 600 127 0 1
+shot
+random 600 128 0 1
+shot
+random 600 129 0 1
+shot
+random 600 130 0 1
+shot
+random 600 131 0 1
+shot
+random 600 132 0 1
+shot
+random 600 133 0 1
+shot
+random 600 134 0 1
+shot
+random 600 135 0 1
+shot
+random 600 136 0 1
+shot
+random 600 137 0 1
+shot
+random 600 138 0 1
+shot
+random 600 139 0 1
+shot
+random 600 140 0 1
+shot
+random 600 141 0 1
+shot
+random 600 142 0 1
+shot
+random 600 143 0 1
+shot
+random 600 144 0 1
+shot
+random 600 145 0 1
+shot
+random 600 146 0 1
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+4 B B
+200 -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+quit

@@ -1016,6 +1016,47 @@ static std::vector<uint8_t> Hex(const char* text) {
 
 // Ruling 17: a side record counts only while the fight state 0x830ACF85 says a round is on. +0 of a record does not say that: it is 1 on the
 // character select after a match. The records below are captures, T2.15: an imagined blank would pass the wrong gate as well.
+// The scene generator's resync: a mixed session only, equal from what both peers hold, a state the game's own draw can read, and nothing past the state.
+static void TestSceneResync() {
+  using rules::SuitSession;
+  CHECK(ResyncsSceneGenerator(SuitSession::kMixed));
+  CHECK(!ResyncsSceneGenerator(SuitSession::kNone));
+  CHECK(!ResyncsSceneGenerator(SuitSession::kSame));
+  CHECK(kSceneMt == 0x8357B5C0u && kMainMt == 0x833F7600u && kMtBytes == 2504u && kSceneMtLockCount == 0x8357B5C0u + 2520u);
+
+  std::vector<uint8_t> main_state(kMtBytes);
+  for (uint32_t i = 0; i < kMtBytes; ++i) main_state[i] = uint8_t(i * 7 + 3);
+  std::vector<uint8_t> a(kMtBytes + 32, 0xAB), b(kMtBytes + 32, 0xCD);
+  DeriveSceneGenerator(main_state.data(), 5000, a.data());
+  DeriveSceneGenerator(main_state.data(), 5000, b.data());
+  CHECK(std::equal(a.begin(), a.begin() + kMtBytes, b.begin()));           // the same on both peers, whatever the generator held before
+  bool past_clean = true;
+  for (uint32_t i = kMtBytes; i < a.size(); ++i) past_clean = past_clean && a[i] == 0xAB;
+  CHECK(past_clean);  // the lock past the state is not touched
+  const auto be32 = [](const std::vector<uint8_t>& v, uint32_t at) {
+    return uint32_t(v[at]) << 24 | uint32_t(v[at + 1]) << 16 | uint32_t(v[at + 2]) << 8 | v[at + 3];
+  };
+  CHECK(be32(a, 2496) == kSceneMt);  // the next word: a guest address, the game's draw dereferences it
+  CHECK(be32(a, 2500) == 1);         // so the next draw refills
+  bool init_ok = true;
+  for (uint32_t i = 1; i < 624; ++i) {
+    const uint32_t w = be32(a, (i - 1) * 4);
+    init_ok = init_ok && be32(a, i * 4) == 1812433253u * (w ^ (w >> 30)) + i;
+  }
+  CHECK(init_ok);  // the whole state is written: 623 and 624 words differ in the last word only
+  std::vector<uint8_t> c(kMtBytes + 32, 0);
+  DeriveSceneGenerator(main_state.data(), 5001, c.data());
+  CHECK(!std::equal(a.begin(), a.begin() + 2496, c.begin()));  // another frame, another state
+  auto other = main_state;
+  other[kMtBytes - 1] ^= 1;  // the last byte counts: an earlier stop would miss it
+  DeriveSceneGenerator(other.data(), 5000, c.data());
+  CHECK(!std::equal(a.begin(), a.begin() + 2496, c.begin()));
+  other = main_state;
+  other[0] ^= 1;
+  DeriveSceneGenerator(other.data(), 5000, c.data());
+  CHECK(!std::equal(a.begin(), a.begin() + 2496, c.begin()));
+}
+
 static void TestFightGate() {
   const std::vector<Region> mixed = DigestRegions(rules::SuitSession::kMixed);
   Region side;
@@ -1085,6 +1126,7 @@ static void TestFightGate() {
 
 int main() {
   TestMixedMasksOnlyWhenMixed();
+  TestSceneResync();
   TestFightGate();
   TestFieldRanges();
   TestMxcsrAndSwitches();
