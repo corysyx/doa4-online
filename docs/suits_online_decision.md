@@ -359,8 +359,18 @@ In all of them: `verdict ok`, position, life and state rows differing 0, made-eq
 
 **Sessions that must not change:** `H_M6` (both, same import) against Task 7's `M6`: 7990 common digest rows, 0 differ, both sides. `H_M7` (neither) against `M7`: 7380, 0 differ, both sides. Regions the same. Sweep rows of Task 7's runs were pruned, so sweep wasn't compared across builds.
 
-**What this doesn't show:** a second Tag match with tags in it (see below); a lock-held frame, since none has happened, so the skip path has only host tests; two PCs, other CPUs, a slower PC. `H_TM`'s two tag-outs are few: `H_L1` and `H_td1` carry the tag-out count.
+**What this doesn't show:** a lock-held frame, since none has happened, so the skip path has only host tests; two PCs, other CPUs, a slower PC. `H_TM`'s two tag-outs are few: `H_L1` and `H_td1` carry the tag-out count.
 
 **After this gate,** comments, `tools/np_pair.py`, the fake, its tests, this record and the SDK pin changed (`git diff 68fbfb3`); the code the game runs did not. The final commit's short run is below.
 
-<!-- FINAL_RUN -->
+**The final commit, 56cd351, snapshot `t10`, 2026-11-07 (`t9/batch8.sh`, `t9/summ_z.txt`).**
+
+| Pair | Script | Holder | Frames | Round frames | Result |
+|---|---|---|---|---|---|
+| `Z_A4` | A4 | joiner | 17,911 | 12,199 | ok |
+| `Z_2M`, `Z_2Mh` | **a second Tag match with tags in it** (`suit_tag_secondmatch.txt`) | joiner, host | 17,835 | 11,368 | ok; first match to fight state 0 at 12374, second begins at 12886; 10 tag-outs, 8 in the second match |
+| `Z_M2` | throws | host | 7,991 | 3,203 | ok |
+| `Z_M7` | neither has suits | neither | 7,381 | 3,309 | ok; against Task 7's `M7`: 7380 digest rows, 0 differ, both sides |
+| `Z_Cforce` | control, frame 5000 | joiner | 5,002 | 1,759 | `verdict desync` |
+
+Mixed rows: position, life and state differing 0, made-equal count the terminal frame plus one on every side, lock held 0, off-main 0. **This is what section 1's verdict rests on, for one PC.** Two PCs, other CPUs and a slower PC have not run.
