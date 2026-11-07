@@ -8,6 +8,7 @@
 #include <winioctl.h>
 
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -21,6 +22,7 @@
 #include "../../src/doa4_afs_overlay.h"
 #include "../../src/doa4_gamefiles.h"
 #include "../../src/doa4_suitconv_core.h"
+#include "../../src/doa4_suitconv_num.h"
 #include "../../src/doa4_suitconv_recipe.h"
 #include "../../src/doa4_suitconv_tpr.h"
 #include "xdvdfs_fixtures.h"
@@ -205,6 +207,7 @@ struct SDecl {
   bool weights = false;
   bool extras = false;  // HEND3N normal + FLOAT16_2 uv
   bool locator = false;  // its one mesh is the 1-vertex locator kind (word 6 = 1, word 12 = 7)
+  bool h4 = false;       // the weights are FLOAT16_4 (w0, w1, then the rest split evenly) instead of F2
 };
 struct SObj {
   int id;
@@ -243,7 +246,7 @@ inline std::vector<uint8_t> BuildModel(const std::vector<SNode>& nodes, const st
         off += 4;
       }
       if (d.weights) {
-        el.push_back({0, off, kF2, 0, 1, 0, 0});
+        el.push_back({0, off, d.h4 ? 0x1A2360u : kF2, 0, 1, 0, 0});
         off += 8;
       }
       el.push_back({0xFF, 0, 0xFFFFFFFFu, 0, 0, 0, 0});
@@ -258,7 +261,10 @@ inline std::vector<uint8_t> BuildModel(const std::vector<SNode>& nodes, const st
           PutBe16(vb, uint16_t(0x3800 + j));                                           // u (half)
           PutBe16(vb, uint16_t(0x3400 + 3 * j));                                       // v (half)
         }
-        if (d.weights) {
+        if (d.weights && d.h4) {
+          const double rest = (1.0 - double(v.w0) - double(v.w1)) / 2.0;
+          for (double w : {double(v.w0), double(v.w1), rest, rest}) PutBe16(vb, doa4::suitconv::num::PackF16(w));
+        } else if (d.weights) {
           PutBeF(vb, v.w0);
           PutBeF(vb, v.w1);
         }
@@ -459,7 +465,29 @@ inline int RefParent(uint16_t code) {
 
 struct Inputs {
   std::vector<uint8_t> body_tpr, body_cat, suit_tpr, suit_cat, ref_tpr, ref_cat;
+  std::vector<uint8_t> waist_tpr, waist_cat;  // the waist template (hel05's role): see MakeWaistTemplate
 };
+
+// The waist template: nodes with ids 2 (chest, the root), 3 (pelvis) and 5 (the waist object's joint, at y = 1.0), and
+// object 5 with palette [2, 3] and one FLOAT16_4 decl of 24 seeded vertices whose heights span only `span` metres
+// (y 0 .. span above the joint) and whose angles round the body vary. A band cannot be longer than the template's span,
+// so a span under 0.05 makes prep_waist_fit's "waist band too short" assert certain.
+inline std::vector<uint8_t> MakeWaistTemplateTpr(float span) {
+  SDecl d;
+  d.weights = true;
+  d.h4 = true;
+  uint32_t x = 4242;
+  auto next = [&]() {
+    x = x * 1664525u + 1013904223u;
+    return float((x >> 8) / double(1 << 24));
+  };
+  for (int j = 0; j < 24; ++j) {
+    const float ang = 3.14159f * float(j % 6) / 5.0f;
+    const float w0 = 0.5f * next(), w1 = 0.5f * next();
+    d.verts.push_back({0.1f * std::sin(ang), span * float(j) / 23.0f, 0.1f * std::cos(ang) , w0, w1});
+  }
+  return BuildModel({{2, 0, 0, 0}, {3, 0, -0.1f, 0, 0}, {5, 0, 1.0f, 0, 0}}, {{5, {2, 3}, {d}}}, 6);
+}
 
 inline Inputs MakeInputs(bool nan_accessory = false) {
   Inputs in;
@@ -484,6 +512,8 @@ inline Inputs MakeInputs(bool nan_accessory = false) {
   std::vector<uint8_t> t6;
   for (uint32_t w : {0x01020304u, 0x05060708u, 0x090A0B0Cu, 0x0D0E0F10u, 0x11121314u, 0x3F800000u}) PutBe32(t6, w);
   in.ref_tpr = BuildModel(rn, {}, 0);
+  in.waist_tpr = MakeWaistTemplateTpr(0.03f);
+  in.waist_cat = BuildCat({{4, Type4({0x606060}, 0x44)}});
   in.ref_cat = BuildCat({{2, t2}, {4, Type4({0x202020, 0x505050}, 0x33)}, {6, t6}});
   return in;
 }

@@ -16,6 +16,7 @@
 #include "doa4_suitconv_core.h"
 #include "doa4_suitconv_inputs.h"
 #include "doa4_suitconv_num.h"
+#include "doa4_suitconv_waist.h"
 
 namespace doa4::suitconv {
 
@@ -55,7 +56,8 @@ struct Job {
 
 // The run of convert.main (lines 1315-1563) with the level's arguments: --neck-weights owner --expand-formats
 // --mesh-passes, --leg-midline (Lei Fang), --carry-head (Tina), --cat 2,4,ref4,6, and at L1 and above --bust-down /
-// --bust-up (the suit's strengths) and --strap-fade (when non-zero). No other option is ported yet.
+// --bust-up (the suit's strengths) and --strap-fade (when non-zero), at L2 and above --waist-fit. No other option is
+// ported yet.
 void RunConvert(Job& job) {
   const SuitRecipe& sr = *job.suit;
   const GirlRecipe& gr = *job.girl;
@@ -316,6 +318,23 @@ void RunConvert(Job& job) {
     }
   }
 
+  if (job.level >= Level::kL2) {  // line 1495: `if a.waist_fit`, the shared template hel05's bare waist (bones chest 2, pelvis 3)
+    stage("waist");
+    const c::Model tmpl = c::LoadModel("00020_hel05", Need(in.waist_tpr, "waist template .tpr"),
+                                       cat_of(in.waist_cat, "waist template .cat"));
+    const std::optional<int64_t> target = waist::PrepWaistFit(tmpl, 2, 3, bo.objects, parts, nodes, chan2id);
+    if (tr.on()) {
+      trace::Ser s;
+      if (target) {
+        s.I(*target);
+      } else {
+        s.N();
+      }
+      tr.B("waist_target", s.bytes());
+      tr.State(bo.objects);
+    }
+  }
+
   ctx.mesh_passes = true;  // MESH_PASSES = bool(a.mesh_passes) (line 1510)
   stage("encode");
   c::Encoded enc = c::EncodeObjects(ctx, bo.objects, bo.bind4);
@@ -386,7 +405,6 @@ std::optional<SuitOutput> ConvertSuit(const SuitRecipe& suit, const GirlRecipe& 
     if (girl.head_physics) return Failed(failure, "level", "not ported yet: head_physics");
   }
   if (level >= Level::kL3) return Failed(failure, "level", "not ported yet: hands");  // gate: hands (L3)
-  if (level >= Level::kL2) return Failed(failure, "level", "not ported yet: waist");  // gate: waist (L2)
 
   Job job{&suit, &girl, &in, cancel, trace, level, "start", std::nullopt};
   try {

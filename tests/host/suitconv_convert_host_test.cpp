@@ -14,6 +14,7 @@
 //   oracle_L0_all       the same three: both files, all 34 suits; prints each suit's conversion time (one thread)
 //   trace_L0_all        the three and DOA4_SUITCONV_TRACE_DIR: the C++ trace equals the Python's line for line, all 34
 //   oracle_L1_all, trace_L1_all   the same two at level L1 (the bust channel: prep_bust, bust_peak, build_mpv)
+//   oracle_L2_all, trace_L2_all   the same two at level L2 (L1 plus --waist-fit: prep_waist_fit, H4 weights in encode_objects)
 // On a difference the oracle groups print the first differing offset and what is there (WhereInTpr / WhereInCat:
 // object, decl, vertex and field; or the .cat section and record) and, with traces, the first differing trace line,
 // both lines and the last S line before it. No byte of any game file is stored: the real sections read the player's
@@ -326,6 +327,8 @@ static SuitInputs SynthInputs(const synth::conv::Inputs& s) {
   in.suit_cat = P(s.suit_cat);
   in.ref_tpr = P(s.ref_tpr);
   in.ref_cat = P(s.ref_cat);
+  in.waist_tpr = P(s.waist_tpr);
+  in.waist_cat = P(s.waist_cat);
   return in;
 }
 
@@ -465,8 +468,7 @@ static void TestLevelGates() {
     Level level;
     const char* what;
   };
-  for (const Case& k : {Case{Level::kL2, "not ported yet: waist"}, Case{Level::kL3, "not ported yet: hands"},
-                        Case{Level::kM1, "not ported yet: hands"}}) {
+  for (const Case& k : {Case{Level::kL3, "not ported yet: hands"}, Case{Level::kM1, "not ported yet: hands"}}) {
     ConvertFailure f;
     const auto r = ConvertSuit(suit, girl, in, k.level, nullptr, nullptr, &f);
     CKF(!r && f.stage == "level" && f.what == k.what, "level %d: %s / %s", int(k.level), f.stage.c_str(), f.what.c_str());
@@ -893,6 +895,58 @@ static void TestL1Synthetic() {
   CK(std::none_of(t1.lines.begin(), t1.lines.end(), [](const std::string& l) { return l.rfind("S bust", 0) == 0; }));
 }
 
+// waist_band_short_fails: the waist template's heights span 0.03 m, and the band used is never longer than the
+// template's span, so prep_waist_fit's `assert band_hi - band_lo > 0.05, ('waist band too short', band_lo, band_hi)`
+// fires: the conversion comes back as ConvertFailure{"waist", "AssertionError: ('waist band too short', <lo>, <hi>)"}, not as an output
+// and not as a crash. The stage must be reached with a candidate object (else the fit is SKIPPED, returns None and the
+// conversion goes on): the trace shows the `S waist` line and no `B waist_target` line.
+static void TestWaistBandShortFails() {
+  Group("waist_band_short_fails");
+  const auto s = synth::conv::MakeInputs();
+  const SuitInputs in = SynthInputs(s);
+  ConvertFailure f;
+  MemTrace t;
+  const auto r = ConvertSuit(SynthSuit(), SynthGirl(), in, Level::kL2, nullptr, &t, &f);
+  CKF(!r.has_value(), "converted although the band is too short");
+  CKF(f.stage == "waist", "stage %s: %s", f.stage.c_str(), f.what.c_str());
+  CKF(f.what.rfind("AssertionError: ('waist band too short', ", 0) == 0 && !f.what.empty() && f.what.back() == ')', "text: %s",
+      f.what.c_str());
+  auto has = [&](const std::string& prefix) {
+    return std::any_of(t.lines.begin(), t.lines.end(), [&](const std::string& l) { return l.rfind(prefix, 0) == 0; });
+  };
+  CK(has("S waist"));
+  CK(!has("B waist_target"));
+}
+
+// waist_synthetic: with a template tall enough (0.2 m) the same inputs convert at L2 (bust strengths 0 so the MPV is not
+// asked for): the trace shows the waist stage, `B waist_target` and an h4 line, and the output differs from L0's
+// (the FLOAT16_4 weights of the waist object are written by encode_objects).
+static void TestWaistSynthetic() {
+  Group("waist_synthetic");
+  const auto s = synth::conv::MakeInputs();
+  SuitInputs in = SynthInputs(s);
+  in.waist_tpr = std::make_shared<const std::vector<uint8_t>>(synth::conv::MakeWaistTemplateTpr(0.2f));
+  SuitRecipe nob = SynthSuit();
+  nob.bust_down = nob.bust_up = 0.0;
+  ConvertFailure f;
+  MemTrace t2, t0;
+  const auto r2 = ConvertSuit(nob, SynthGirl(), in, Level::kL2, nullptr, &t2, &f);
+  CKF(r2.has_value(), "failed at %s: %s", f.stage.c_str(), f.what.c_str());
+  const auto r0 = ConvertSuit(nob, SynthGirl(), in, Level::kL0, nullptr, &t0, &f);
+  CK(r0.has_value());
+  auto has = [](const MemTrace& t, const std::string& needle) {
+    return std::any_of(t.lines.begin(), t.lines.end(), [&](const std::string& l) { return l.find(needle) != std::string::npos; });
+  };
+  CK(has(t2, "S waist") && has(t2, "B waist_target 9 "));
+  int h4_lines = 0;
+  for (const auto& l : t2.lines)
+    if (l.rfind("B p", 0) == 0 && l.find(".h4 ") != std::string::npos) ++h4_lines;
+  CK(h4_lines >= 1);
+  CK(!has(t0, "S waist") && !has(t0, ".h4 "));
+  if (r2 && r0) CK(r2->tpr != r0->tpr);
+  std::printf("waist_synthetic: converted; %d h4 trace lines\n", h4_lines);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The oracle sections
 // ---------------------------------------------------------------------------------------------------------------
@@ -940,7 +994,9 @@ static bool OnlyAllows(const SuitRecipe& s) {
 
 // Converts one suit at L0 and compares both files (and, when compare_trace, the trace). Returns 1 when everything
 // compared is equal. *secs gets the conversion time when not traced.
-static const char* LevelDir(Level l) { return l == Level::kL0 ? "L0" : l == Level::kL1 ? "L1" : "?"; }
+static const char* LevelDir(Level l) {
+  return l == Level::kL0 ? "L0" : l == Level::kL1 ? "L1" : l == Level::kL2 ? "L2" : "?";
+}
 
 static int OracleOne(InputSet& set, const OracleEnv& env, const SuitRecipe& s, Level level, bool files,
                      bool compare_trace, double* secs) {
@@ -1063,6 +1119,8 @@ static void TestOracleAll() { OracleAll(Level::kL0, "oracle_L0_all"); }
 static void TestTraceAll() { TraceAll(Level::kL0, "trace_L0_all"); }
 static void TestOracleL1All() { OracleAll(Level::kL1, "oracle_L1_all"); }
 static void TestTraceL1All() { TraceAll(Level::kL1, "trace_L1_all"); }
+static void TestOracleL2All() { OracleAll(Level::kL2, "oracle_L2_all"); }
+static void TestTraceL2All() { TraceAll(Level::kL2, "trace_L2_all"); }
 
 static void RunGroup(void (*fn)(), const char* name) {
   try {
@@ -1089,6 +1147,10 @@ int main() {
   RunGroup(TestTraceAll, "trace_L0_all");
   RunGroup(TestOracleL1All, "oracle_L1_all");
   RunGroup(TestTraceL1All, "trace_L1_all");
+  RunGroup(TestOracleL2All, "oracle_L2_all");
+  RunGroup(TestTraceL2All, "trace_L2_all");
+  RunGroup(TestWaistBandShortFails, "waist_band_short_fails");
+  RunGroup(TestWaistSynthetic, "waist_synthetic");
   std::printf("skipped sections: %d\n", g_skipped);
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
