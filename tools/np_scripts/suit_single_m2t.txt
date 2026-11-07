@@ -1,0 +1,137 @@
+# M2t: P1 Tina COS. 8 idle, P2 Bayman throws: A, LEFT+A, RIGHT+A, DOWN+A, B+A each 2 times at range
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 A
+90 -
+4 A
+120 -
+4 - RIGHT
+30 -
+4 - A
+300 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+4 - LEFT
+30 -
+shot
+4 A A
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+shot
+4 A A
+360 -
+shot
+4 RIGHT
+30 -
+4 A
+600 -
+shot
+60 - LEFT
+4 - A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - LEFT+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - RIGHT+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - DOWN+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - UP+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - LEFT+X
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - X+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - LEFT+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - RIGHT+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - DOWN+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - UP+A
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - LEFT+X
+60 - -
+shot
+200 - -
+60 - LEFT
+4 - X+A
+60 - -
+shot
+200 - -
+quit

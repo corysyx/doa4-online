@@ -1,0 +1,113 @@
+# A2: costume screen (Kasumi COS. 10), B out to the title, idle; a poke on both peers forces the exit of state 4
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 A
+90 -
+4 A
+120 -
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 A A
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+shot
+4 B B
+150 - -
+shot
+4 B B
+150 - -
+shot
+4 B B
+150 - -
+shot
+4 B B
+150 - -
+shot
+4 B B
+150 - -
+shot
+4 B B
+150 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+400 - -
+shot
+quit
