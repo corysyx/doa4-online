@@ -32,12 +32,6 @@ std::string Utf8(const fs::path& p) {
   return s;
 }
 
-std::string LowerAscii(std::string s) {
-  for (char& c : s)
-    if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
-  return s;
-}
-
 // A window onto one archive inside an image file: the archive's bytes, positionally, through the image's one shared
 // afs::FileSource.
 class SubSource final : public afs::Source {
@@ -60,10 +54,18 @@ class XdvdfsAdapter final : public xdvdfs::Source {
  public:
   explicit XdvdfsAdapter(const afs::Source& s) : s_(s) {}
   uint64_t size() const override { return s_.size(); }
-  bool Read(uint64_t offset, void* dst, size_t n) override { return s_.Read(offset, dst, n); }
+  // ReadVolume skips a failed read and moves on to the next volume offset, ending in "not an Xbox image"; the adapter
+  // remembers any read that failed inside the image, so the caller can tell a failed read from a missing descriptor.
+  bool Read(uint64_t offset, void* dst, size_t n) override {
+    const bool ok = s_.Read(offset, dst, n);
+    if (!ok && offset <= s_.size() && n <= s_.size() - offset) io_failed_ = true;
+    return ok;
+  }
+  bool io_failed() const { return io_failed_; }
 
  private:
   const afs::Source& s_;
+  bool io_failed_ = false;
 };
 
 struct Archive {
@@ -76,12 +78,12 @@ struct Archive {
 struct Side {
   InputStatus status = InputStatus::kOk;  // what opening this side found
   std::string detail;
-  std::map<Arc, Archive> arcs;
+  std::map<ArcId, Archive> arcs;
   std::vector<EntryRef> entries;
 };
 
-std::vector<Arc> NeededArcs(const std::vector<EntryRef>& entries) {
-  std::vector<Arc> out;
+std::vector<ArcId> NeededArcs(const std::vector<EntryRef>& entries) {
+  std::vector<ArcId> out;
   for (const EntryRef& e : entries)
     if (std::find(out.begin(), out.end(), e.arc) == out.end()) out.push_back(e.arc);
   return out;
@@ -100,20 +102,29 @@ void ReadTocs(Side& side) {
 }
 
 // The file in `dir` whose name equals `name` ignoring ASCII case.
+// Names compare as wide strings: no code page conversion, so no name can throw (a sibling file named in katakana
+// under a Western code page must not matter).
+std::wstring LowerAsciiWide(std::wstring s) {
+  for (wchar_t& c : s)
+    if (c >= L'A' && c <= L'Z') c = wchar_t(c - L'A' + L'a');
+  return s;
+}
+
 std::optional<fs::path> FindInFolder(const fs::path& dir, const std::string& name) {
+  const std::wstring want = LowerAsciiWide(std::wstring(name.begin(), name.end()));  // the archive names are ASCII
   std::error_code ec;
   for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
     std::error_code ec2;
     if (!it->is_regular_file(ec2)) continue;
-    if (LowerAscii(it->path().filename().string()) == LowerAscii(name)) return it->path();
+    if (LowerAsciiWide(it->path().filename().native()) == want) return it->path();
   }
   return std::nullopt;
 }
 
-void OpenFolder(Side& side, const fs::path& dir, const std::vector<Arc>& needed) {
-  std::map<Arc, fs::path> found;
+void OpenFolder(Side& side, const fs::path& dir, const std::vector<ArcId>& needed) {
+  std::map<ArcId, fs::path> found;
   std::string missing;
-  for (Arc a : needed) {
+  for (ArcId a : needed) {
     const auto p = FindInFolder(dir, ArcFileName(a));
     if (p)
       found[a] = *p;
@@ -128,28 +139,48 @@ void OpenFolder(Side& side, const fs::path& dir, const std::vector<Arc>& needed)
   }
 }
 
-void OpenImage(Side& side, const fs::path& file, const std::vector<Arc>& needed) {
-  std::shared_ptr<const afs::Source> image = afs::FileSource::Open(file);
-  if (!image) return Fail(side, InputStatus::kReadError, "cannot open " + Utf8(file));
+void OpenImageFrom(Side& side, std::shared_ptr<const afs::Source> image, const std::string& label,
+                   const std::vector<ArcId>& needed) {
   XdvdfsAdapter adapter(*image);
   xdvdfs::Error error = xdvdfs::Error::kNone;
   const std::optional<xdvdfs::Volume> volume = xdvdfs::ReadVolume(adapter, &error);
   if (!volume) {
-    if (error == xdvdfs::Error::kNotXbox) return Fail(side, InputStatus::kNotXbox, Utf8(file) + " is not an Xbox disc image");
-    return Fail(side, InputStatus::kReadError, "cannot read the file system of " + Utf8(file));
+    // A read that failed inside the image comes first: a stalled or failed read of the descriptor or a directory table
+    // is not "not an Xbox image".
+    if (adapter.io_failed()) return Fail(side, InputStatus::kReadError, "cannot read " + label);
+    if (error == xdvdfs::Error::kNotXbox) return Fail(side, InputStatus::kNotXbox, label + " is not an Xbox disc image");
+    return Fail(side, InputStatus::kReadError, label + " has a damaged file system");
   }
   std::string missing;
-  std::map<Arc, const xdvdfs::Entry*> found;
-  for (Arc a : needed) {
+  std::map<ArcId, const xdvdfs::Entry*> found;
+  for (ArcId a : needed) {
     const xdvdfs::Entry* e = xdvdfs::FindFile(*volume, ArcFileName(a));
     if (e)
       found[a] = e;
     else
       missing += (missing.empty() ? "" : ", ") + std::string(ArcFileName(a));
   }
-  if (!missing.empty()) return Fail(side, InputStatus::kNoArchives, "no " + missing + " on the disc " + Utf8(file));
+  if (!missing.empty()) return Fail(side, InputStatus::kNoArchives, "no " + missing + " on the disc " + label);
   for (const auto& [a, e] : found) {
-    side.arcs[a] = Archive{std::make_shared<SubSource>(image, e->offset, e->size), std::nullopt, {}, Utf8(file)};
+    side.arcs[a] = Archive{std::make_shared<SubSource>(image, e->offset, e->size), std::nullopt, {}, label};
+  }
+}
+
+void OpenImage(Side& side, const fs::path& file, const std::vector<ArcId>& needed) {
+  std::shared_ptr<const afs::Source> image = afs::FileSource::Open(file);
+  if (!image) return Fail(side, InputStatus::kReadError, "cannot open " + Utf8(file));
+  OpenImageFrom(side, std::move(image), Utf8(file), needed);
+}
+
+void OpenGame(Side& side, const fs::path& game_root, const std::vector<ArcId>& needed) {
+  std::error_code ec;
+  if (needed.empty()) return;
+  if (!fs::exists(game_root, ec)) {
+    Fail(side, InputStatus::kNotFound, Utf8(game_root) + " does not exist");
+  } else if (fs::is_directory(game_root, ec)) {
+    OpenFolder(side, game_root, needed);
+  } else {
+    Fail(side, InputStatus::kNoArchives, Utf8(game_root) + " is not a folder");
   }
 }
 
@@ -282,8 +313,8 @@ std::unique_ptr<InputSet> InputSet::Open(const fs::path& doax2, const fs::path& 
                                          std::span<const EntryRef> game, std::string* error) {
   if (!ValidateTables(disc, game, error)) return nullptr;
   auto impl = NewImpl(disc, game);
-  const std::vector<Arc> disc_arcs = NeededArcs(impl->disc.entries);
-  const std::vector<Arc> game_arcs = NeededArcs(impl->game.entries);
+  const std::vector<ArcId> disc_arcs = NeededArcs(impl->disc.entries);
+  const std::vector<ArcId> game_arcs = NeededArcs(impl->game.entries);
   std::error_code ec;
   if (!disc_arcs.empty()) {
     if (!fs::exists(doax2, ec)) {
@@ -294,15 +325,24 @@ std::unique_ptr<InputSet> InputSet::Open(const fs::path& doax2, const fs::path& 
       OpenImage(impl->disc, doax2, disc_arcs);
     }
   }
-  if (!game_arcs.empty()) {
-    if (!fs::exists(game_root, ec)) {
-      Fail(impl->game, InputStatus::kNotFound, Utf8(game_root) + " does not exist");
-    } else if (fs::is_directory(game_root, ec)) {
-      OpenFolder(impl->game, game_root, game_arcs);
-    } else {
-      Fail(impl->game, InputStatus::kNoArchives, Utf8(game_root) + " is not a folder");
-    }
+  OpenGame(impl->game, game_root, game_arcs);
+  ReadTocs(impl->disc);
+  ReadTocs(impl->game);
+  return std::unique_ptr<InputSet>(new InputSet(std::move(impl)));
+}
+
+std::unique_ptr<InputSet> InputSet::OpenImageSource(std::shared_ptr<const afs::Source> image, const std::string& label,
+                                                    const fs::path& game_root, std::span<const EntryRef> disc,
+                                                    std::span<const EntryRef> game, std::string* error) {
+  if (!ValidateTables(disc, game, error)) return nullptr;
+  if (!image) {
+    if (error) *error = "no image source";
+    return nullptr;
   }
+  auto impl = NewImpl(disc, game);
+  const std::vector<ArcId> disc_arcs = NeededArcs(impl->disc.entries);
+  if (!disc_arcs.empty()) OpenImageFrom(impl->disc, std::move(image), label, disc_arcs);
+  OpenGame(impl->game, game_root, NeededArcs(impl->game.entries));
   ReadTocs(impl->disc);
   ReadTocs(impl->game);
   return std::unique_ptr<InputSet>(new InputSet(std::move(impl)));
@@ -315,7 +355,7 @@ std::unique_ptr<InputSet> InputSet::OpenSources(ArchiveSources disc_archives, Ar
   auto impl = NewImpl(disc, game);
   const auto fill = [](Side& side, ArchiveSources& given) {
     for (auto& [arc, src] : given) side.arcs[arc] = Archive{src, std::nullopt, {}, std::string(ArcFileName(arc))};
-    for (Arc a : NeededArcs(side.entries)) {
+    for (ArcId a : NeededArcs(side.entries)) {
       if (!side.arcs.count(a)) {
         Fail(side, InputStatus::kNoArchives, std::string("no ") + ArcFileName(a));
         return;

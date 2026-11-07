@@ -32,35 +32,35 @@ class CancelToken {
 
 // The archives the converter reads. chr, werone and wertwo are the DOAX2 disc's; chrone, chrtwo and chrthree are the
 // DOA4 game files'.
-enum class Arc : uint8_t { kChr, kWerone, kWertwo, kChrone, kChrtwo, kChrthree };
+enum class ArcId : uint8_t { kChr, kWerone, kWertwo, kChrone, kChrtwo, kChrthree };
 
-inline constexpr const char* ArcName(Arc a) {
+inline constexpr const char* ArcName(ArcId a) {
   switch (a) {
-    case Arc::kChr: return "chr";
-    case Arc::kWerone: return "werone";
-    case Arc::kWertwo: return "wertwo";
-    case Arc::kChrone: return "chrone";
-    case Arc::kChrtwo: return "chrtwo";
-    case Arc::kChrthree: return "chrthree";
+    case ArcId::kChr: return "chr";
+    case ArcId::kWerone: return "werone";
+    case ArcId::kWertwo: return "wertwo";
+    case ArcId::kChrone: return "chrone";
+    case ArcId::kChrtwo: return "chrtwo";
+    case ArcId::kChrthree: return "chrthree";
   }
   return "?";
 }
-inline constexpr const char* ArcFileName(Arc a) {
+inline constexpr const char* ArcFileName(ArcId a) {
   switch (a) {
-    case Arc::kChr: return "chr.afs";
-    case Arc::kWerone: return "werone.afs";
-    case Arc::kWertwo: return "wertwo.afs";
-    case Arc::kChrone: return "chrone.afs";
-    case Arc::kChrtwo: return "chrtwo.afs";
-    case Arc::kChrthree: return "chrthree.afs";
+    case ArcId::kChr: return "chr.afs";
+    case ArcId::kWerone: return "werone.afs";
+    case ArcId::kWertwo: return "wertwo.afs";
+    case ArcId::kChrone: return "chrone.afs";
+    case ArcId::kChrtwo: return "chrtwo.afs";
+    case ArcId::kChrthree: return "chrthree.afs";
   }
   return "?";
 }
-inline constexpr bool ArcIsDisc(Arc a) { return a == Arc::kChr || a == Arc::kWerone || a == Arc::kWertwo; }
+inline constexpr bool ArcIsDisc(ArcId a) { return a == ArcId::kChr || a == ArcId::kWerone || a == ArcId::kWertwo; }
 
 // One archive entry the converter reads: its place, its exact size and its SHA-1 (40 lowercase hex digits).
 struct EntryRef {
-  Arc arc;
+  ArcId arc;
   uint32_t index;
   uint64_t size;
   const char* sha1;
@@ -88,7 +88,7 @@ struct SuitRecipe {
   const char* design;
   int colour;
   const char* girl;
-  Arc arc;
+  ArcId arc;
   uint32_t tpr_index;
   double bust_down, bust_up;
   bool port_cloth, gen_cloth, fit_leg_colliders, unstick_cloth;

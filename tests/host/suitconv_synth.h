@@ -4,9 +4,6 @@
 
 #pragma once
 
-#ifndef NOGDI
-#define NOGDI  // wingdi.h's Arc() function would hide the converter's Arc enum
-#endif
 #include <windows.h>
 #include <winioctl.h>
 
@@ -26,7 +23,7 @@
 namespace synth {
 
 namespace fs = std::filesystem;
-using doa4::suitconv::Arc;
+using doa4::suitconv::ArcId;
 using doa4::suitconv::EntryRef;
 
 // Deterministic payload: a 32-bit LCG's high byte, so neighbouring bytes differ and a flipped byte is never a repeat.
@@ -74,11 +71,11 @@ inline std::vector<uint8_t> BuildAfs(const std::vector<std::vector<uint8_t>>& en
 
 // An archive and the entries it holds (kept so a test can build the table and flip a byte).
 struct Archive {
-  Arc arc;
+  ArcId arc;
   std::vector<std::vector<uint8_t>> entries;
   std::vector<uint8_t> file;
 };
-inline Archive MakeArchive(Arc arc, const std::vector<size_t>& sizes, uint32_t seed) {
+inline Archive MakeArchive(ArcId arc, const std::vector<size_t>& sizes, uint32_t seed) {
   Archive a{arc, {}, {}};
   for (size_t i = 0; i < sizes.size(); ++i) a.entries.push_back(Seeded(seed * 100 + uint32_t(i), sizes[i]));
   a.file = BuildAfs(a.entries);
@@ -94,7 +91,7 @@ struct Table {
     refs.push_back(EntryRef{a.arc, index, a.entries[index].size(), sha.back().c_str()});
   }
   // An entry whose recorded size or sha1 is chosen by the test.
-  void AddRaw(Arc arc, uint32_t index, uint64_t size, const std::string& sha1) {
+  void AddRaw(ArcId arc, uint32_t index, uint64_t size, const std::string& sha1) {
     sha.push_back(sha1);
     refs.push_back(EntryRef{arc, index, size, sha.back().c_str()});
   }

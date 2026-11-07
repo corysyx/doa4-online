@@ -12,9 +12,6 @@
 // deleted at the end. The real inputs are only read. Last lines: "skipped sections: K", then
 // "PASSED: N checks, 0 failures" or "FAILED: N checks, M failures".
 
-#ifndef NOGDI
-#define NOGDI  // wingdi.h's Arc() function would be ambiguous with doa4::suitconv::Arc under the using-directive
-#endif
 #include "../../src/doa4_suitconv_recipe.h"
 #include "../../src/doa4_suitconv_inputs.h"
 #include "../../src/doa4_suits_picks.h"
@@ -95,7 +92,7 @@ static const char* GirlOfChar(int ch) {
   return "?";
 }
 
-static const EntryRef* FindIn(std::span<const EntryRef> t, Arc a, uint32_t i) {
+static const EntryRef* FindIn(std::span<const EntryRef> t, ArcId a, uint32_t i) {
   for (const EntryRef& e : t)
     if (e.arc == a && e.index == i) return &e;
   return nullptr;
@@ -116,9 +113,9 @@ struct ExpectGirl {
   const char* girl;
   int character;
   uint32_t body;
-  Arc ref_arc;
+  ArcId ref_arc;
   uint32_t ref_tpr;
-  Arc hand_arc;
+  ArcId hand_arc;
   uint32_t hand_tpr;
   uint64_t budget_tpr, budget_cat;
   bool leg_midline, carry_head, head_physics, hair_spares;
@@ -142,21 +139,21 @@ static void TestRecipeMatchesPicks() {
   CK(std::string(suits[10].design) == "vks_wi_b" && std::string(suits[10].girl) == "vht");
   CK(std::string(suits[13].design) == "vhe_on_c" && std::string(suits[13].girl) == "vco");
   CK(std::string(suits[33].design) == "vls_on_b" && std::string(suits[33].girl) == "vtn");
-  CK(std::string(suits[0].design) == "vks_ch_d" && suits[0].arc == Arc::kWertwo && suits[0].tpr_index == 26);
-  CK(std::string(suits[33].design) == "vls_on_b" && suits[33].arc == Arc::kWertwo && suits[33].tpr_index == 242);
+  CK(std::string(suits[0].design) == "vks_ch_d" && suits[0].arc == ArcId::kWertwo && suits[0].tpr_index == 26);
+  CK(std::string(suits[33].design) == "vls_on_b" && suits[33].arc == ArcId::kWertwo && suits[33].tpr_index == 242);
   CK(suits[20].colour == 1 && suits[27].colour == 2 && suits[33].colour == 1);
 
   // The girls: nine, with the per-girl table's budgets and options.
   static const ExpectGirl kGirls[] = {
-      {"vks", 5, 2, Arc::kChrone, 51, Arc::kChrone, 51, 0xA00000, 0x200000, false, false, false, true},
-      {"vay", 13, 10, Arc::kChrtwo, 116, Arc::kChrtwo, 116, 0x900000, 0x200000, false, false, false, false},
-      {"vht", 21, 16, Arc::kChrthree, 72, Arc::kChrthree, 72, 0xC00000, 0x200000, false, false, false, false},
-      {"vco", 10, 6, Arc::kChrtwo, 40, Arc::kChrtwo, 40, 0xCB0000, 0x300000, false, false, false, true},
-      {"vhe", 7, 4, Arc::kChrtwo, 20, Arc::kChrtwo, 20, 0xFA0000, 0x200000, false, false, false, false},
-      {"vls", 15, 12, Arc::kChrthree, 10, Arc::kChrthree, 10, 0xC00000, 0x200000, false, false, false, false},
-      {"vcr", 20, 14, Arc::kChrthree, 54, Arc::kChrthree, 54, 0xC40000, 0x200000, false, false, false, false},
-      {"vle", 12, 8, Arc::kChrtwo, 102, Arc::kChrtwo, 102, 0xC00000, 0x200000, true, false, false, true},
-      {"vtn", 1, 0, Arc::kChrone, 11, Arc::kChrone, 13, 0x1400000, 0x400000, false, true, true, false},
+      {"vks", 5, 2, ArcId::kChrone, 51, ArcId::kChrone, 51, 0xA00000, 0x200000, false, false, false, true},
+      {"vay", 13, 10, ArcId::kChrtwo, 116, ArcId::kChrtwo, 116, 0x900000, 0x200000, false, false, false, false},
+      {"vht", 21, 16, ArcId::kChrthree, 72, ArcId::kChrthree, 72, 0xC00000, 0x200000, false, false, false, false},
+      {"vco", 10, 6, ArcId::kChrtwo, 40, ArcId::kChrtwo, 40, 0xCB0000, 0x300000, false, false, false, true},
+      {"vhe", 7, 4, ArcId::kChrtwo, 20, ArcId::kChrtwo, 20, 0xFA0000, 0x200000, false, false, false, false},
+      {"vls", 15, 12, ArcId::kChrthree, 10, ArcId::kChrthree, 10, 0xC00000, 0x200000, false, false, false, false},
+      {"vcr", 20, 14, ArcId::kChrthree, 54, ArcId::kChrthree, 54, 0xC40000, 0x200000, false, false, false, false},
+      {"vle", 12, 8, ArcId::kChrtwo, 102, ArcId::kChrtwo, 102, 0xC00000, 0x200000, true, false, false, true},
+      {"vtn", 1, 0, ArcId::kChrone, 11, ArcId::kChrone, 13, 0x1400000, 0x400000, false, true, true, false},
   };
   const auto girls = Girls();
   CK(girls.size() == 9);
@@ -256,8 +253,8 @@ static void TestEntryTablesComplete() {
         "suit %s entries", suits[i].design);
   }
   for (const GirlRecipe& g : girls) {
-    const EntryRef* t = FindIn(disc, Arc::kChr, g.body_index);
-    const EntryRef* c = FindIn(disc, Arc::kChr, g.body_index + 1);
+    const EntryRef* t = FindIn(disc, ArcId::kChr, g.body_index);
+    const EntryRef* c = FindIn(disc, ArcId::kChr, g.body_index + 1);
     CKF(t && c, "%s body entries in the disc table", g.girl);
     for (const EntryRef* x : {&g.ref_tpr, &g.ref_cat, &g.hand_tpr, &g.hand_cat}) {
       const EntryRef* in = FindIn(game, x->arc, x->index);
@@ -274,11 +271,11 @@ static void TestEntryTablesComplete() {
     CK(in && SameEntry(*in, d));
   }
   // The named anchors, typed from Appendix A.
-  CK(WaistTemplate(true).arc == Arc::kChrtwo && WaistTemplate(true).index == 20);
-  CK(WaistTemplate(false).arc == Arc::kChrtwo && WaistTemplate(false).index == 21);
-  CK(GenDonor().arc == Arc::kWerone && GenDonor().index == 283 &&
+  CK(WaistTemplate(true).arc == ArcId::kChrtwo && WaistTemplate(true).index == 20);
+  CK(WaistTemplate(false).arc == ArcId::kChrtwo && WaistTemplate(false).index == 21);
+  CK(GenDonor().arc == ArcId::kWerone && GenDonor().index == 283 &&
      std::string(GenDonor().sha1) == "3e72583a2644dd21e60d2e54660f69220b1d395c");
-  CK(GenBend().arc == Arc::kChrthree && GenBend().index == 91 &&
+  CK(GenBend().arc == ArcId::kChrthree && GenBend().index == 91 &&
      std::string(GenBend().sha1) == "00b02a74e4c93171b681e23daad29d9c5b2ad1c8" && GenBend().size == 650768);
   CK(EntryLabel(GenDonor()) == "werone 283");
 }
@@ -291,12 +288,12 @@ struct Synth {
   synth::Archive chr, werone, wertwo, chrone, chrtwo, chrthree;
   synth::Table disc, game;
   Synth()
-      : chr(synth::MakeArchive(Arc::kChr, {100, 3000, 5000, 70000}, 1)),
-        werone(synth::MakeArchive(Arc::kWerone, {10, 2048, 4097, 300000, 33}, 2)),
-        wertwo(synth::MakeArchive(Arc::kWertwo, {0, 4096, 123457}, 3)),
-        chrone(synth::MakeArchive(Arc::kChrone, {20, 9000}, 4)),
-        chrtwo(synth::MakeArchive(Arc::kChrtwo, {5000, 1, 2049}, 5)),
-        chrthree(synth::MakeArchive(Arc::kChrthree, {40000}, 6)) {
+      : chr(synth::MakeArchive(ArcId::kChr, {100, 3000, 5000, 70000}, 1)),
+        werone(synth::MakeArchive(ArcId::kWerone, {10, 2048, 4097, 300000, 33}, 2)),
+        wertwo(synth::MakeArchive(ArcId::kWertwo, {0, 4096, 123457}, 3)),
+        chrone(synth::MakeArchive(ArcId::kChrone, {20, 9000}, 4)),
+        chrtwo(synth::MakeArchive(ArcId::kChrtwo, {5000, 1, 2049}, 5)),
+        chrthree(synth::MakeArchive(ArcId::kChrthree, {40000}, 6)) {
     for (const synth::Archive* a : {&chr, &werone, &wertwo})
       for (uint32_t i = 0; i < a->entries.size(); ++i) disc.Add(*a, i);
     for (const synth::Archive* a : {&chrone, &chrtwo, &chrthree})
@@ -458,7 +455,7 @@ static void TestSizeAndTocProblems(const Synth& s, const Files& f) {
   t.refs = s.disc.refs;
   t.sha = s.disc.sha;
   for (size_t i = 0; i < t.refs.size(); ++i) t.refs[i].sha1 = t.sha[i].c_str();
-  t.AddRaw(Arc::kChr, 9, 5, std::string(40, 'a'));
+  t.AddRaw(ArcId::kChr, 9, 5, std::string(40, 'a'));
   {
     auto set = OpenSet(f.disc_dir, f.game_dir, t, s.game);
     if (set) {
@@ -476,7 +473,7 @@ static void TestSizeAndTocProblems(const Synth& s, const Files& f) {
     }
   }
   // An archive whose TOC does not parse: every table entry in it is named, the other archives are fine.
-  synth::Archive junk{Arc::kWerone, {}, synth::Seeded(77, 9000)};
+  synth::Archive junk{ArcId::kWerone, {}, synth::Seeded(77, 9000)};
   WriteFolder(dir / "junk", {{"CHR.AFS", &s.chr}, {"WERONE.AFS", &junk}, {"WERTWO.AFS", &s.wertwo}});
   {
     auto set = OpenSet(dir / "junk", f.game_dir, s.disc, s.game);
@@ -511,6 +508,11 @@ static void TestMissingArchive(const Synth& s, const Files& f) {
   WriteFolder(dir / "disc", {{"CHR.AFS", &s.chr}, {"WERONE.AFS", &s.werone}});  // no wertwo
   WriteFolder(dir / "game", {{"CHRONE.AFS", &s.chrone}, {"CHRTWO.AFS", &s.chrtwo}});  // no chrthree
   fs::create_directories(dir / "empty");
+  // A lookup that finds nothing scans every name in the folder, including one with no ANSI form; it must not throw.
+  const std::wstring katakana = L"\x30C6\x30B9\x30C8.txt";
+  synth::WriteFileBytes(dir / "disc" / katakana, synth::Seeded(9, 50));
+  synth::WriteFileBytes(dir / "game" / katakana, synth::Seeded(10, 50));
+  synth::WriteFileBytes(dir / "empty" / katakana, synth::Seeded(11, 50));
   synth::WriteSparseImage(dir / "no_wertwo.iso", synth::BuildVolume({{"chr.afs", &s.chr}, {"werone.afs", &s.werone}}, 0));
   synth::WriteSparseImage(dir / "no_wertwo_far.iso",
                           synth::BuildVolume({{"chr.afs", &s.chr}, {"werone.afs", &s.werone}}, 0xFD90000));
@@ -555,17 +557,18 @@ class FlakySource final : public doa4::afs::Source {
   explicit FlakySource(std::shared_ptr<synth::MemArchive> inner) : inner_(std::move(inner)) {}
   uint64_t size() const override { return inner_->size(); }
   bool Read(uint64_t offset, void* dst, size_t n) const override {
-    if (armed.load() && offset + n > fail_from) return false;
+    if (armed.load() && offset < fail_to && offset + n > fail_from) return false;
     return inner_->Read(offset, dst, n);
   }
   mutable std::atomic<bool> armed{false};
   uint64_t fail_from = 0;
+  uint64_t fail_to = UINT64_MAX;  // reads overlapping [fail_from, fail_to) fail
 
  private:
   std::shared_ptr<synth::MemArchive> inner_;
 };
 
-static InputSet::ArchiveSources MemSources(const std::vector<std::pair<Arc, std::shared_ptr<const doa4::afs::Source>>>& v) {
+static InputSet::ArchiveSources MemSources(const std::vector<std::pair<ArcId, std::shared_ptr<const doa4::afs::Source>>>& v) {
   return v;
 }
 
@@ -575,7 +578,7 @@ static void TestReadError(const Synth& s) {
   auto flaky = std::make_shared<FlakySource>(std::make_shared<synth::MemArchive>(s.werone.file));
   auto wertwo = std::make_shared<synth::MemArchive>(s.wertwo.file);
   std::string error;
-  auto set = InputSet::OpenSources(MemSources({{Arc::kChr, chr}, {Arc::kWerone, flaky}, {Arc::kWertwo, wertwo}}),
+  auto set = InputSet::OpenSources(MemSources({{ArcId::kChr, chr}, {ArcId::kWerone, flaky}, {ArcId::kWertwo, wertwo}}),
                                    MemSources({}), s.disc.refs, {}, &error);
   CKF(set != nullptr, "OpenSources: %s", error.c_str());
   if (!set) return;
@@ -594,16 +597,70 @@ static void TestReadError(const Synth& s) {
   CK(threw);
 }
 
+// An I/O failure while reading the image's volume descriptor is a read error, not "not an Xbox image".
+static void TestImageReadError(const Synth& s, const Files& f) {
+  Group("image_read_error");
+  const auto built = synth::BuildVolume({{"chr.afs", &s.chr}, {"werone.afs", &s.werone}, {"wertwo.afs", &s.wertwo}}, 0);
+  const auto make = [&](std::vector<uint8_t> bytes) {
+    return std::make_shared<FlakySource>(std::make_shared<synth::MemArchive>(std::move(bytes)));
+  };
+  const auto open = [&](const std::shared_ptr<FlakySource>& img) {
+    std::string error;
+    auto set = InputSet::OpenImageSource(img, "fake.iso", f.game_dir, s.disc.refs, s.game.refs, &error);
+    CKF(set != nullptr, "OpenImageSource: %s", error.c_str());
+    return set;
+  };
+  // Positive control: the same image, no fault.
+  {
+    auto img = make(built.bytes);
+    auto set = open(img);
+    if (set) {
+      const InputCheck c = RunDisc(*set);
+      CKF(c.status == InputStatus::kOk, "unfaulted image: status %d (%s)", int(c.status), c.detail.c_str());
+      CK(c.bytes_checked == s.disc.total());
+    }
+  }
+  // The descriptor sector (sector 32 of the volume at offset 0) cannot be read.
+  {
+    auto img = make(built.bytes);
+    img->fail_from = 32 * 2048;
+    img->fail_to = 33 * 2048;
+    img->armed = true;
+    auto set = open(img);
+    if (set) {
+      const InputCheck c = RunDisc(*set);
+      CKF(c.status == InputStatus::kReadError, "descriptor read failed: status %d (%s)", int(c.status), c.detail.c_str());
+      CK(c.status != InputStatus::kNotXbox);
+      CK(c.detail.find("fake.iso") != std::string::npos);
+      CK(c.bytes_checked == 0);
+    }
+  }
+  // A directory table sector cannot be read: the root table is the sector after the three archives' data.
+  {
+    auto img = make(built.bytes);
+    img->fail_from = 33 * 2048;  // everything after the descriptor: file data and tables
+    img->armed = true;
+    auto set = open(img);
+    if (set) CKF(RunDisc(*set).status == InputStatus::kReadError, "table read failed");
+  }
+  // Control for the other direction: bytes that are not an image, with every read working, stay kNotXbox.
+  {
+    auto img = make(synth::Seeded(5, 70000));
+    auto set = open(img);
+    if (set) CK(RunDisc(*set).status == InputStatus::kNotXbox);
+  }
+}
+
 static void TestCancel(const Synth& s) {
   Group("cancel");
   // A 20 MB entry: the token is checked inside the hash, not only between entries.
-  synth::Archive big = synth::MakeArchive(Arc::kChr, {20u << 20, 100}, 9);
+  synth::Archive big = synth::MakeArchive(ArcId::kChr, {20u << 20, 100}, 9);
   synth::Table t;
   t.Add(big, 0);
   t.Add(big, 1);
   auto mem = std::make_shared<synth::MemArchive>(big.file);
   std::string error;
-  auto set = InputSet::OpenSources(MemSources({{Arc::kChr, mem}}), MemSources({}), t.refs, {}, &error);
+  auto set = InputSet::OpenSources(MemSources({{ArcId::kChr, mem}}), MemSources({}), t.refs, {}, &error);
   CKF(set != nullptr, "OpenSources: %s", error.c_str());
   if (!set) return;
   {
@@ -660,7 +717,7 @@ static void TestReadAfterChangeThrows(const Synth& s, const Files& f) {
   auto werone = std::make_shared<synth::MemArchive>(s.werone.file);
   auto wertwo = std::make_shared<synth::MemArchive>(s.wertwo.file);
   std::string error;
-  auto set = InputSet::OpenSources(MemSources({{Arc::kChr, chr}, {Arc::kWerone, werone}, {Arc::kWertwo, wertwo}}),
+  auto set = InputSet::OpenSources(MemSources({{ArcId::kChr, chr}, {ArcId::kWerone, werone}, {ArcId::kWertwo, wertwo}}),
                                    MemSources({}), s.disc.refs, {}, &error);
   CKF(set != nullptr, "OpenSources: %s", error.c_str());
   if (!set) return;
@@ -929,6 +986,11 @@ int main() {
         f.img1, synth::BuildVolume({{"chr.afs", &s.chr}, {"WerOne.afs", &s.werone}, {"WERTWO.AFS", &s.wertwo}}, 0xFD90000));
     WriteFolder(f.disc_dir, {{"CHR.AFS", &s.chr}, {"WERONE.AFS", &s.werone}, {"WERTWO.AFS", &s.wertwo}});
     WriteFolder(f.game_dir, {{"CHRONE.AFS", &s.chrone}, {"ChrTwo.afs", &s.chrtwo}, {"chrthree.AFS", &s.chrthree}});
+    // A sibling whose name has no form in the ANSI code page (katakana, written through wide APIs): looking up the
+    // archives in these folders must not depend on it. (Mutation: comparing filename().string() throws.)
+    const std::wstring katakana = L"\x30C6\x30B9\x30C8.txt";
+    synth::WriteFileBytes(f.disc_dir / katakana, synth::Seeded(7, 100));
+    synth::WriteFileBytes(f.game_dir / katakana, synth::Seeded(8, 100));
     std::printf("synthetic images: volume at 0 is %llu bytes on disk, volume at 0xFD90000 is %llu bytes on disk (file size %llu)\n",
                 (unsigned long long)f.img0_on_disk, (unsigned long long)f.img1_on_disk,
                 (unsigned long long)fs::file_size(f.img1));
@@ -938,6 +1000,7 @@ int main() {
     TestMissingArchive(s, f);
     TestNotXbox(s, f);
     TestReadError(s);
+    TestImageReadError(s, f);
     TestCancel(s);
     TestReadAfterChangeThrows(s, f);
     TestEightThreads(s, f);
