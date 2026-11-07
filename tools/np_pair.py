@@ -811,12 +811,12 @@ class Pair:
             if int(sync[0].group(2)):
                 self.problems.append(f"the {s.name}: the scene generator's lock was held at {sync[0].group(2)} frame boundaries")
             # Task 7c M7: every boundary is either made equal or skipped for a held lock, so the two counts add up to at least the terminal
-            # frame (real logs: made equal on 8049 frames, terminal frame 8048; the count is one more than the frame). A resync that ran
-            # for a few frames, or stopped part-way, passed a bare `\d+`.
+            # frame plus one (frame 0 has a boundary: real logs say made equal on 8049 frames, terminal frame 8048, and the session ending at
+            # frame f has run f's). A resync that ran for a few frames, or stopped part-way, passed a bare `\d+`.
             t = s.terminal()
-            if t is not None and int(sync[0].group(1)) + int(sync[0].group(2)) < t[0]:
+            if t is not None and int(sync[0].group(1)) + int(sync[0].group(2)) < t[0] + 1:
                 self.problems.append(f"the {s.name}: the scene generator was made equal on {sync[0].group(1)} frames and found locked on "
-                                     f"{sync[0].group(2)}, fewer than the {t[0]} frames the session ran: the resync did not run on every frame")
+                                     f"{sync[0].group(2)}, fewer than the {t[0] + 1} frames the session ran: the resync did not run on every frame")
 
     def compare(self, host, joiner):
         """(exit code, output lines, first differing digest frame or None) of np_compare.py on the two session folders."""

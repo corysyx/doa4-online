@@ -151,8 +151,11 @@ inline void DeriveSceneGenerator(const uint8_t* main_state, uint32_t frame, uint
 
 // The resync of one frame boundary: false, and nothing written, while any thread holds the generator's lock (the count at scene + 2520 is -1, four
 // 0xFF bytes, when it is free). np_det_workers mode 3 gives main a 2 s wait after which the workers run beside it, which on a slower PC can happen;
-// a write under a holder would hand it a state it is halfway through using. Skipping is safe: the next boundary makes the two peers equal again, so
-// the cost is one frame of the same difference a read later in a frame can already see (above). The caller counts the two answers apart.
+// a write under a holder would hand it a state it is halfway through using. So a skip corrupts nothing, but it isn't free: the PC that skips holds the
+// last frame's stream and the other this frame's, so they differ from the frame's FIRST draw, the camera's included, and a skip on a tag-out frame could
+// move a fighter and end in a desync. The next boundary makes them equal again. np_pair fails a pair on any skip; none has been seen. The caller counts
+// the two answers apart. The test and the write aren't atomic: a worker running beside main can take the lock between them, so this narrows the window
+// and doesn't close it. The workers run beside main only after that wait times out or when a worker has no rank (kFbUnranked, np_det_workers.cpp).
 inline bool ResyncSceneGenerator(const uint8_t* main_mt, uint32_t frame, uint8_t* scene) {
   const uint8_t* lock = scene + (kSceneMtLockCount - kSceneMt);
   if (lock[0] != 0xFF || lock[1] != 0xFF || lock[2] != 0xFF || lock[3] != 0xFF) return false;

@@ -3372,21 +3372,21 @@ def test_pair_scene_resync(root):
     check(code == 1 and "the host: the scene generator's lock was held at 2 frame boundaries" in out, f"np_pair, mixed, the lock held on the host: exit {code}\n{out}")
     code, out, runs = np_pair(root, "rs5", *side(("SUITS", "same")), *tables)
     check(code == 0 and "scene generator" not in out, f"np_pair, same import: the line is not looked for: exit {code}\n{out}")
-    # Task 7c M7: the resync must have covered every frame: frames made equal + frames found locked >= the side's terminal frame. A real log has
-    # `made equal on 8049 frames` and terminal frame 8048; the fake's count is the terminal frame itself, so the edge is one below it.
+    # Task 7c M7: the resync must have covered every frame: frames made equal + frames found locked >= the side's terminal frame + 1. A real log
+    # has `made equal on 8049 frames` and terminal frame 8048, on all 42 sides of t9's mixed pairs; the fake's default count is the same.
     m = re.search(r"^host: terminal \((\d+),", out.replace("\r", ""), re.M)
     check(m is not None, f"np_pair, resync: the host's terminal frame is in the output: {out}")
     last = int(m.group(1)) if m else 0
     code, out, runs = np_pair(root, "rs6", *mixed, "--env-host", "FAKE_ONLINE_RESYNC_FRAMES=3")
     check(code == 1 and "the host: the scene generator was made equal on 3 frames and found locked on 0" in out and "the resync did not run on every frame" in out,
           f"np_pair, mixed, the host's resync ran on 3 frames: exit {code}\n{out}")
-    code, out, runs = np_pair(root, "rs7", *mixed, "--env-joiner", f"FAKE_ONLINE_RESYNC_FRAMES={last - 1}")
-    check(code == 1 and f"the joiner: the scene generator was made equal on {last - 1} frames" in out and "the host: the scene generator was made equal" not in out,
+    code, out, runs = np_pair(root, "rs7", *mixed, "--env-joiner", f"FAKE_ONLINE_RESYNC_FRAMES={last}")
+    check(code == 1 and f"the joiner: the scene generator was made equal on {last} frames" in out and "the host: the scene generator was made equal" not in out,
           f"np_pair, mixed, the joiner's resync one frame short: exit {code}\n{out}")
-    code, out, runs = np_pair(root, "rs8", *mixed, *side(("RESYNC_FRAMES", last)))
-    check(code == 0 and "did not run on every frame" not in out, f"np_pair, mixed, the resync on exactly the terminal frame's count: exit {code}\n{out}")
-    # frames found locked count towards the total (they are skipped, not made equal): 1 held + the rest equal fails only for the lock, not for the count
-    code, out, runs = np_pair(root, "rs9", *mixed, "--env-host", f"FAKE_ONLINE_RESYNC_FRAMES={last - 2}", "--env-host", "FAKE_ONLINE_RESYNC_LOCKED=2")
+    code, out, runs = np_pair(root, "rs8", *mixed, *side(("RESYNC_FRAMES", last + 1)))
+    check(code == 0 and "did not run on every frame" not in out, f"np_pair, mixed, the resync on exactly the real game's count: exit {code}\n{out}")
+    # frames found locked count towards the total (they are skipped, not made equal): 2 held + the rest equal fails only for the lock, not for the count
+    code, out, runs = np_pair(root, "rs9", *mixed, "--env-host", f"FAKE_ONLINE_RESYNC_FRAMES={last - 1}", "--env-host", "FAKE_ONLINE_RESYNC_LOCKED=2")
     check(code == 1 and "was held at 2 frame boundaries" in out and "did not run on every frame" not in out, f"np_pair, mixed, equal + locked covers the frames: exit {code}\n{out}")
     # the real game writes no line when it made no boundary equal and found none locked; the fake now does the same
     code, out, runs = np_pair(root, "rs10", *mixed, "--env-host", "FAKE_ONLINE_RESYNC_FRAMES=0")

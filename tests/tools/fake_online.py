@@ -55,7 +55,7 @@ Switches of the stand-in itself (FAKE_ONLINE_*, per copy, in its environment):
   NO_GATE_LINE=1    no such line
   NO_RESYNC_LINE=1  no `scene generator made equal` line (written when SUITS is mixed)
   RESYNC_LOCKED=<n> that line says the lock was held at n boundaries
-  RESYNC_FRAMES=<n> that line says n frames were made equal (default: every frame; the real game's count is the terminal frame plus one)
+  RESYNC_FRAMES=<n> that line says n frames were made equal (default: as the real game, the terminal frame plus one)
   FIGHT_STATES=<k>  the digest's fight_state row takes k values, one per frame then the last held (default 1: it never moves)
   FIELDS_FROM=<p>   that file is the session's fields.d4f
   BOOT_HOLD=1       the session starts with the real game's frame-0 hold (hold begin frame 0, banner 1.0 s later, hold end)
@@ -401,7 +401,7 @@ def gate_line(log, frames):
     if os.environ.get("FAKE_ONLINE_SUITS") and os.environ.get("FAKE_ONLINE_NO_GATE_LINE") != "1":
         log.write(f"fight gate open on {int(os.environ.get('FAKE_ONLINE_GATE_OPEN', frames))} frames\n")
     if os.environ.get("FAKE_ONLINE_SUITS") == "mixed" and os.environ.get("FAKE_ONLINE_NO_RESYNC_LINE") != "1":
-        equal = int(os.environ.get("FAKE_ONLINE_RESYNC_FRAMES", frames))
+        equal = int(os.environ.get("FAKE_ONLINE_RESYNC_FRAMES", frames + 1 if frames else 0))
         locked = int(os.environ.get("FAKE_ONLINE_RESYNC_LOCKED", 0))
         if equal + locked > 0:  # np_session.cpp LogGeneratorSync: no line when no boundary was made equal and none was found locked
             log.write(f"scene generator made equal on {equal} frames, its lock held on {locked}\n")

@@ -1,0 +1,429 @@
+# Task 7c: a second Tag match with tags in it. suit_tag_fullmatch.txt to the return to the character select (fight state 0 at frame 12374 in H_TM), then
+# confirms from both pads until a match starts, then P1 attacks and tags. Its timing is from H_TM; whether the confirms reach a match is what the run shows.
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 RIGHT
+30 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 A A
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+shot
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+shot
+4 A
+180 -
+shot
+# cycle 1 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 2 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 3 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 4 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 5 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 6 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 7 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# the result screen: confirms and back-presses, whatever came up (a rematch, or the select)
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+shot
+4 B
+200 -
+4 B
+200 -
+4 B
+200 -
+4 B
+200 -
+shot
+# the select, if it came back: the same confirms as the first select, no costume moves (the cursor stays)
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+4 A
+180 -
+shot
+# cycle 1 of the second match
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+# the character select: confirms from both pads
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+4 A A
+56 -
+shot
+# the second match: attack and tag
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+40 RIGHT
+4 A
+70 -
+4 Y
+60 -
+4 A
+70 -
+4 A+B
+200 -
+shot
+120 -
+shot
+quit
