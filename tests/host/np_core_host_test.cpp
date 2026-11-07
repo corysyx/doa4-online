@@ -1057,6 +1057,56 @@ static void TestSceneResync() {
   CHECK(!std::equal(a.begin(), a.begin() + 2496, c.begin()));
 }
 
+// Task 7c, fix 2: the resync never writes beside a holder of the generator's lock (np_digest.h ResyncSceneGenerator).
+static void TestSceneResyncLock() {
+  std::vector<uint8_t> main_state(kMtBytes);
+  for (uint32_t i = 0; i < kMtBytes; ++i) main_state[i] = uint8_t(i * 7 + 3);
+  const uint32_t lock = kSceneMtLockCount - kSceneMt;
+  CHECK(lock == 2520u);
+  const size_t size = kMtBytes + 32;
+  const auto planted = [&](int held_byte, uint8_t value) {  // a scene generator with junk in it, the lock free except one byte
+    std::vector<uint8_t> v(size);
+    for (size_t i = 0; i < size; ++i) v[i] = uint8_t(i * 13 + 5);
+    for (uint32_t k = 0; k < 4; ++k) v[lock + k] = 0xFF;
+    if (held_byte >= 0) v[lock + held_byte] = value;
+    return v;
+  };
+
+  // Free: written, true, and exactly what DeriveSceneGenerator writes into the same bytes; the lock itself is not touched.
+  std::vector<uint8_t> scene = planted(-1, 0), expect = scene;
+  DeriveSceneGenerator(main_state.data(), 5000, expect.data());
+  CHECK(ResyncSceneGenerator(main_state.data(), 5000, scene.data()));
+  CHECK(scene == expect);
+  CHECK(scene != planted(-1, 0));  // it did write
+  bool lock_free = true;
+  for (uint32_t k = 0; k < 4; ++k) lock_free = lock_free && scene[lock + k] == 0xFF;
+  CHECK(lock_free);
+
+  // Held, each byte in turn and several values: false, and every byte of the scene as it was.
+  for (int k = 0; k < 4; ++k) {
+    for (const uint8_t v : {uint8_t(0x00), uint8_t(0x01), uint8_t(0x7F), uint8_t(0xFE)}) {
+      scene = planted(k, v);
+      const std::vector<uint8_t> before = scene;
+      CHECK(!ResyncSceneGenerator(main_state.data(), 5000, scene.data()));
+      CHECK(scene == before);
+    }
+  }
+
+  // The arguments are the right ones: another frame, another main generator, another result (each argument is read, and read as itself).
+  std::vector<uint8_t> a = planted(-1, 0), b = planted(-1, 0), c = planted(-1, 0);
+  CHECK(ResyncSceneGenerator(main_state.data(), 5000, a.data()));
+  CHECK(ResyncSceneGenerator(main_state.data(), 5001, b.data()));
+  CHECK(!std::equal(a.begin(), a.begin() + 2496, b.begin()));
+  auto other = main_state;
+  other[100] ^= 0x10;
+  CHECK(ResyncSceneGenerator(other.data(), 5000, c.data()));
+  CHECK(!std::equal(a.begin(), a.begin() + 2496, c.begin()));
+  std::vector<uint8_t> junk(size, 0x5A);  // what the scene held before does not decide the result: both peers must end equal
+  for (uint32_t k = 0; k < 4; ++k) junk[lock + k] = 0xFF;
+  CHECK(ResyncSceneGenerator(main_state.data(), 5000, junk.data()));
+  CHECK(std::equal(a.begin(), a.begin() + 2504, junk.begin()));
+}
+
 static void TestFightGate() {
   const std::vector<Region> mixed = DigestRegions(rules::SuitSession::kMixed);
   Region side;
@@ -1127,6 +1177,7 @@ static void TestFightGate() {
 int main() {
   TestMixedMasksOnlyWhenMixed();
   TestSceneResync();
+  TestSceneResyncLock();
   TestFightGate();
   TestFieldRanges();
   TestMxcsrAndSwitches();

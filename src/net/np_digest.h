@@ -149,6 +149,17 @@ inline void DeriveSceneGenerator(const uint8_t* main_state, uint32_t frame, uint
   put(2500, 1);
 }
 
+// The resync of one frame boundary: false, and nothing written, while any thread holds the generator's lock (the count at scene + 2520 is -1, four
+// 0xFF bytes, when it is free). np_det_workers mode 3 gives main a 2 s wait after which the workers run beside it, which on a slower PC can happen;
+// a write under a holder would hand it a state it is halfway through using. Skipping is safe: the next boundary makes the two peers equal again, so
+// the cost is one frame of the same difference a read later in a frame can already see (above). The caller counts the two answers apart.
+inline bool ResyncSceneGenerator(const uint8_t* main_mt, uint32_t frame, uint8_t* scene) {
+  const uint8_t* lock = scene + (kSceneMtLockCount - kSceneMt);
+  if (lock[0] != 0xFF || lock[1] != 0xFF || lock[2] != 0xFF || lock[3] != 0xFF) return false;
+  DeriveSceneGenerator(main_mt, frame, scene);
+  return true;
+}
+
 // The sweep's masked ranges; none in a session with no sweep.
 inline std::vector<std::pair<uint32_t, uint32_t>> SweepRanges(rules::SuitSession state) {
   std::vector<std::pair<uint32_t, uint32_t>> out;

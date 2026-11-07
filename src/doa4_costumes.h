@@ -202,13 +202,20 @@ LoadDecision DecideLoad(const GuardState* state, const GuestBytes& guest, uint32
 // the model it was asked for, and only the loader's tick sub_823FE150, which turns the row's model into a record of files, reads the other one.
 inline constexpr uint32_t kLoadSlots = 0x830ADBEC;
 inline constexpr uint32_t kLoadSlotBytes = 44;
+inline constexpr uint32_t kLoadSlotCount = 4;  // sub_823FE150 is called for slots 0 to 3 (sub_823FBE18); the table past them is other data
 
 // What the request hook passes to sub_823FE870 as the model: `use`, except an empty slot in a mixed session, which keeps `asked`.
 uint32_t RequestModel(const LoadDecision& d, bool mixed);
 
 // Around one call of sub_823FE150(slot): only in a mixed session, while the row is loading a model that is an empty slot here, the row's +4 reads
-// the model whose files this PC has; afterwards it reads what was asked again, and so does +6 if the tick just wrote it. Every other session and
-// row: nothing is touched. The hook is on the main thread, and the workers never run beside it in a session (np_det_workers.cpp, mode 3).
+// the model whose files this PC has; afterwards it reads what was asked again, and so does +6 when it holds the files' model for this fighter
+// (+5 equal to the character, +6 equal to `file`). That test cannot tell a +6 the tick wrote from one it left: a cached row (C, F) asked again for
+// the suit S takes the tick's "same files" shortcut (sub_823FE150, loc_823FE240: +0 becomes 11, +5 and +6 untouched), and End then writes S into
+// +6 although the tick did not. That is safe and pinned by the test (costumes_host_test.cpp, TestMixedSlotKey): the matcher sub_823FE9D0 reads
+// +5/+6 only while +0 is 255, and the next tick (status 11, loc_823FE83C) copies +3/+4 into +5/+6 and goes idle, where End puts +4 and +6 back
+// to S whatever the swap left, so both PCs' idle rows end (C, S). Every other session, a slot of kLoadSlotCount or more, and every other row:
+// nothing is touched; `mixed` is the caller's session test, so the guard is in here and is tested here. The hook is on the main thread, and the
+// workers never run beside it in a session (np_det_workers.cpp, mode 3).
 struct LoaderTick {
   bool swapped = false;
   uint8_t character = 0, asked = 0, file = 0;

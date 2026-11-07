@@ -314,7 +314,7 @@ uint32_t RequestModel(const LoadDecision& d, bool mixed) { return mixed && d.rul
 
 LoaderTick BeginLoaderTick(const GuardState* state, const GuestBytes& guest, uint32_t slot, bool mixed) {
   LoaderTick tick;
-  if (!mixed || !state) return tick;
+  if (!mixed || !state || slot >= kLoadSlotCount) return tick;
   const uint32_t row = kLoadSlots + slot * kLoadSlotBytes;
   if (guest.Read(row) == 255) return tick;  // idle: sub_823FE150 returns at once
   const LoadDecision d = DecideLoad(state, guest, guest.Read(row + 3), guest.Read(row + 4));

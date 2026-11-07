@@ -219,7 +219,7 @@ struct State {
   double last_hook_end_us = 0;
   uint32_t away_logged = 0;
   std::atomic<uint32_t> gate_open_frames{0};  // frames entered in a round, read at the session's end (np_pair: 0 through a fight fails a mixed pair)
-  std::atomic<uint32_t> gen_sync_frames{0}, gen_sync_locked{0};  // DOA4_NP_TEST_GEN_SYNC: frames synced, and of them with the generator's lock held
+  std::atomic<uint32_t> gen_sync_frames{0}, gen_sync_locked{0};  // mixed session: boundaries made equal, and boundaries skipped because the generator's lock was held
   // the packet ring and the rx / tx silence watch (game thread)
   PacketNote ring[64];
   uint32_t ring_next = 0;
@@ -922,7 +922,7 @@ void LogNetStats(State& s, const std::string& when) {
 // The end of an online session (game thread, or Abort before the first frame): the terminal lines, the Leave, the
 // det layer off, the overlay, and the offline relaunch after 5 s (8 s for a desync, R16).
 void LogGeneratorSync(State& s) {
-  if (s.gen_sync_frames.load()) Log("scene generator made equal on " + std::to_string(s.gen_sync_frames.load()) + " frames, its lock held on " + std::to_string(s.gen_sync_locked.load()));
+  if (s.gen_sync_frames.load() || s.gen_sync_locked.load()) Log("scene generator made equal on " + std::to_string(s.gen_sync_frames.load()) + " frames, its lock held on " + std::to_string(s.gen_sync_locked.load()));
 }
 
 void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
@@ -1178,14 +1178,12 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     Log("forced desync: one byte of the MT state 0x833F7600 flipped at frame " + std::to_string(f));
   }
   // A mixed session: the scene generator made equal on both peers at this boundary, after the row and the field log, so the log shows what the
-  // frame before it drew (np_digest.h says why, and what it leaves). The workers never run beside this thread (np_det_workers.cpp, mode 3);
-  // the count of frames that find the generator's lock held says so at run time, and np_pair fails a pair on it.
+  // frame before it drew (np_digest.h says why, and what it leaves). The workers do not run beside this thread unless main's 2 s wait in
+  // np_det_workers.cpp mode 3 times out; a frame that finds the generator's lock held is skipped and counted apart, and np_pair fails a pair
+  // on any such frame and on a resync that did not cover every frame.
   static const bool no_resync = MixedOff("sync");
   if (ResyncsSceneGenerator(s.ho.suit_state) && !no_resync) {
-    const uint8_t* lock = base + kSceneMtLockCount;
-    if (lock[0] != 0xFF || lock[1] != 0xFF || lock[2] != 0xFF || lock[3] != 0xFF) s.gen_sync_locked.fetch_add(1);
-    DeriveSceneGenerator(base + kMainMt, f, base + kSceneMt);
-    s.gen_sync_frames.fetch_add(1);
+    (ResyncSceneGenerator(base + kMainMt, f, base + kSceneMt) ? s.gen_sync_frames : s.gen_sync_locked).fetch_add(1);
   }
   PokeAt(base, f);
   SetCvarAt(f);

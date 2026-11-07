@@ -1187,6 +1187,48 @@ static void TestMixedSlotKey() {
   EndLoaderTick(t, g.guest, 2);
   CHECK(g.Get(row + 5) == 5 && g.Get(row + 6) == 4);
 
+  // Task 7c, fix 3: a cached row (5, the real file model 9), asked again for the suit 7. The swap puts 9 in +4; the tick takes the "same files"
+  // shortcut (sub_823FE150, loc_823FE240: +0 becomes 11, +5 and +6 are not touched), so End rewrites +6 to 7 though the tick did not write it. That is
+  // safe: the matcher sub_823FE9D0 reads +5/+6 only when +0 is 255, and the next tick (status 11, loc_823FE83C) copies +3/+4 into +5/+6 and goes idle,
+  // where End puts +4 and +6 back to 7 whichever value the swap left in them, so both PCs' idle rows end (5, 7).
+  set_row(0, 5, 7, 5, 9);
+  t = BeginLoaderTick(&s, g.guest, 2, true);
+  CHECK(t.swapped && g.Get(row + 4) == 9);
+  g.guest.Write(row, 11);  // the shortcut
+  EndLoaderTick(t, g.guest, 2);
+  CHECK(g.Get(row) == 11 && g.Get(row + 4) == 7 && g.Get(row + 5) == 5 && g.Get(row + 6) == 7);  // +6 rewritten, +0 still not idle
+  t = BeginLoaderTick(&s, g.guest, 2, true);  // the next tick: status 11 is not idle, so the swap happens again
+  CHECK(t.swapped && g.Get(row + 4) == 9);
+  g.guest.Write(row + 5, g.Get(row + 3));  // loc_823FE83C
+  g.guest.Write(row + 6, g.Get(row + 4));
+  g.guest.Write(row, 255);
+  EndLoaderTick(t, g.guest, 2);
+  CHECK(g.Get(row) == 255 && g.Get(row + 4) == 7 && g.Get(row + 5) == 5 && g.Get(row + 6) == 7);  // idle (5, 7), as on the PC with the suit
+
+  // Task 7c, fix 1: the game has four rows (kLoadSlotCount). A slot past them is no row: untouched, not swapped, whatever the session says. An
+  // empty-slot row is planted where slot 4 (and 5, and 255) would be, so that a missing bound shows as a swap.
+  for (const uint32_t past : {kLoadSlotCount, kLoadSlotCount + 1, 255u}) {
+    const uint32_t r = kLoadSlots + past * kLoadSlotBytes;
+    g.guest.Write(r, 1);
+    g.guest.Write(r + 3, 5);
+    g.guest.Write(r + 4, 7);
+    g.guest.Write(r + 5, 5);
+    g.guest.Write(r + 6, 9);
+    t = BeginLoaderTick(&s, g.guest, past, true);
+    CHECK(!t.swapped && g.Get(r + 4) == 7);
+    EndLoaderTick(t, g.guest, past);
+    CHECK(g.Get(r + 4) == 7 && g.Get(r + 6) == 9);
+    // the same row asked about as slot 3 would swap: the row is what makes the difference, so the planted row is a real empty-slot row
+    const uint32_t r3 = kLoadSlots + (kLoadSlotCount - 1) * kLoadSlotBytes;
+    g.guest.Write(r3, 1);
+    g.guest.Write(r3 + 3, 5);
+    g.guest.Write(r3 + 4, 7);
+    t = BeginLoaderTick(&s, g.guest, kLoadSlotCount - 1, true);
+    CHECK(t.swapped && g.Get(r3 + 4) == 9);
+    EndLoaderTick(t, g.guest, kLoadSlotCount - 1);
+    CHECK(g.Get(r3 + 4) == 7);
+  }
+
   // Not swapped: every other session, an idle row, a model this PC has, a model past the records, no guard.
   const struct { uint8_t status, model; bool mixed; const GuardState* state; } quiet[] = {
       {1, 7, false, &s}, {255, 7, true, &s}, {1, 8, true, &s}, {1, 40, true, &s}, {1, 7, true, nullptr}};

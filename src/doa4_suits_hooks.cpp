@@ -472,16 +472,13 @@ REX_HOOK_RAW(sub_823FE870) {
 }
 
 // sub_823FE150(slot r3): the loader's tick, once per slot per frame, from sub_823FBE18 on the update thread. In a mixed session this is the one
-// place that turns a slot's model into a record of files, so it alone sees the model this PC has (costumes::BeginLoaderTick).
+// place that turns a slot's model into a record of files, so it alone sees the model this PC has (costumes::BeginLoaderTick). The session test is
+// BeginLoaderTick's argument and the slot bound is inside it, so outside a mixed session the call touches nothing and reads nothing.
 REX_HOOK_RAW(sub_823FE150) {
   const uint32_t slot = ctx.r3.u32 & 0xFF;
-  if (slot >= 4 || !doa4::np::SessionSuitsMixed()) {
-    __imp__sub_823FE150(ctx, base);
-    return;
-  }
   const doa4::GuestBytes guest{[base](uint32_t address) { return base[address]; },
                                [base](uint32_t address, uint8_t value) { base[address] = value; }};
-  const doa4::costumes::LoaderTick tick = doa4::costumes::BeginLoaderTick(g_state.load(std::memory_order_acquire), guest, slot, true);
+  const doa4::costumes::LoaderTick tick = doa4::costumes::BeginLoaderTick(g_state.load(std::memory_order_acquire), guest, slot, doa4::np::SessionSuitsMixed());
   if (tick.swapped) {
     // The measured invariant the swap rests on: nothing else runs beside this thread here.
     static std::atomic<bool> off_main{false};

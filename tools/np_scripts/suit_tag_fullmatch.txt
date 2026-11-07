@@ -1,0 +1,425 @@
+# Task 7c: Tag played to its end. The fighter select of t7/a4.txt (P1 Kasumi COS. 10 + Hayabusa, P2 Ayane COS. 7 + Hayate: suits on both sides, one PC holds the files),
+# then P1 attacks an idle P2 (throws, A, with a tag press A+B each cycle) until the match ends, extra confirms through the result screen into a rematch,
+# a second Tag match played the same way, back-presses and a wait for the return to the character select (fight state 0), and a quit.
+# NOT RUN when written: its timing comes from logs (A4: fight from frame ~3944, a match of three rounds ends ~3650 frames later, the result screen
+# 300 frames after state 4; Single results go to state 0 or into a rematch within 65-440 frames). Expect to adjust it after the first run:
+#   t8/tagend.py NAME shows the fight-state runs; each cycle below is 700 frames.
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 RIGHT
+30 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 A A
+60 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+4 - DOWN
+40 -
+shot
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+shot
+4 A
+180 -
+shot
+# cycle 1 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 2 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 3 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 4 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 5 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 6 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 7 of the first match (attack, tag, wait)
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# the result screen: confirms and back-presses, whatever came up (a rematch, or the select)
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+shot
+4 B
+200 -
+4 B
+200 -
+4 B
+200 -
+4 B
+200 -
+shot
+# the select, if it came back: the same confirms as the first select, no costume moves (the cursor stays)
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+4 A
+180 -
+shot
+# cycle 1 of the second match
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 2 of the second match
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 3 of the second match
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 4 of the second match
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# cycle 5 of the second match
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+40 RIGHT
+4 A
+70 -
+4 RIGHT+A
+70 -
+4 Y
+40 -
+40 RIGHT
+4 A
+60 -
+4 A+B
+24 -
+shot
+# the second result and the way out
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 A
+160 -
+4 B
+200 -
+4 B
+200 -
+4 B
+200 -
+4 B
+200 -
+4 B
+200 -
+shot
+900 - -
+shot
+900 - -
+shot
+quit
