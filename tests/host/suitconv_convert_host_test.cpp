@@ -2712,18 +2712,19 @@ static void TestWalkRejectsUnterminatedWrites() {
   size_t q = gw + gensy::U32At(chunk, gw + 0x1C);
   while (gensy::U32At(chunk, q) != 0xFFFFFFFFu) q += 4;
   CK(q > gw + 0x60);
-  // the same chunk with the terminator, and every later 0xFFFFFFFF word (the threads' -1 links), zeroed: the list has no end
+  // the same chunk with the terminator and everything after it zeroed: the list has no end. Only the 0xFFFFFFFF words
+  // zeroed would leave later data words that rule 10 refuses first (the probe run saw 'rule 10: decl'); zeroed words are
+  // decl 0 and no node, so rule 9 is the first rule the walk breaks.
   std::vector<uint8_t> bad = chunk;
   for (size_t at = q; at + 4 <= bad.size(); at += 4)
-    if (gensy::U32At(chunk, at) == 0xFFFFFFFFu)
-      for (int i = 0; i < 4; ++i) bad[at + size_t(i)] = 0;
+    for (int i = 0; i < 4; ++i) bad[at + size_t(i)] = 0;
   std::string what;
   try {
     gc::Walk(bad, 0);
   } catch (const std::exception& e) {
     what = e.what();
   }
-  CKF(!what.empty(), "an unterminated write list is refused (%s)", what.c_str());
+  CKF(what == "AssertionError: rule 9: no terminator", "an unterminated write list is refused by rule 9 (got '%s')", what.c_str());
   // the same with the terminator at the very end of the chunk cut off: refused as well
   std::vector<uint8_t> cut(chunk.begin(), chunk.begin() + std::ptrdiff_t(q));
   std::string what2;
@@ -2732,7 +2733,7 @@ static void TestWalkRejectsUnterminatedWrites() {
   } catch (const std::exception& e) {
     what2 = e.what();
   }
-  CKF(!what2.empty(), "a chunk cut before the terminator is refused (%s)", what2.c_str());
+  CKF(what2 == "AssertionError: rule 9: no terminator", "a chunk cut before the terminator is refused by rule 9 (got '%s')", what2.c_str());
   // a write whose decl index is 46 or more is refused by rule 10
   std::vector<uint8_t> bad10 = chunk;
   const size_t first_write = gw + gensy::U32At(chunk, gw + 0x1C) + 4;  // the entry after the first node marker
@@ -2805,12 +2806,12 @@ static void TestGenPrepSynthetic() {
   {  // on an object that is not the hips
     std::vector<std::optional<core::Object>> objs(3);
     objs[2] = core::Object{{make(&suit, 113, 0)}, {}};
-    fails_with("vks_on_o", objs, "skirt must be on the rigid hips object");
+    fails_with("vks_on_o", objs, "AssertionError: ('skirt must be on the rigid hips object', 2, 1, [])");
   }
   {  // on the hips object, but skinned (a palette)
     std::vector<std::optional<core::Object>> objs(2);
     objs[1] = core::Object{{make(&suit, 113, 0)}, {7}};
-    fails_with("vks_on_o", objs, "skirt must be on the rigid hips object");
+    fails_with("vks_on_o", objs, "AssertionError: ('skirt must be on the rigid hips object', 1, 1, [7])");
   }
   {  // a design that is not generated: the recipe's KeyError
     std::vector<std::optional<core::Object>> objs(2);
