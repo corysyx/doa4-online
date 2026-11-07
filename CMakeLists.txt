@@ -139,6 +139,7 @@ target_compile_options(dead_or_alive_4 PRIVATE -ffp-contract=off)
 # when FMA or fast-math is on. Later converter sources are appended to this list.
 set(DOA4_SUITCONV_SOURCES
     src/doa4_suitconv_num.cpp
+    src/doa4_suitconv_sort.cpp
 )
 target_sources(dead_or_alive_4 PRIVATE ${DOA4_SUITCONV_SOURCES})
 # -mno-fma exists only for x86 targets (clang refuses it for aarch64); arm64 has no implicit FMA once

@@ -1,6 +1,7 @@
-"""Writes tests/host/suitconv_pins.h: bit-exact pins for the suit converter's numeric kit (src/doa4_suitconv_num.h).
+"""Writes tests/host/suitconv_pins.h: bit-exact pins for the suit converter's numeric kit (src/doa4_suitconv_num.h),
+and tests/host/suitconv_sort_pins.h: numpy's default argsort and argmin (src/doa4_suitconv_sort.h).
 
-  <CPython 3.12.1 with numpy 1.26.3> -I -B tests/host/make_suitconv_pins.py [out.h]
+  <CPython 3.12.1 with numpy 1.26.3> -I -B tests/host/make_suitconv_pins.py [out.h [sort_out.h]]
 
 The converter being ported runs on CPython 3.12.1 and numpy 1.26.3, so the pins come from exactly that interpreter (it
 refuses to run on any other). Every input is synthetic: seeded random values plus searched and hand-picked edge cases.
@@ -659,3 +660,210 @@ print('pins: sum', len(sum_tab) // 4, 'floordiv', len(fd_tab) // 4, 'round', len
       len(exp_tab) // 2, 'atan2', len(at_tab) // 3, 'red cases', len(red_cases), 'red outputs', len(red_out) // 4,
       'percentile', len(pc_tab) // 6, 'linspace', len(ls_tab) // 4, 'radians', len(rad_in))
 print('percentile sides (t < 0.5, t >= 0.5) where the branches differ:', side[False], side[True])
+
+# ===============================================================================================================
+# suitconv_sort_pins.h: np.argsort(v) (default kind) and np.argmin(v) on float64 arrays, for NpArgsort / NpArgmin.
+# Nothing above reads or changes anything below, so suitconv_pins.h keeps its bytes.
+#
+# The arrays are not stored: each is regenerated from (seed, n, pool) by the integer-only splitmix64 below, implemented
+# identically in suitconv_sort_host_test.cpp:
+#   state = seed; next(): state += 0x9E3779B97F4A7C15 (mod 2^64); z = state; z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
+#   z = (z ^ (z >> 27)) * 0x94D049BB133111EB; return z ^ (z >> 31)   (all mod 2^64)
+#   v[i] = pool[next() % len(pool)] for i = 0..n-1, in order.
+# Per array the header stores seed, n, pool id, the FNV-1a 64 digest of numpy's int64 index array (8 little-endian
+# bytes per index, in order), np.argmin, and a plausible wrong argmin; full index arrays only for n <= 20 and for the
+# two killer arrays. Small pools give dense ties; pools 6 and 7 hold NaN; pool 2 holds -0.0 and +0.0 (equal).
+M64 = (1 << 64) - 1
+
+
+class SplitMix64:
+    def __init__(self, seed):
+        self.s = seed & M64
+
+    def next(self):
+        self.s = (self.s + 0x9E3779B97F4A7C15) & M64
+        z = self.s
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & M64
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & M64
+        return z ^ (z >> 31)
+
+
+assert SplitMix64(0).next() == 0xE220A8397B1DCDAF  # the published splitmix64.c (Vigna) output for seed 0
+
+SORT_POOLS = [
+    [0.0, 1.0, 2.0],
+    [1.0, 2.0],
+    [-0.0, 0.0, 1.0],
+    [-1.5, 0.25, 0.5, 3.0, 7.75],
+    [5.0],
+    [-2.0, -1.0, -0.5, 0.0, 0.125, 1.0, 1.5, 2.0, 1e-300, 4.0],
+    [NAN, 1.0, 2.0, -1.0],
+    [NAN, -0.0, 0.0, INF, -INF],
+]
+SORT_REGULAR_POOLS = 6  # pools 0..5 have no NaN
+
+
+def sort_values(seed, n, pool):
+    g = SplitMix64(seed)
+    p = SORT_POOLS[pool]
+    return [p[g.next() % len(p)] for _ in range(n)]
+
+
+def np_argsort(vals):
+    a = np.array(vals, dtype=np.float64)
+    idx = np.argsort(a)
+    assert idx.dtype == np.int64, idx.dtype
+    return a, idx
+
+
+def idx_digest(idx):
+    return fnv1a64(idx.astype('<i8').tobytes())
+
+
+def wrong_argmin(vals):
+    """The likeliest wrong argmin: the LAST index of the minimum when there is no NaN; with a NaN, the first minimum
+    of the values that are not NaN (as if NaN were skipped)."""
+    if any(x != x for x in vals):
+        fin = [x for x in vals if x == x]
+        if not fin:
+            return 0
+        m = min(fin)
+        return next(i for i, x in enumerate(vals) if x == m)
+    m = min(vals)
+    return max(i for i, x in enumerate(vals) if x == m)
+
+
+sort_master = SplitMix64(SEED)
+SORT_LARGE_N = [100, 1000, 1914, 3608, 5000]
+sort_cases = []  # (seed, n, pool, digest, argmin, wrong argmin, differs from stable)
+sort_small_idx = []
+# n <= 16 is all insertion sort in numpy (pr - pl > SMALL_QUICKSORT needs n >= 17), which is stable, so those arrays
+# can never differ from a stable order; half the small arrays sweep n = 1..20 evenly and half take n = 17..20, where
+# one partition runs.
+sort_shapes = [1 + k % 20 for k in range(1000)] + [17 + k % 4 for k in range(1000)]
+sort_shapes += [SORT_LARGE_N[k % 5] for k in range(1000)]
+for k, n in enumerate(sort_shapes):
+    if k % 16 == 15:
+        pool = 6 + (k // 16) % 2
+    else:
+        pool = sort_master.next() % SORT_REGULAR_POOLS
+    seed = sort_master.next()
+    vals = sort_values(seed, n, pool)
+    a, idx = np_argsort(vals)
+    stable = np.argsort(a, kind='stable')
+    am = int(np.argmin(a))
+    sort_cases.append((seed, n, pool, idx_digest(idx), am, wrong_argmin(vals), not np.array_equal(idx, stable)))
+    if n <= 20:
+        sort_small_idx += [int(i) for i in idx]
+    assert sorted(int(i) for i in idx) == list(range(n))
+
+
+def musser_killer(n):
+    """Musser's median-of-3 killer (Introspective Sorting and Selection Algorithms, 1997), values 1..n, n even."""
+    k = n // 2
+    a = [0] * n
+    for i in range(1, k + 1):
+        a[i - 1] = i if i % 2 == 1 else k + i - 1
+        a[k + i - 1] = 2 * i
+    return a
+
+
+KILLER_N = 4096
+killer_perm = musser_killer(KILLER_N)
+assert sorted(killer_perm) == list(range(1, KILLER_N + 1))
+# Killer 0: the permutation itself (distinct values, so its sorted order is unique). Killer 1: the same with each
+# value halved and floored, so pairs tie and the heapsort fallback's tie order shows in the index array.
+killers = [[float(x) for x in killer_perm], [float(x // 2) for x in killer_perm]]
+killer_idx = []
+for kv in killers:
+    a, idx = np_argsort(kv)
+    killer_idx.append([int(i) for i in idx])
+assert killer_idx[1] != [int(i) for i in np.argsort(np.array(killers[1]), kind='stable')]
+
+ARGMIN_EMPTY = message_of(lambda: np.argmin(np.array([], dtype=np.float64)))
+assert len(np.argsort(np.array([], dtype=np.float64))) == 0
+
+sort_differs = sum(c[6] for c in sort_cases)
+SORT_DIFF_FRACTION = sort_differs / len(sort_cases)
+assert SORT_DIFF_FRACTION >= 0.5, f'only {sort_differs} of {len(sort_cases)} pins differ from a stable order'
+argmin_last_differs = sum(1 for c in sort_cases if c[2] < SORT_REGULAR_POOLS and c[4] != c[5])
+argmin_nan_differs = sum(1 for c in sort_cases if c[2] >= SORT_REGULAR_POOLS and c[4] != c[5])
+assert argmin_last_differs > 0 and argmin_nan_differs > 0, 'no argmin pin separates last-of-ties or NaN-skipping'
+nan_cases = sum(1 for c in sort_cases if c[2] >= SORT_REGULAR_POOLS)
+prng_check = []
+for s in (0, SEED, sort_cases[0][0]):
+    g = SplitMix64(s)
+    prng_check += [s] + [g.next() for _ in range(4)]
+
+sort_out = []
+
+
+def semit(s):
+    sort_out.append(s)
+
+
+def su64s(name, values, comment):
+    vals = list(values)
+    semit(f'// {comment}\nstatic const uint64_t {name}[] = {{\n')
+    for i in range(0, len(vals), 6):
+        semit(','.join(f'0x{v:016x}' for v in vals[i:i + 6]) + ',\n')
+    semit('};\n')
+    semit(f'static constexpr size_t {name}Count = {len(vals)};\n\n')
+
+
+def sints(name, ctype, values, comment):
+    vals = list(values)
+    semit(f'// {comment}\nstatic const {ctype} {name}[] = {{\n')
+    for i in range(0, len(vals), 32):
+        semit(','.join(str(v) for v in vals[i:i + 32]) + ',\n')
+    semit('};\n')
+    semit(f'static constexpr size_t {name}Count = {len(vals)};\n\n')
+
+
+semit('// Generated by tests/host/make_suitconv_pins.py under CPython 3.12.1 and numpy 1.26.3. Do not edit.\n'
+      '// np.argsort(v) (default kind: aquicksort_<npy::double_tag>, no SIMD dispatch on Windows) and np.argmin(v) on\n'
+      '// synthetic float64 arrays. Read by suitconv_sort_host_test.cpp. Each array is regenerated from (seed, n, pool):\n'
+      '//   splitmix64: state = seed; next(): state += 0x9E3779B97F4A7C15; z = state;\n'
+      '//   z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9; z = (z ^ (z >> 27)) * 0x94D049BB133111EB; return z ^ (z >> 31);\n'
+      '//   (uint64 arithmetic); v[i] = pool[next() % pool size] for i = 0..n-1.\n'
+      f'// Master seed {SEED}. {len(sort_cases)} arrays, {sort_differs} ({SORT_DIFF_FRACTION:.4f}) differ from '
+      'np.argsort(kind="stable");\n'
+      f'// {nan_cases} use a NaN pool. Argmin pins where the wrong argmin differs: last-of-ties {argmin_last_differs}, '
+      f'NaN-skipping {argmin_nan_differs}.\n')
+semit('#pragma once\n\n#include <cstddef>\n#include <cstdint>\n\nnamespace suitconv_sort_pins {\n\n')
+su64s('kPrngCheck', prng_check, 'splitmix64 self-check: per seed, the seed then its first 4 outputs.')
+pool_bits, pool_start = [], []
+for p in SORT_POOLS:
+    pool_start.append(len(pool_bits))
+    pool_bits += [db(x) for x in p]
+su64s('kPoolValues', pool_bits, 'The value pools, concatenated (double bits): ' +
+      '; '.join(f'pool {i}: {len(p)}' for i, p in enumerate(SORT_POOLS)) + '.')
+sints('kPoolStart', 'uint32_t', pool_start, 'Offset of each pool in kPoolValues.')
+sints('kPoolSize', 'uint32_t', [len(p) for p in SORT_POOLS], 'Size of each pool.')
+su64s('kCases', [v for c in sort_cases for v in (c[0], c[1], c[2], c[3], c[4], c[5])],
+      'Per array: seed, n, pool, FNV-1a 64 of np.argsort(v) as int64 LE bytes, np.argmin(v), NOT that: the last index '
+      'of the minimum (no NaN) or the first minimum ignoring NaN (NaN pools).')
+sints('kSmallIndices', 'uint8_t', sort_small_idx, 'np.argsort(v) in full for every array with n <= 20, in case order.')
+for i, kv in enumerate(killers):
+    su64s(f'kKiller{i}Values', [db(x) for x in kv],
+          f'Killer {i} (n {KILLER_N}): ' + ("Musser's median-of-3 killer, values 1..4096" if i == 0 else
+                                             'the same values halved and floored (pairs tie)') + ' (double bits).')
+    sints(f'kKiller{i}Indices', 'uint16_t', killer_idx[i], f'np.argsort of killer {i}.')
+semit(f'static constexpr const char* kArgminEmptyMessage = {cstr(ARGMIN_EMPTY[1])};  // Python: {ARGMIN_EMPTY[0]}\n\n')
+semit('}  // namespace suitconv_sort_pins\n')
+
+sort_path = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                               'suitconv_sort_pins.h')
+sort_text = ''.join(sort_out)
+with open(sort_path, 'w', newline='\n', encoding='ascii') as f:
+    f.write(sort_text)
+print(f'wrote {sort_path} ({len(sort_text)} bytes)')
+by_n = {}
+for c in sort_cases:
+    key = c[1] if c[1] > 20 else ('1..16' if c[1] <= 16 else '17..20')
+    d = by_n.setdefault(key, [0, 0])
+    d[0] += 1
+    d[1] += c[6]
+print('sort pins:', len(sort_cases), 'arrays,', sort_differs, f'({SORT_DIFF_FRACTION:.4f}) differ from stable;',
+      'by n (arrays, differ):', by_n, '; NaN-pool arrays', nan_cases, '; argmin NOT pins separating: last-of-ties',
+      argmin_last_differs, 'NaN-skipping', argmin_nan_differs)
