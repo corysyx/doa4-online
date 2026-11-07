@@ -63,7 +63,7 @@ Weights Weights::Above(double threshold) const {
 
 // Python's repr() of the values an assert's tuple carries, closely enough to diagnose: ints in decimal, lists and
 // tuples with ", ", strings in single quotes, floats by their shortest round-trip digits.
-static std::string ReprD(double v) {
+std::string ReprD(double v) {
   if (std::isnan(v)) return "nan";
   if (std::isinf(v)) return v < 0 ? "-inf" : "inf";
   char buf[64];

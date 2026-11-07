@@ -19,6 +19,7 @@ namespace doa4::suitconv::waist {
 
 using core::Assert;
 using core::Fail;
+using core::ReprD;
 using core::Vec3;
 
 namespace {
@@ -27,18 +28,11 @@ constexpr double kPi = 3.141592653589793;  // np.pi
 
 using Row4 = std::array<double, 4>;
 
-// repr() of a float, by its shortest round-trip digits (as core's ReprD).
-std::string ReprD(double v) {
-  if (std::isnan(v)) return "nan";
-  if (std::isinf(v)) return v < 0 ? "-inf" : "inf";
-  char buf[64];
-  const auto r = std::to_chars(buf, buf + sizeof buf, v);
-  std::string s(buf, r.ptr);
-  if (s.find_first_of(".eE") == std::string::npos) s += ".0";
-  return s;
-}
-
-// ndarray.astype(int) of a float64: C's cast, which on x86-64 gives INT64_MIN for NaN and out-of-range values.
+// ndarray.astype(int) of a float64: C's cast to int64, which on x86-64 gives INT64_MIN for NaN and out-of-range values.
+// numpy 1.26.3 on Windows makes astype(int) an int32 (C long): there NaN and +-1e10 give -2147483648. The int64 model is
+// equivalent here because the two only differ for |v| >= 2^31 or NaN, and every use feeds a small value: the grid
+// index (t <= 24, a <= 8, see below) and the seam cell keys floor(q / cell), which differ between the models only for
+// coordinates beyond about 6.4e6 m or NaN, which the converter never meets. Behaviour is the int64 one, unchanged.
 int64_t AstypeInt(double v) {
   if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) return std::numeric_limits<int64_t>::min();
   return static_cast<int64_t>(v);
@@ -225,7 +219,8 @@ std::optional<int64_t> PrepWaistFit(const core::Model& ref, int64_t t_chest, int
   // ang = lambda P: np.arctan2(np.abs(P[:, 0]), P[:, 2] - zc)   0 = front, pi = back
   // Known gap: numpy's arctan2 and exp on this PC are the C runtime's. The kit's musl Atan2 and Exp are within 1 ulp of
   // them, not bit-equal, so the weights' doubles differ in the last bits for some vertices; after the round to half
-  // the .tpr and .cat bytes are equal for all 34 suits, the trace's `B p<i>.h4` hashes are not (task-7-report.md).
+  // the .tpr and .cat bytes are equal for all 34 suits, the trace's `B p<i>.h4` hashes are not. The test checks the
+  // doubles themselves against a sidecar of the Python's h4 values (see tests/host/suitconv_convert_host_test.cpp).
   auto ang = [&](const Vec3& p) { return num::Atan2(std::fabs(p[0]), p[2] - zc); };
 
   // 1. the template, from the reference

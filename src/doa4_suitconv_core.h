@@ -46,6 +46,8 @@ using Vec3 = std::array<double, 3>;
 [[noreturn]] void Fail(const std::string& what);
 // assert cond, text
 void Assert(bool cond, const std::string& text);
+// Python's repr() of a float (shortest round-trip digits; "nan", "inf", "-inf"), for assert texts.
+std::string ReprD(double v);
 
 // a / b for Python floats: ZeroDivisionError("float division by zero") when b == 0.
 double PyDiv(double a, double b);
