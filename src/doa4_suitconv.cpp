@@ -5,6 +5,7 @@
 #include "doa4_suitconv.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <map>
 #include <cstring>
@@ -14,6 +15,7 @@
 
 #include "doa4_suitconv_bust.h"
 #include "doa4_suitconv_catx.h"
+#include "doa4_suitconv_cloth.h"
 #include "doa4_suitconv_core.h"
 #include "doa4_suitconv_hands.h"
 #include "doa4_suitconv_inputs.h"
@@ -59,8 +61,9 @@ struct Job {
 // The run of convert.main (lines 1315-1563) with the level's arguments: --neck-weights owner --expand-formats
 // --mesh-passes, --leg-midline (Lei Fang), --carry-head (Tina), --cat 2,4,ref4,6, and at L1 and above --bust-down /
 // --bust-up (the suit's strengths) and --strap-fade (when non-zero), at L2 and above --waist-fit, at L3 and above
-// --hands (the girl's hand donor), and at M1 the girl's --hair-spares and --head-physics (Tina). The cloth options are not
-// ported yet (ConvertSuit refuses them at M1).
+// --hands (the girl's hand donor), and at M1 the girl's --hair-spares and --head-physics (Tina) and the suit's
+// --port-cloth, --fit-leg-colliders, --unstick-cloth, --back-margin and --sink-hamstrings. The generated cloth
+// (--gen-cloth) is not ported yet (ConvertSuit refuses it at M1).
 void RunConvert(Job& job) {
   const SuitRecipe& sr = *job.suit;
   const GirlRecipe& gr = *job.girl;
@@ -302,10 +305,26 @@ void RunConvert(Job& job) {
     tr.B("bind4", s.bytes());
   }
 
+  // line 1483: cloth_objs = {obj for _mc, _cl, obj in find_cloth(suit, keep)} if a.port_cloth else set() (a set used for
+  // membership only: weld_chest_cloth and prep_bust's is_cloth test `obj_id in cloth_objs`)
+  const bool m1 = job.level == Level::kM1;
+  const bool port_cloth = m1 && sr.port_cloth;
+  std::set<int64_t> cloth_objs;
+  if (port_cloth) {
+    step("cloth_objs");
+    for (const cloth::Found& f : cloth::FindCloth(suit, keep)) cloth_objs.insert(f.obj);
+  }
+  if (!cloth_objs.empty()) {  // line 1485
+    const int64_t chest_id = chan2id.At(0x9000);
+    stage("weld");
+    cloth::WeldChestCloth(bo.objects, chest_id, suit, cloth_objs);
+    if (tr.on()) tr.State(bo.objects);
+  }
+
   int64_t chest = -1;
-  if (bust_on) {  // line 1486; cloth_objs is empty (no --port-cloth before M1), cloth_model=suit
+  if (bust_on) {  // line 1486; cloth_model=suit
     stage("bust");
-    chest = bust::PrepBust(bo.objects, parts, chan2id, sr.bust_down, sr.bust_up, {}, &suit, sr.strap_fade);
+    chest = bust::PrepBust(bo.objects, parts, chan2id, sr.bust_down, sr.bust_up, cloth_objs, &suit, sr.strap_fade);
     if (tr.on()) {
       tr.K("chest", std::to_string(chest));
       for (const c::Part* p : bo.objects[static_cast<size_t>(chest)]->ps) {
@@ -319,6 +338,39 @@ void RunConvert(Job& job) {
       }
       tr.State(bo.objects);
     }
+  }
+
+  std::vector<cloth::Spec> cloth_specs;  // line 1487: prep_cloth(suit, keep, objects, report) if a.port_cloth else []
+  if (port_cloth) {
+    stage("cloth_prep");
+    cloth_specs = cloth::PrepCloth(suit, keep, bo.objects);
+    if (tr.on()) {
+      tr.K("nspecs", std::to_string(cloth_specs.size()));
+      for (const cloth::Spec& sp : cloth_specs) {
+        std::string cl;
+        for (int64_t c : sp.cloths) cl += (cl.empty() ? "" : ",") + std::to_string(c);
+        tr.K("spec", "mc=" + std::to_string(sp.mc) + " cloths=" + cl + " obj=" + std::to_string(sp.obj) +
+                         " owner=" + std::to_string(sp.owner));
+        std::string w;
+        for (const auto& [decl, e] : sp.where.items())
+          w += (w.empty() ? "" : ",") + std::to_string(decl) + ":" + std::to_string(e.oid) + ":" + std::to_string(e.k) +
+               ":" + std::to_string(e.part->index);
+        tr.K("where", w);
+      }
+      tr.State(bo.objects);
+    }
+  }
+  if (bust_on) {  // lines 1488-1490
+    for (const cloth::Spec& sp : cloth_specs) {
+      stage("band");
+      cloth::BandMotion(sp, bo.objects, chest);
+      if (tr.on()) tr.State(bo.objects);
+    }
+  }
+  if (m1 && sr.sink_hamstrings != 0.0) {  // line 1491
+    stage("sink");
+    cloth::SinkHamstrings(bo.objects, suit, sr.sink_hamstrings);
+    if (tr.on()) tr.State(bo.objects);
   }
 
   if (job.level >= Level::kL2) {  // line 1495: `if a.waist_fit`, the shared template hel05's bare waist (bones chest 2, pelvis 3)
@@ -337,6 +389,9 @@ void RunConvert(Job& job) {
       tr.State(bo.objects);
     }
   }
+
+  step("cloth_specs");
+  c::Assert(cloth_specs.size() <= 1, "one MULTI_CLOTH per body type in the spike");  // line 1499
 
   // line 1527: face_channels, head_physics = prep_head_physics(...) when `a.carry_head and a.head_physics` (Tina, at m1)
   std::optional<catx::HeadPhysics> head_physics;
@@ -393,17 +448,82 @@ void RunConvert(Job& job) {
   if (head_physics && !head_physics->channels.empty())  // line 1515: hand_channels = {**(hand_channels or {}), **face_channels}
     catx::MergeChannels(hand_channels, head_physics->channels);
 
-  std::optional<std::vector<uint8_t>> mpv;
+  std::vector<cloth::Pin> cloth_pins;  // line 1517
+  std::optional<std::array<double, 2>> peak;
   if (bust_on) {
     stage("peak");  // line 1518
-    const auto peak = bust::BustPeak(bo.objects, chest, bo.bind4);
+    peak = bust::BustPeak(bo.objects, chest, bo.bind4);
     if (tr.on()) tr.K("peak", peak ? trace::Hx((*peak)[0]) + " " + trace::Hx((*peak)[1]) : "none");
-    stage("mpv");  // line 1532: full_down = 1.0 / a.bust_down, full_up = 1.0 / a.bust_up; extra = the hand channels; no pins yet
+  }
+  std::optional<std::vector<uint8_t>> cloth;  // cloth_blob (None without a cloth); with_spares may make one
+  if (!cloth_specs.empty()) {  // line 1519
+    stage("cloth");
+    cloth = cloth::BuildCloth(suit, cloth_specs[0], enc.geos, bo.bind4, maps, &cloth_pins, peak);
+    if (tr.on()) {
+      tr.B("cloth", *cloth);
+      trace::Ser s;
+      s.L(cloth_pins.size());
+      for (const cloth::Pin& p : cloth_pins) {
+        s.L(2);
+        s.I(p.at);
+        s.L(3);
+        for (double x : p.nv) s.D(x);
+      }
+      tr.B("cloth_pins", s.bytes());
+      tr.Geos(enc.geos, nullptr);
+    }
+  }
+  if (m1 && (sr.fit_leg_colliders || sr.unstick_cloth) && cloth && !cloth->empty()) {  // lines 1522-1528
+    step("fit_inputs");
+    const int64_t cloth_owner = cloth_specs.at(0).owner;  // (the generated cloth's owner is Task 11's)
+    c::PyDict<int64_t, c::Vec3> bones;
+    for (int64_t n = 0; n < 15; ++n)
+      if (const int64_t* id = chan2id.Find(0x9000 + n)) bones.Set(n, bo.bind4.At(*id));
+    auto limb = [&](int64_t oid) {
+      std::vector<c::Vec3> pts;
+      for (size_t i = 0; i < bo.objects.size(); ++i) {
+        const auto& ob = bo.objects[i];
+        if (!ob || !(static_cast<int64_t>(i) == oid || std::find(ob->pal.begin(), ob->pal.end(), oid) != ob->pal.end()))
+          continue;
+        for (const c::Part* p : ob->ps)
+          for (const c::Vert& v : p->verts) pts.push_back(v.pos);
+      }
+      return pts;
+    };
+    std::map<int64_t, std::vector<c::Vec3>> legs;
+    for (int64_t b : {6, 12}) legs[b] = limb(chan2id.At(0x9000 + b));
+    const std::vector<c::Vec3> hips = limb(chan2id.At(0x9002));
+    const c::Vec3 own = bo.bind4.At(cloth_owner);
+    stage("fit");
+    cloth = cloth::FitClothChunk(*cloth, bones, own, legs, hips, sr.unstick_cloth, sr.fit_leg_colliders, sr.back_margin);
+    tr.B("fit", *cloth);
+  }
+  std::vector<bust::PinRow> pin_table;  // line 1529: pin_rows(...) when the cloth is on the chest object
+  if (!cloth_specs.empty() && bust_on && cloth_specs[0].owner == chest) {
+    stage("pins");
+    pin_table = cloth::PinRows(cloth_pins, bo.objects, chest, bo.bind4, suit);
+    if (tr.on()) {
+      tr.K("nrows", std::to_string(pin_table.size()));
+      trace::Ser s;
+      s.L(pin_table.size());
+      for (const bust::PinRow& r : pin_table) {
+        s.L(4);
+        s.I(r.rel);
+        for (const auto* a : {&r.rest, &r.down, &r.up}) {
+          s.L(3);
+          for (double x : *a) s.D(x);
+        }
+      }
+      tr.B("rows", s.bytes());
+    }
+  }
+  std::optional<std::vector<uint8_t>> mpv;
+  if (bust_on) {
+    stage("mpv");  // line 1532: full_down = 1.0 / a.bust_down, full_up = 1.0 / a.bust_up; extra = the hand channels
     mpv = bust::BuildMpv(bo.objects, enc.geos, bo.bind4, chest, 0.0005, c::PyDiv(1.0, sr.bust_down),
-                         c::PyDiv(1.0, sr.bust_up), &hand_channels);
+                         c::PyDiv(1.0, sr.bust_up), &hand_channels, &pin_table);
     tr.B("mpv", *mpv);
   }
-  std::optional<std::vector<uint8_t>> cloth;  // cloth_blob (None until the cloth is ported); with_spares may make one
   if (job.level == Level::kM1 && gr.hair_spares) {
     stage("spares");  // line 1535: cloth_blob = with_spares(cloth_blob, ref.cat, report)
     cloth = catx::WithSpares(cloth ? &*cloth : nullptr, Need(in.ref_cat, "reference .cat"));
@@ -455,12 +575,7 @@ std::optional<SuitOutput> ConvertSuit(const SuitRecipe& suit, const GirlRecipe& 
                                       const CancelToken* cancel, Trace* trace, ConvertFailure* failure) {
   // B1: the features that are not ported yet. Each later task deletes its own gate.
   if (level == Level::kM1) {
-    if (suit.port_cloth) return Failed(failure, "level", "not ported yet: port_cloth");
     if (suit.gen_cloth) return Failed(failure, "level", "not ported yet: gen_cloth");
-    if (suit.fit_leg_colliders) return Failed(failure, "level", "not ported yet: fit_leg_colliders");
-    if (suit.unstick_cloth) return Failed(failure, "level", "not ported yet: unstick_cloth");
-    if (suit.back_margin != 0.0) return Failed(failure, "level", "not ported yet: back_margin");
-    if (suit.sink_hamstrings != 0.0) return Failed(failure, "level", "not ported yet: sink_hamstrings");
   }
 
   Job job{&suit, &girl, &in, cancel, trace, level, "start", std::nullopt};

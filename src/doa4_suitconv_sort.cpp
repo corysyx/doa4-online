@@ -206,6 +206,7 @@ int64_t NpArgmin(std::span<const double> v) {
 }
 
 void SetArgsortForTest(ArgsortFn fn) { g_argsort_for_test = fn; }
+ArgsortFn GetArgsortForTest() { return g_argsort_for_test; }
 
 uint64_t ArgsortHeapsortCount() { return g_heapsort_count.load(std::memory_order_relaxed); }
 

@@ -27,6 +27,12 @@
 //   oracle_m1_spares_head   the same directory: the 11 suits whose girl has the hair collision spares or Tina's head physics
 //                       convert at level m1 to the shipped bytes (and differ from the C++ L3 bytes)
 //   trace_m1, h4_abs_m1   the trace and waist-weight checks over the 27 suits kM1Ready lists (the 16 and the 11)
+//   oracle_m1_cloth     the same directory: the 5 authored-cloth suits equal the shipped m1 files, their MPP pin-row counts
+//                       equal the oracle trace's, and every relocated pin row points at its pin
+//   argsort_is_what_matters   the same plus the traces: under a stable argsort (ScopedArgsortForTest) exactly vcr_cm_c and
+//                       vtn_sh_c differ, as Python's census measured
+//   cloth_numeric, unstick_rounds   the cloth's primitives (Gemv3, MathDist, PySetOrder) against interpreter pins, and the
+//                       six unstick rounds on a hand-built chunk; prep_bust_synthetic also drives the cloth fade
 //   attach_cloth_pins, spares_must_end_file, head_physics_synthetic   hand-built references: attach's MULTI_CLOTH branch with
 //                       pin rows, with_spares (both branches, its asserts), prep_head_physics (section, face channels,
 //                       asserts, CPython's set order), the {**hand, **face} merge
@@ -38,11 +44,13 @@
 #include "../../src/doa4_suitconv.h"
 #include "../../src/doa4_suitconv_bust.h"
 #include "../../src/doa4_suitconv_catx.h"
+#include "../../src/doa4_suitconv_cloth.h"
 #include "../../src/doa4_suitconv_core.h"
 #include "../../src/doa4_suitconv_hands.h"
 #include "../../src/doa4_suitconv_inputs.h"
 #include "../../src/doa4_suitconv_num.h"
 #include "../../src/doa4_suitconv_recipe.h"
+#include "../../src/doa4_suitconv_sort.h"
 #include "../../src/doa4_suitconv_tpr.h"
 #include "../../src/doa4_suitconv_trace.h"
 #include "../../src/doa4_suits_bust.h"
@@ -512,19 +520,196 @@ static std::string ErrOf(const std::function<void()>& fn) {
   return "";
 }
 
+// cloth_numeric: the cloth's census-chosen primitives against pins from the recipe's interpreter (numpy 1.26.3, CPython
+// 3.12.1) on seeded synthetic inputs (no game data). Gemv3 is numpy's (N, 3) @ u for N > 1 (cblas_dgemv): 24 rows where
+// the plain sum and/or the fused chain from 0 (NpDotFused) differ from numpy, flagged per row; the N == 1 matmul is
+// numpy's dot path, a fused chain from 0, which differs from Gemv3 on the first row. MathDist is math.dist: 16 pairs
+// where the plain sqrt of the sum of squares differs. PySetOrder is list(set(l)): 6 lists, among them one past the
+// 8-slot table (resizes), one with duplicates and one with colliding hashes; the four-key case must agree with
+// catx::SmallSetOrder.
+static void TestClothNumeric() {
+  Group("cloth_numeric");
+  namespace cl = doa4::suitconv::cloth;
+  using V = core::Vec3;
+  const V u{0x1.15cb42210b411p-2, -0x1.2344989264c58p-1, -0x1.8d82b0d1af718p-1};
+  struct G {
+    V a;
+    double want;
+  };
+  const G gemv[] = {
+      {{-0x1.2c8477f715712p+0, -0x1.f87d0207fb342p+1, 0x1.85a8ad625edffp+0}, 0x1.7be01472b74bbp-1},  // 1 1
+      {{0x1.71842487be1c5p+2, 0x1.5cf2f9d03f260p+2, -0x1.9e216bdb1698ap+0}, -0x1.1e2d9a353d963p-2},  // 1 1
+      {{0x1.312cc3ca20ac8p+1, 0x1.a5eff979878bep+2, 0x1.a36d517954a74p+1}, -0x1.69751de3a9748p+2},  // 1 1
+      {{0x1.3ab4cba1cc298p-3, -0x1.b45ea8a916d94p-1, 0x1.ece23f1490832p-1}, -0x1.c45408af2b8a2p-3},  // 1 1
+      {{-0x1.95e8a401578d6p+1, -0x1.9c6f43a507ae4p-2, 0x1.605d562cfb15ep+0}, -0x1.b325b1f207573p+0},  // 1 1
+      {{-0x1.614af6402dd23p-12, -0x1.f2901c5b72b00p-11, 0x1.6082b3066edc9p-11}, -0x1.2fdb9578f2a1cp-14},  // 1 1
+      {{0x1.f6871740878acp-12, -0x1.78960f19cf84cp-11, 0x1.933efda547706p-11}, -0x1.eada2cf76a1dcp-15},  // 1 1
+      {{-0x1.f07cf2f0f1462p-13, 0x1.1caa1f6fd83dfp-13, 0x1.731fd971ef27fp-14}, -0x1.b8b2a4850cf21p-13},  // 1 1
+      {{-0x1.25934ccd70a13p-5, -0x1.3b22a71c039edp-5, 0x1.eaf9745a30efap-6}, -0x1.6bd74f04a11b1p-7},  // 1 1
+      {{0x1.1d219c2e9d360p-12, -0x1.2ac44e2faecbdp-14, 0x1.c009fdb0c1cb0p-12}, -0x1.c8050b8851393p-13},  // 1 1
+      {{-0x1.51d6a69c70b70p-3, 0x1.78848f46b4160p-1, -0x1.3ec9df0599960p-1}, 0x1.4cb0b3d19735fp-6},  // 1 1
+      {{-0x1.8c1ae5923f7c0p-3, -0x1.c756f6abca598p-1, 0x1.25f5b6e490788p-1}, 0x1.f8d2cb0774450p-8},  // 1 1
+      {{-0x1.2a1efc404c4fap-1, 0x1.94a5215a7571cp+1, -0x1.85a522a0dcb06p+2}, 0x1.629ded0f49159p+1},  // 1 0
+      {{-0x1.20962e0031490p-4, -0x1.84b7d4c903454p-2, 0x1.6b29dd7983ad2p-1}, -0x1.6a593cf4778b0p-2},  // 1 0
+      {{-0x1.b561d35943496p-1, 0x1.59861fb40c170p-2, 0x1.7f9a8ff23c708p-2}, -0x1.6dd92c605865ep-1},  // 1 0
+      {{-0x1.7084f6eb7fcb8p-4, -0x1.a2af224e472cdp-7, -0x1.796971b19c535p-4}, 0x1.bda29e24001a8p-5},  // 1 0
+      {{-0x1.71d3c9989919ap-12, 0x1.01e95284cf4d5p-10, -0x1.040620f5a7af8p-10}, 0x1.e1378f1488fa3p-14},  // 1 0
+      {{0x1.d40b2118fb0e8p-11, -0x1.9567d608930b4p-12, 0x1.ef0b345cb3ec1p-11}, -0x1.1c1e70cd3759fp-12},  // 1 0
+      {{0x1.5851f5009dbaep+2, 0x1.4ad50b0b2b338p+2, 0x1.18fa216260768p+2}, -0x1.38f19014560f4p+2},  // 0 1
+      {{-0x1.cc031099184a8p-11, 0x1.32a49b53ffe04p-14, -0x1.f0c39aeffeef4p-11}, 0x1.de2a41bae2774p-12},  // 0 1
+      {{0x1.9eb7b84cd7abep-1, 0x1.430fe2e63e78cp-1, -0x1.05067164cd8e0p-5}, -0x1.d4e64c680445ep-4},  // 0 1
+      {{-0x1.d08262bc5c772p+1, -0x1.e737df0e50e60p+1, 0x1.89ef12f8d8b77p+2}, -0x1.cc88cd16553e4p+1},  // 0 1
+      {{0x1.1bdc049d02693p-5, 0x1.d50c2931ae1d0p-5, 0x1.2c6f4bd8ffde8p-4}, -0x1.482ace80aad76p-4},  // 0 1
+      {{0x1.b794353f32880p-8, 0x1.ff19146d46fc0p-7, -0x1.1ddbffbba1d67p-8}, -0x1.e0a49f621a1c2p-9},  // 0 1
+  };
+  int gemv_ok = 0, plain_differs = 0, fused_differs = 0;
+  for (const G& r : gemv) {
+    const double got = cl::Gemv3(r.a, u);
+    CKF(std::bit_cast<uint64_t>(got) == std::bit_cast<uint64_t>(r.want), "Gemv3 %a, want %a", got, r.want);
+    gemv_ok += got == r.want;
+    plain_differs += ((r.a[0] * u[0] + r.a[1] * u[1]) + r.a[2] * u[2]) != r.want;
+    fused_differs += num::NpDotFused(r.a.data(), u.data(), 3) != r.want;
+  }
+  CKF(plain_differs == 18 && fused_differs == 18, "vacuity: plain differs on %d, fused chain on %d (18 each)", plain_differs,
+      fused_differs);
+  const double one = 0x1.7be01472b74bdp-1;  // np.array([row 0]) @ u: the scalar_out path (ddot)
+  CK(num::NpDotFused(gemv[0].a.data(), u.data(), 3) == one && cl::Gemv3(gemv[0].a, u) != one);
+  struct Dd {
+    V p, q;
+    double want;
+  };
+  const Dd dist[] = {
+      {{0x1.269571d43fcb8p-2, -0x1.805978b89b930p-2, -0x1.77835b2b602a2p+0}, {-0x1.a896053698ffcp-1, 0x1.a1f835920c5e2p+0, 0x1.7509089b7ed88p-1}, 0x1.96c8ce6a1ae9dp+1},
+      {{0x1.4f5f396601dd0p-1, -0x1.b8eac0e46e728p+0, 0x1.b033f27873de8p+0}, {0x1.d44028e2d44d6p+0, -0x1.37f861a538c6ep+0, -0x1.f967353b34764p-1}, 0x1.7b7e4657a4bc2p+1},
+      {{-0x1.616e94debf068p-1, 0x1.7ddd6b60a5ec0p-1, -0x1.4c3675f8af9b4p+0}, {-0x1.61ae42d3f3238p-1, 0x1.7d9b1f9ad0365p-1, -0x1.4c19114117ce6p+0}, 0x1.b475ff1dc8189p-11},
+      {{0x1.d0e13eb8c5940p-3, -0x1.67e26391c40c2p+0, 0x1.b4b798cbf5df8p-2}, {0x1.13d867b6d382cp+0, 0x1.7ce542a7bf100p-2, 0x1.12ebd246b0948p-1}, 0x1.f94dcaaec9194p+0},
+      {{0x1.25128590e46f8p-1, -0x1.c61ebe0175cb2p+0, -0x1.8f087559093e0p-2}, {0x1.9bef8583fa112p+0, 0x1.c3af235092c62p+0, -0x1.06cb7b7581344p+0}, 0x1.deee4d0674c9fp+1},
+      {{-0x1.4f1e80ee14066p+0, 0x1.514f4428b92d4p+0, 0x1.49b35b0bfcd46p+0}, {-0x1.af573c477fa00p-4, 0x1.9d0434fad092ap+0, -0x1.55d1062e5dd98p-2}, 0x1.05451621714f6p+1},
+      {{-0x1.894348ff3b4c8p+0, -0x1.853155adadba8p-1, 0x1.9f4a73aff835ep+0}, {0x1.c036745951976p+0, 0x1.4501a3fda1000p-2, 0x1.ac04e37ba3c32p+0}, 0x1.bad041d39c57bp+1},
+      {{-0x1.d15b4e3df1710p+0, -0x1.1c4fb8b9ae688p-2, 0x1.b595c228002c0p-1}, {0x1.94cecd6a4b7c0p-1, -0x1.128232bbbf858p-2, 0x1.a865779a651dcp+0}, 0x1.5d59bb853ef75p+1},
+      {{0x1.2f39ce3a3dd9ap+0, 0x1.5013129dcae00p-6, 0x1.05950d23e2440p-4}, {0x1.2f60fa0ce9b58p+0, 0x1.4729690195016p-6, 0x1.0796f51e4ce75p-4}, 0x1.ef8c8b105f2b2p-11},
+      {{-0x1.fc3d4c1971450p-3, -0x1.99ee9af6553dcp-1, 0x1.beeac11299c4ep+0}, {-0x1.9df44cbb2ae82p+0, -0x1.98870b86b1e3ep+0, -0x1.e236f06606c38p-2}, 0x1.5ca92b738fef1p+1},
+      {{0x1.6e5fc7f6c5414p+0, 0x1.3727eca746dc0p-4, -0x1.932d57b023dbcp-1}, {0x1.a4a27fd381542p+0, -0x1.2219501944000p-13, -0x1.c5ccfc03771f4p-1}, 0x1.f7b671f50a6f8p-3},
+      {{-0x1.612a52f466690p-2, -0x1.a54bc52c67a7cp+0, 0x1.c7d1e475a0b50p-1}, {-0x1.60cdd1d85e3c2p-2, -0x1.a53dbf8e80e01p+0, 0x1.c7e5ed3b3f3acp-1}, 0x1.cd729f1fb5c8fp-12},
+      {{0x1.6da3ea6cbae00p-4, 0x1.8e06216852048p-2, -0x1.3673a3864f288p-2}, {0x1.94b72dbe1a782p+0, 0x1.b84bba40ea11ep+0, -0x1.d94bdc1489bc8p+0}, 0x1.43776f87c3e2fp+1},
+      {{-0x1.49b46cba0ffb6p+0, 0x1.091561f713f00p-5, 0x1.23439ac25ef24p-1}, {0x1.451c877ffbb04p+0, 0x1.7d7c2d15bd3b0p-2, -0x1.948be524afdd4p+0}, 0x1.add82bc613012p+1},
+      {{0x1.4b9f6cb10c930p+0, 0x1.f1f74ea4b3d88p-2, 0x1.50f0e2887e2bap+0}, {0x1.655f70d1f479ap+0, -0x1.5d46677261090p-3, -0x1.f1f36b0ef49a0p-1}, 0x1.310e3ef92f28ep+1},
+      {{-0x1.72d9b36b47b64p+0, -0x1.ff39c56680a48p-2, 0x1.f975bda57545cp-1}, {-0x1.72c181810ce0ep+0, -0x1.00103996f6880p-1, 0x1.f9b6cae5dc6aep-1}, 0x1.19f7d46e9c330p-10},
+  };
+  int dist_ok = 0, dist_plain_differs = 0;
+  for (const Dd& r : dist) {
+    const double got = cl::MathDist(r.p, r.q);
+    CKF(std::bit_cast<uint64_t>(got) == std::bit_cast<uint64_t>(r.want), "MathDist %a, want %a", got, r.want);
+    dist_ok += got == r.want;
+    const double dx = r.p[0] - r.q[0], dy = r.p[1] - r.q[1], dz = r.p[2] - r.q[2];
+    dist_plain_differs += std::sqrt((dx * dx + dy * dy) + dz * dz) != r.want;
+  }
+  CKF(dist_plain_differs == 16, "vacuity: plain differs on %d of 16", dist_plain_differs);
+  CK(cl::MathDist(V{0, 0, 0}, V{0, 0, 0}) == 0.0 && std::isnan(cl::MathDist(V{0, NAN, 0}, V{0, 0, 0})));
+  CK(cl::MathDist(V{0, 0, 0}, V{3, 4, 12}) == 13.0 && std::isinf(cl::MathDist(V{0, INFINITY, 0}, V{0, 0, NAN})));
+  struct Sc {
+    std::vector<int64_t> in, want;
+  };
+  const Sc sets[] = {
+      {{5, 13, 8, 1}, {8, 1, 13, 5}},
+      {{60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60}},
+      {{0, 64, 128, 192, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1088, 1152, 1216}, {0, 256, 128, 384, 512, 1024, 1152, 640, 768, 896, 64, 192, 320, 448, 576, 1088, 704, 832, 960, 1216}},
+      {{0, 37, 74, 111, 148, 185, 11, 48, 85, 122, 159, 196, 22, 59, 96, 133, 170, 207, 33, 70, 107, 144, 181, 7, 44, 81, 118, 155, 192, 18, 55, 92, 129, 166, 203, 29, 66, 103, 140, 177, 3, 40, 77, 114, 151, 188, 14, 51, 88, 125, 162, 199, 25, 62, 99, 136, 173, 210, 36, 73, 110, 147, 184, 10, 47, 84, 121, 158, 195, 21, 58, 95, 132, 169, 206, 32, 69, 106, 143, 180, 6, 43, 80, 117, 154, 191, 17, 54, 91, 128, 165, 202, 28, 65, 102, 139, 176, 2, 39, 76, 113, 150, 187, 13, 50, 87, 124, 161, 198, 24, 61, 98, 135, 172, 209, 35, 72, 109, 146, 183, 9, 46, 83, 120, 157, 194, 20, 57, 94, 131, 168, 205, 31, 68, 105, 142, 179, 5, 42, 79, 116, 153, 190, 16, 53, 90, 127, 164, 201, 27}, {0, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 27, 28, 29, 31, 32, 33, 35, 36, 37, 39, 40, 42, 43, 44, 46, 47, 48, 50, 51, 53, 54, 55, 57, 58, 59, 61, 62, 65, 66, 68, 69, 70, 72, 73, 74, 76, 77, 79, 80, 81, 83, 84, 85, 87, 88, 90, 91, 92, 94, 95, 96, 98, 99, 102, 103, 105, 106, 107, 109, 110, 111, 113, 114, 116, 117, 118, 120, 121, 122, 124, 125, 127, 128, 129, 131, 132, 133, 135, 136, 139, 140, 142, 143, 144, 146, 147, 148, 150, 151, 153, 154, 155, 157, 158, 159, 161, 162, 164, 165, 166, 168, 169, 170, 172, 173, 176, 177, 179, 180, 181, 183, 184, 185, 187, 188, 190, 191, 192, 194, 195, 196, 198, 199, 201, 202, 203, 205, 206, 207, 209, 210}},
+      {{5, 7, 12, 18, 35, 36, 40, 45, 46, 47, 53, 55, 59, 62, 65, 68, 69, 72, 77, 78, 79, 81, 90, 99, 102, 105, 107, 110, 113, 123, 124, 130, 137, 138, 140, 141, 144, 147, 155, 156, 164, 170, 172, 175, 178, 180, 183, 185, 190, 193, 201, 203, 214, 225, 231, 232, 234, 238, 241, 242, 251, 260, 264, 267, 272, 273, 277, 281, 287, 300, 301, 302, 304, 307, 315, 318, 323, 327, 329, 332, 336, 339, 341, 350, 351, 360, 382, 388, 390, 391, 392, 393, 395, 397, 398, 402, 403, 405, 427, 430, 434, 435, 436, 438, 440, 442, 444, 448, 459, 462, 465, 469, 474, 476, 482, 484, 487, 488, 490, 499}, {5, 7, 12, 18, 35, 36, 40, 45, 46, 47, 53, 55, 59, 62, 65, 68, 69, 72, 77, 78, 79, 81, 90, 99, 102, 105, 107, 110, 113, 123, 124, 130, 137, 138, 140, 141, 144, 147, 155, 156, 164, 170, 172, 175, 178, 180, 183, 185, 190, 193, 201, 203, 214, 225, 231, 232, 234, 238, 241, 242, 251, 260, 264, 267, 272, 273, 277, 281, 287, 300, 301, 302, 304, 307, 315, 318, 323, 327, 329, 332, 336, 339, 341, 350, 351, 360, 382, 388, 390, 391, 392, 393, 395, 397, 398, 402, 403, 405, 427, 430, 434, 435, 436, 438, 440, 442, 444, 448, 459, 462, 465, 469, 474, 476, 482, 484, 487, 488, 490, 499}},
+      {{3, 3, 11, 19, 3, 27, 35, 43, 51, 59, 67}, {3, 35, 67, 59, 11, 43, 19, 51, 27}},
+  };
+  int sets_ok = 0;
+  for (const Sc& c : sets) {
+    const auto got = cl::PySetOrder(c.in);
+    CKF(got == c.want, "set of %zu keys: order differs", c.in.size());
+    sets_ok += got == c.want;
+  }
+  CK(cl::PySetOrder(sets[0].in) == catx::SmallSetOrder(sets[0].in));
+  std::printf("cloth_numeric: %d/24 Gemv3 rows, %d/16 MathDist pairs, %d/6 set orders equal to the interpreter's\n", gemv_ok,
+              dist_ok, sets_ok);
+}
+
+// unstick_rounds: fit_cloth_chunk(unstick=True, fit=False) on a hand-built chunk (no game data). Layout (hex): cloth
+// count 1 at 0x18, table at 0x20 -> C = 0x40; C+0x24 -> GRID_DATA at 0x80 (nodes at 0xC0, two), C+0x2C -> FIX_GRID at
+// 0x140 (one pin, node 1), C+0x38 -> a chain of 7 spheres (type 2, bone 0, radius 0.1) at 0x1C0 + 0x70 * i, listed S6
+// first and S0 last, sphere Sk centred at (0.103 * k, 0, 0). Free node 0 starts at (0.002, 0, 0), inside S0 only. A push
+// moves it out along +x to the sphere's surface plus the 0.004 margin, centre + 0.104, which is 0.001 past the next
+// centre: inside the next sphere only. Each of the 6 rounds walks the chain S6..S0 once, so each round advances it one
+// sphere: after 6 rounds it is at S5's centre + 0.104 (0.619 in float32 arithmetic: 0x1.3ced9p-1), NOT S4's (5 rounds,
+// 0x1.083126p-1). Both values from the recipe's own fit_cloth_chunk in its interpreter (5 rounds by patching range from
+// outside). The pinned node 1 and every other byte stay as they were.
+static void TestUnstickRounds() {
+  Group("unstick_rounds");
+  namespace cl = doa4::suitconv::cloth;
+  std::vector<uint8_t> b(0x1C0 + 0x70 * 7, 0);
+  auto f32 = [&](size_t at, float v) { PutBe(b, at, std::bit_cast<uint32_t>(v)); };
+  PutBe(b, 0x18, 1);
+  PutBe(b, 0x1C, 0x20);
+  PutBe(b, 0x20, 0x40);
+  PutBe(b, 0x40 + 0x24, 0x40);
+  PutBe(b, 0x40 + 0x2C, 0x100);
+  PutBe(b, 0x40 + 0x38, 0x180);
+  PutBe(b, 0x80 + 0x20, 0x40);
+  PutBe(b, 0x80 + 0x24, 2);
+  f32(0xC0, 0.002f);
+  for (int c = 0; c < 3; ++c) f32(0xC0 + 48 + 4 * c, 0.5f);
+  PutBe(b, 0x140 + 0x18, 0x20);
+  PutBe(b, 0x140 + 0x1C, 1);
+  PutBe(b, 0x160 + 0x14, 0x40 + 48);
+  for (int i = 0; i < 7; ++i) {
+    const size_t at = 0x1C0 + 0x70 * size_t(i);
+    PutBe(b, at, 2);
+    PutBe(b, at + 8, i + 1 < 7 ? uint32_t(0x70 * (i + 1)) : 0u);
+    f32(at + 0x30, float(0.103 * (6 - i)));
+    f32(at + 0x3C, 0.1f);
+  }
+  core::PyDict<int64_t, core::Vec3> bones;
+  bones.Set(0, core::Vec3{0, 0, 0});
+  std::vector<uint8_t> out;
+  num::FpEnvGuard env;
+  try {
+    out = cl::FitClothChunk(b, bones, core::Vec3{0, 0, 0}, {}, {}, true, false, 0.0);
+  } catch (const ConvertError& e) {
+    CKF(false, "FitClothChunk threw: %s", e.what());
+    return;
+  }
+  CK(out.size() == b.size());
+  if (out.size() != b.size()) return;
+  const float x = std::bit_cast<float>(GetBe(out, 0xC0));
+  CKF(x == 0x1.3ced9p-1f, "node 0 x = %a, the recipe's 6 rounds give 0x1.3ced9p-1", double(x));
+  CK(x != 0x1.083126p-1f);  // NOT the 5-round position
+  CK(GetBe(out, 0xC4) == 0 && GetBe(out, 0xC8) == 0);
+  bool rest_same = true;
+  for (size_t i = 0; i < b.size(); ++i)
+    if ((i < 0xC0 || i >= 0xCC) && out[i] != b[i]) rest_same = false;
+  CK(rest_same);
+  std::printf("unstick_rounds: free node walked through 6 of 7 spheres to %a\n", double(x));
+}
+
 static void TestLevelGates() {
   Group("level_gates");
   const auto s = synth::conv::MakeInputs();
   const SuitInputs in = SynthInputs(s);
   SuitRecipe suit = SynthSuit();
   const GirlRecipe girl = SynthGirl();
-  suit.port_cloth = true;  // an M1 feature comes first at M1
+  suit.gen_cloth = true;  // the generated cloth (Task 11) is the one M1 feature still gated
   {
     ConvertFailure f;
     const auto r = ConvertSuit(suit, girl, in, Level::kM1, nullptr, nullptr, &f);
-    CKF(!r && f.stage == "level" && f.what == "not ported yet: port_cloth", "%s / %s", f.stage.c_str(), f.what.c_str());
+    CKF(!r && f.stage == "level" && f.what == "not ported yet: gen_cloth", "%s / %s", f.stage.c_str(), f.what.c_str());
   }
-  suit.port_cloth = false;
+  suit.gen_cloth = false;
+  {  // the authored cloth and its options are ported: no longer refused at M1 by the gate
+    SuitRecipe s2 = suit;
+    s2.port_cloth = true;
+    s2.fit_leg_colliders = true;
+    s2.unstick_cloth = true;
+    s2.back_margin = 0.012;
+    s2.sink_hamstrings = 0.008;
+    ConvertFailure f;
+    const auto r = ConvertSuit(s2, girl, in, Level::kM1, nullptr, nullptr, &f);
+    CKF(r || f.stage != "level", "%s / %s", f.stage.c_str(), f.what.c_str());
+  }
   {  // the hair spares and head physics are ported: a girl with either flag is no longer refused at M1 by the gate
     GirlRecipe g2 = girl;
     g2.hair_spares = true;
@@ -1315,6 +1500,41 @@ static void TestPrepBustSynthetic() {
     threw = std::string(e.what()).find("no chest object") != std::string::npos;
   }
   CK(threw);
+
+  // The cloth fade (prep_bust with cloth_objs, --port-cloth; never reached before the authored cloth was ported): the
+  // chest's morphing body fades near a piece of the suit's cloth (model cloth_model, object id in cloth_objs) that sits on
+  // the chest object. Worked by hand, fade range 0.0625, strap fade off: the cloth vertex (10, 1/64, 0) is 1/64 from
+  // vertex 1 (10, 0, 0), so t = (1/64) / 0.0625 = 0.25 and k_f = 0.25 * 0.25 * (3 - 2 * 0.25) = 0.15625; vertex 1's
+  // offsets become 0.15625 * (0.5 * up_off(1)) and 0.15625 * (0.25 * dn_off(1)). A part of the same model on the chest
+  // whose object id (1) is NOT in cloth_objs sits 1/64 from vertex 0 and must not fade it (NOT 0.15625 * ...). Every other
+  // vertex is more than 9 away from the cloth vertex: unfaded, and vertex 2 is still held at the border.
+  core::Part* cloth = make(&strap_model, 0, chest, {{10.0, 0.015625, 0.0}});
+  core::Part* not_cloth = make(&strap_model, 0, chest, {{0.0, 0.015625, 0.0}});
+  not_cloth->obj_id = 1;
+  morph->bust.reset();
+  morph->border.reset();
+  morph->writable = false;
+  objects[0] = core::Object{{morph, reversed, thin, carried, cloth, not_cloth}, {1}};
+  cb::PrepBust(objects, parts, chan2id, 0.25, 0.5, {0}, &strap_model, 0.0, 0.001, 0.0625);
+  CK(morph->bust.has_value() && !cloth->bust && !not_cloth->bust);
+  if (morph->bust) {
+    int faded_checked = 0;
+    for (int j = 0; j < n; ++j) {
+      const auto u = up_off(j), d = dn_off(j);
+      for (int c = 0; c < 3; ++c) {
+        double eu = 0.5 * double(u[c]), ed = 0.25 * double(d[c]);
+        if (j == 1) eu = 0.15625 * eu, ed = 0.15625 * ed;  // faded near the cloth
+        if (j == 2) eu = ed = 0.0;                         // held still at the border
+        CKF(morph->bust->second[j][c] == eu, "cloth fade: up[%d][%d] = %g, expected %g", j, c, morph->bust->second[j][c], eu);
+        CKF(morph->bust->first[j][c] == ed, "cloth fade: down[%d][%d] = %g, expected %g", j, c, morph->bust->first[j][c], ed);
+        ++faded_checked;
+      }
+    }
+    CK(morph->bust->second[1][1] != 0.5 * double(up_off(1)[1]));  // the fade changed vertex 1
+    std::printf("prep_bust_synthetic: cloth fade, %d components checked, vertex 1 at k_f 0.15625, vertex 0 not faded by "
+                "a part outside cloth_objs\n",
+                faded_checked);
+  }
 }
 
 // bust_peak: the most forward point (largest z, first one wins a tie, in the chest's frame), skipping parts without a
@@ -1472,12 +1692,15 @@ static std::string Stem(const SuitRecipe& s) { return std::string(s.design) + "_
 
 // The suits that convert at level m1 so far, written once: the cloth features extend this one list. The first 16 need no
 // feature after the hands; the next 11 add the hair collision spares (Kasumi, Kokoro and Lei Fang as the wearer) or Tina's
-// carried head physics. The group tests derive the same set from the recipe flags and assert it equals this list.
+// carried head physics; the last 5 carry the suit's own authored cloth (--port-cloth, with the collider fit, unstick, back
+// margin and hamstring sink where the recipe gives them). The group tests derive the same set from the recipe flags and
+// assert it equals this list.
 static const char* const kM1Ready[] = {"vay_cs_b", "vay_on_k", "vay_sk_d", "vht_cs_f", "vht_sp_h", "vht_on_e", "vks_wi_b",
                                        "vhe_cm_a", "vhe_on_d", "vhe_dl_l", "vls_cs_h", "vls_on_j", "vls_sp_a", "vcr_cs_g",
                                        "vcr_on_n", "vcr_ch_e",  // 16
                                        "vks_ch_d", "vks_cs_a", "vks_hn_i", "vco_cs_i", "vhe_on_c", "vco_ch_f", "vle_cs_c",
-                                       "vle_dl_a", "vtn_cs_e", "vtn_ch_i", "vls_on_b"};  // + 11
+                                       "vle_dl_a", "vtn_cs_e", "vtn_ch_i", "vls_on_b",  // + 11
+                                       "vhe_sk_a", "vtn_sh_c", "vcr_cm_c", "vco_sk_c", "vle_on_i"};  // + 5 authored cloth
 static bool InM1Ready(const SuitRecipe& s) {
   for (const char* n : kM1Ready)
     if (std::string(n) == s.design) return true;
@@ -1778,12 +2001,14 @@ static void H4Abs(Level level, const char* group) {
 // oracle_m1_without_extras, oracle_m1_spares_head: at level m1 the suits kM1Ready lists equal the shipped m1 files
 // ---------------------------------------------------------------------------------------------------------------
 // DOA4_SUITCONV_ORACLE_DIR is the folder of the shipped m1 outputs (<design>_<colour>.tpr / .cat). A suit is ready at m1
-// when none of port_cloth, gen_cloth, fit_leg_colliders, unstick_cloth, back_margin, sink_hamstrings applies (the cloth
-// features, still gated). Of those, the 16 whose girl has neither hair_spares nor head_physics need nothing after the
-// hands: the recipe's m1 output is its L3 output, so the C++ m1 must equal both the shipped file and the C++ L3
-// (oracle_m1_without_extras). The other 11 add the hair collision spares (the girls vks, vco, vle) or Tina's head physics
-// and must equal the shipped file while differing from the C++ L3 (oracle_m1_spares_head). The other 7 stay gated.
+// unless it has the generated cloth (gen_cloth, still gated). Of the ready ones, the 16 with no cloth feature (none of
+// port_cloth, fit_leg_colliders, unstick_cloth, back_margin, sink_hamstrings) whose girl has neither hair_spares nor
+// head_physics need nothing after the hands: the recipe's m1 output is its L3 output, so the C++ m1 must equal both the
+// shipped file and the C++ L3 (oracle_m1_without_extras). The 11 with no cloth feature that add the hair collision spares
+// (the girls vks, vco, vle) or Tina's head physics must equal the shipped file while differing from the C++ L3
+// (oracle_m1_spares_head). The 5 with the authored cloth are oracle_m1_cloth. The other 2 (gen_cloth) stay gated.
 
+static bool M1Ready(const SuitRecipe& s) { return !s.gen_cloth; }
 static bool ClothGatesFree(const SuitRecipe& s) {
   return !s.port_cloth && !s.gen_cloth && !s.fit_leg_colliders && !s.unstick_cloth && s.back_margin == 0.0 &&
          s.sink_hamstrings == 0.0;
@@ -1813,8 +2038,8 @@ static void TestOracleM1WithoutExtras() {
     const GirlRecipe* girl = FindGirl(s.girl);
     CKF(girl != nullptr, "%s: no girl", stem.c_str());
     if (!girl) continue;
-    const bool ready = ClothGatesFree(s);
-    const bool free = ready && !girl->hair_spares && !girl->head_physics;
+    const bool ready = M1Ready(s);
+    const bool free = ClothGatesFree(s) && !girl->hair_spares && !girl->head_physics;
     if (ready) derived.insert(s.design);
     SuitInputs in;
     try {
@@ -1824,14 +2049,14 @@ static void TestOracleM1WithoutExtras() {
       continue;
     }
     ConvertFailure f;
-    if (!ready) {  // vacuity control: a suit with a cloth feature is still refused at m1
+    if (!ready) {  // vacuity control: a suit with the generated cloth is still refused at m1
       const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, nullptr, &f);
       CKF(!m1 && f.stage == "level" && f.what.rfind("not ported yet: ", 0) == 0, "%s: m1 gate: %s / %s", stem.c_str(),
           f.stage.c_str(), f.what.c_str());
       if (!m1) ++gated;
       continue;
     }
-    if (!free) {  // the spares and head physics suits: oracle_m1_spares_head
+    if (!free) {  // the spares and head physics suits (oracle_m1_spares_head), the authored cloth (oracle_m1_cloth)
       ++elsewhere;
       continue;
     }
@@ -1856,12 +2081,12 @@ static void TestOracleM1WithoutExtras() {
     }
   }
   std::printf("%s: derived list (%zu): %s\n", group, derived.size(), Names(derived).c_str());
-  std::printf("%s: %d/16 equal to the shipped m1 files, %d equal to C++ L3, %d suits with a cloth feature still gated, %d in "
-              "oracle_m1_spares_head\n",
+  std::printf("%s: %d/16 equal to the shipped m1 files, %d equal to C++ L3, %d suits with the generated cloth still gated, "
+              "%d in oracle_m1_spares_head and oracle_m1_cloth\n",
               group, equal, same_as_l3, gated, elsewhere);
   if (!Env("DOA4_SUITCONV_ONLY")) {
     CKF(derived == want_ready, "the derived list is kM1Ready's %zu (%zu derived)", want_ready.size(), derived.size());
-    CK(n == 34 && gated == 7 && elsewhere == 11);
+    CK(n == 34 && gated == 2 && elsewhere == 16);
     CK(equal == 16 && same_as_l3 == 16);
   }
 }
@@ -1875,7 +2100,7 @@ static void TestOracleM1SparesHead() {
   Group(group);
   InputSet* set = OpenSet(env);
   if (!set) return;
-  std::set<std::string> want_eleven(std::begin(kM1Ready) + 16, std::end(kM1Ready)), derived;
+  std::set<std::string> want_eleven(std::begin(kM1Ready) + 16, std::begin(kM1Ready) + 27), derived;
   int equal = 0, changed = 0, n = 0, spares_suits = 0, head_suits = 0;
   uint64_t pin_rows = 0;
   for (const SuitRecipe& s : Suits()) {
@@ -1936,6 +2161,183 @@ static void TestOracleM1SparesHead() {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// oracle_m1_cloth: the 5 suits with the suit's own authored cloth (--port-cloth) at m1
+// ---------------------------------------------------------------------------------------------------------------
+// Each must equal the shipped m1 files and differ from the C++ L3 (the cloth is attached at +0x14). The MPP pin rows
+// the suit reaches (MPP +0x44) must equal the count of the oracle's `pins` trace stage (`K nrows N`; 0 when the stage is
+// absent: the cloth is not on the chest object); with DOA4_SUITCONV_TRACE_DIR unset the count check is skipped. On real
+// data each relocated row must point at its pin: the row's first word w (written by attach as at + rel - mpp) puts the
+// cloth's FIX_GRID pin record at file offset mpp + w, whose first 12 bytes are the pin's rest point, the same 3 floats
+// as the row's rest.
+static bool AuthoredCloth(const SuitRecipe& s) { return s.port_cloth && !s.gen_cloth; }
+
+static int64_t OracleNrows(const OracleEnv& env, const std::string& stem) {
+  if (!env.traces) return -1;
+  const auto tb = ReadFile(fs::path(env.traces) / "m1" / (stem + ".trace"));
+  if (!tb) return -2;
+  for (const std::string& l : SplitLines(*tb))
+    if (l.rfind("K nrows ", 0) == 0) return std::stoll(l.substr(8));
+  return 0;
+}
+
+static void TestOracleM1Cloth() {
+  const char* group = "oracle_m1_cloth";
+  OracleEnv env;
+  if (!OracleEnvOrSkip(group, &env, false)) return;
+  const char* odir = Env("DOA4_SUITCONV_ORACLE_DIR");
+  if (!odir) return SkipGroup(group, "DOA4_SUITCONV_ORACLE_DIR");
+  Group(group);
+  InputSet* set = OpenSet(env);
+  if (!set) return;
+  const std::set<std::string> want_five(std::begin(kM1Ready) + 27, std::end(kM1Ready));
+  std::set<std::string> derived;
+  int equal = 0, changed = 0, n = 0, rows_checked = 0, counts_checked = 0;
+  for (const SuitRecipe& s : Suits()) {
+    if (!OnlyAllows(s) || !AuthoredCloth(s)) continue;
+    ++n;
+    derived.insert(s.design);
+    const std::string stem = Stem(s);
+    const GirlRecipe* girl = FindGirl(s.girl);
+    CKF(girl != nullptr, "%s: no girl", stem.c_str());
+    if (!girl) continue;
+    SuitInputs in;
+    try {
+      in = ReadSuitInputs(*set, s, *girl);
+    } catch (const std::exception& e) {
+      CKF(false, "%s: ReadSuitInputs: %s", stem.c_str(), e.what());
+      continue;
+    }
+    ConvertFailure f;
+    const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, nullptr, &f);
+    CKF(m1.has_value(), "%s: m1 converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
+    if (!m1) continue;
+    const auto wt = ReadFile(fs::path(odir) / (stem + ".tpr"));
+    const auto wc = ReadFile(fs::path(odir) / (stem + ".cat"));
+    CKF(wt.has_value() && wc.has_value(), "%s: no shipped m1 files", stem.c_str());
+    if (!wt || !wc) continue;
+    const bool et = CompareFile(stem.c_str(), "tpr", m1->tpr, *wt);
+    const bool ec = CompareFile(stem.c_str(), "cat", m1->cat, *wc);
+    CKF(et, "%s m1 .tpr equals the shipped file", stem.c_str());
+    CKF(ec, "%s m1 .cat equals the shipped file", stem.c_str());
+    if (et && ec) ++equal;
+    const auto l3 = ConvertSuit(s, *girl, in, Level::kL3, nullptr, nullptr, &f);
+    CKF(l3.has_value(), "%s: L3 converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
+    if (l3 && l3->cat != m1->cat) ++changed;
+    CKF(l3 && l3->cat != m1->cat, "%s: m1 .cat differs from L3", stem.c_str());
+    const auto& cat = m1->cat;
+    CKF(cat.size() >= 0x18 && GetBe(cat, 0x14) != 0, "%s: no MULTI_CLOTH at +0x14", stem.c_str());
+    if (cat.size() < 0x18 || GetBe(cat, 0xC) == 0) {
+      CKF(false, "%s: no MPV", stem.c_str());
+      continue;
+    }
+    const uint32_t mpv_at = GetBe(cat, 0xC);
+    const uint32_t mpp = mpv_at + GetBe(cat, mpv_at + 36 + 16);
+    const uint32_t nrows = GetBe(cat, mpp + 0x44);
+    const int64_t want_rows = OracleNrows(env, stem);
+    if (want_rows >= 0) {
+      ++counts_checked;
+      CKF(int64_t(nrows) == want_rows, "%s: MPP pin rows %u, the oracle's pins stage %lld", stem.c_str(), nrows,
+          (long long)want_rows);
+    }
+    const uint32_t block = GetBe(cat, mpp + 0x40);
+    for (uint32_t i = 0; i < nrows; ++i) {
+      const size_t row = size_t(mpp) + block + 40 * size_t(i);
+      const size_t pin = size_t(mpp) + GetBe(cat, row);
+      const bool in_range = row + 40 <= cat.size() && pin + 12 <= cat.size() && pin >= GetBe(cat, 0x14);
+      CKF(in_range && std::equal(cat.begin() + row + 4, cat.begin() + row + 16, cat.begin() + pin),
+          "%s: pin row %u does not point at its pin's rest point", stem.c_str(), i);
+      ++rows_checked;
+    }
+    std::printf("  %s: m1 %s, MPP pin rows %u (oracle pins stage %lld)\n", stem.c_str(), et && ec ? "equal " : "DIFFERS",
+                nrows, (long long)want_rows);
+  }
+  std::printf("%s: derived list (%zu): %s\n", group, derived.size(), Names(derived).c_str());
+  std::printf("%s: %d/%d equal to the shipped m1 files, %d differ from C++ L3, %d pin counts checked, %d relocated pin rows "
+              "checked on real data\n",
+              group, equal, n, changed, counts_checked, rows_checked);
+  if (!Env("DOA4_SUITCONV_ONLY")) {
+    CKF(derived == want_five, "the derived list is the 5 authored-cloth suits (%zu derived)", derived.size());
+    CK(n == 5 && equal == 5 && changed == 5);
+    CK(!env.traces || counts_checked == 5);
+    CK(!env.traces || rows_checked > 0);  // the relocation runs on real data
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// argsort_is_what_matters: the control for numpy's tie order (Task 2's argsort port)
+// ---------------------------------------------------------------------------------------------------------------
+// Python's substitution census (np.argsort with kind='stable' over all 34 suits at m1) changed exactly vcr_cm_c and
+// vtn_sh_c. Under a stable argsort (ScopedArgsortForTest) the C++ must reproduce that: those two differ from the shipped
+// m1 files and the other three authored-cloth suits stay equal. For each of the five the trace is compared too and the
+// stage of the first differing line is printed. After the scope the port is back (GetArgsortForTest() == nullptr).
+static bool NanLess(double a, double b) { return a < b || (std::isnan(b) && !std::isnan(a)); }
+static std::vector<int64_t> StableArgsort(std::span<const double> v) {
+  std::vector<int64_t> idx(v.size());
+  for (size_t i = 0; i < idx.size(); ++i) idx[i] = int64_t(i);
+  std::stable_sort(idx.begin(), idx.end(), [&](int64_t a, int64_t b) { return NanLess(v[size_t(a)], v[size_t(b)]); });
+  return idx;
+}
+
+static void TestArgsortIsWhatMatters() {
+  const char* group = "argsort_is_what_matters";
+  OracleEnv env;
+  if (!OracleEnvOrSkip(group, &env, true)) return;
+  const char* odir = Env("DOA4_SUITCONV_ORACLE_DIR");
+  if (!odir) return SkipGroup(group, "DOA4_SUITCONV_ORACLE_DIR");
+  Group(group);
+  InputSet* set = OpenSet(env);
+  if (!set) return;
+  const std::set<std::string> want_differ{"vcr_cm_c", "vtn_sh_c"};
+  std::set<std::string> differ, seen;
+  {
+    num::ScopedArgsortForTest stable(&StableArgsort);
+    CK(num::GetArgsortForTest() == &StableArgsort);
+    for (const SuitRecipe& s : Suits()) {
+      if (!OnlyAllows(s) || !AuthoredCloth(s)) continue;
+      const std::string stem = Stem(s);
+      seen.insert(s.design);
+      const GirlRecipe* girl = FindGirl(s.girl);
+      if (!girl) continue;
+      SuitInputs in;
+      try {
+        in = ReadSuitInputs(*set, s, *girl);
+      } catch (const std::exception& e) {
+        CKF(false, "%s: ReadSuitInputs: %s", stem.c_str(), e.what());
+        continue;
+      }
+      const auto tb = ReadFile(fs::path(env.traces) / "m1" / (stem + ".trace"));
+      CKF(tb.has_value(), "%s: no oracle trace", stem.c_str());
+      if (!tb) continue;
+      CompareTrace ct(SplitLines(*tb));
+      ConvertFailure f;
+      const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, &ct, &f);
+      const auto wt = ReadFile(fs::path(odir) / (stem + ".tpr"));
+      const auto wc = ReadFile(fs::path(odir) / (stem + ".cat"));
+      const bool files_equal = m1 && wt && wc && m1->tpr == *wt && m1->cat == *wc;
+      const bool trace_equal = ct.Equal();
+      if (!m1) std::printf("  %s: ConvertSuit failed at stage %s: %s\n", stem.c_str(), f.stage.c_str(), f.what.c_str());
+      if (!files_equal || !trace_equal) differ.insert(s.design);
+      std::printf("  %s under a stable argsort: files %s, trace %s\n", stem.c_str(), files_equal ? "equal" : "DIFFER",
+                  trace_equal ? "equal" : "DIFFERS");
+      if (!trace_equal) ct.Print(stem.c_str());
+      CKF(m1.has_value(), "%s: m1 converted under the stable argsort (%s: %s)", stem.c_str(), f.stage.c_str(),
+          f.what.c_str());
+      if (want_differ.count(s.design)) {
+        CKF(!files_equal, "%s: the stable argsort must change the files", stem.c_str());
+      } else {
+        CKF(files_equal && trace_equal, "%s: the stable argsort must not change anything", stem.c_str());
+      }
+    }
+  }
+  CK(num::GetArgsortForTest() == nullptr);  // the scope put the port back
+  std::printf("%s: %zu suits, differ under a stable argsort: %s\n", group, seen.size(), Names(differ).c_str());
+  if (!Env("DOA4_SUITCONV_ONLY")) {
+    CK(seen.size() == 5);
+    CKF(differ == want_differ, "differ: %s", Names(differ).c_str());
+  }
+}
+
 static void TestH4AbsL2() { H4Abs(Level::kL2, "h4_abs_L2"); }
 static void TestH4AbsL3() { H4Abs(Level::kL3, "h4_abs_L3"); }
 static void TestTraceM1() { TraceAll(Level::kM1, "trace_m1"); }
@@ -1956,6 +2358,8 @@ int main() {
   RunGroup(TestSyntheticBodyConverts, "synthetic_body_converts");
   RunGroup(TestAttachNanFallback, "attach_nan_fallback");
   RunGroup(TestLevelGates, "level_gates");
+  RunGroup(TestClothNumeric, "cloth_numeric");
+  RunGroup(TestUnstickRounds, "unstick_rounds");
   RunGroup(TestAttachFrame, "attach_frame");
   RunGroup(TestAttachApa, "attach_apa_synthetic");
   RunGroup(TestAttachClothPins, "attach_cloth_pins");
@@ -1979,6 +2383,8 @@ int main() {
   RunGroup(TestH4AbsL3, "h4_abs_L3");
   RunGroup(TestOracleM1WithoutExtras, "oracle_m1_without_extras");
   RunGroup(TestOracleM1SparesHead, "oracle_m1_spares_head");
+  RunGroup(TestOracleM1Cloth, "oracle_m1_cloth");
+  RunGroup(TestArgsortIsWhatMatters, "argsort_is_what_matters");
   RunGroup(TestTraceM1, "trace_m1");
   RunGroup(TestH4AbsM1, "h4_abs_m1");
   RunGroup(TestWaistBandShortFails, "waist_band_short_fails");

@@ -31,6 +31,21 @@ int64_t NpArgmin(std::span<const double> v);
 // thread-safe, and only tests set it, before any converter work starts and after it ends.
 using ArgsortFn = std::vector<int64_t> (*)(std::span<const double> v);
 void SetArgsortForTest(ArgsortFn fn);
+// TEST ONLY. What NpArgsort runs now (nullptr: the port).
+ArgsortFn GetArgsortForTest();
+
+// TEST ONLY. Installs fn for its lifetime and puts back the function it found (not nullptr) on scope exit, so an
+// exception or an early return inside the scope cannot leave the override in place.
+class ScopedArgsortForTest {
+ public:
+  explicit ScopedArgsortForTest(ArgsortFn fn) : saved_(GetArgsortForTest()) { SetArgsortForTest(fn); }
+  ~ScopedArgsortForTest() { SetArgsortForTest(saved_); }
+  ScopedArgsortForTest(const ScopedArgsortForTest&) = delete;
+  ScopedArgsortForTest& operator=(const ScopedArgsortForTest&) = delete;
+
+ private:
+  ArgsortFn saved_;
+};
 
 // How many times the port has taken the heapsort fallback (aquicksort_'s cdepth < 0 branch) since the process
 // started; for the tests, which read it before and after a call.
