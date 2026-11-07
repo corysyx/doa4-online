@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -153,5 +154,12 @@ double SoftFma(double a, double b, double c);
 // Sequential acc = fma(x[i], y[i], acc) from acc = 0.0 (SoftFma): numpy's 1-D dot / np.linalg.norm via OpenBLAS ddot
 // on the oracle PC (Cooperlake kernel, census-matched for n = 3).
 double NpDotFused(const double* x, const double* y, size_t n);
+
+// math.dist(p, q) for two 3-vectors (CPython v3.12.1 Modules/mathmodule.c math_dist_impl and vector_norm, lines 2462-2590): the
+// differences' absolute values scaled by a power of two, summed as squares with a compensated sum (dl_mul by an exact SoftFma,
+// dl_fast_sum), the square root, then the differential correction. Not sqrt of a sum of squares: the two differ in the last bit
+// of thousands of ordinary inputs. Census (the five authored-cloth suits): 0 mismatches over 43,042 real calls at five
+// sites, where the plain sum misses 128 to 2794 per 15,000.
+double MathDist3(const std::array<double, 3>& p, const std::array<double, 3>& q);
 
 }  // namespace doa4::suitconv::num

@@ -23,12 +23,20 @@
 //                       request table in the .cat, the hand channels in the MPV)
 //   oracle_m1_without_extras   also DOA4_SUITCONV_ORACLE_DIR (the shipped m1 files, <design>_<colour>.tpr/.cat): the 16 suits
 //                       with no feature after the hands convert at level m1 to the shipped bytes and to the C++ L3 bytes;
-//                       the 7 suits with a cloth feature stay gated
+//                       the 18 suits with a spares, head or cloth feature are the groups below
 //   oracle_m1_spares_head   the same directory: the 11 suits whose girl has the hair collision spares or Tina's head physics
 //                       convert at level m1 to the shipped bytes (and differ from the C++ L3 bytes)
-//   trace_m1, h4_abs_m1   the trace and waist-weight checks over the 27 suits kM1Ready lists (the 16 and the 11)
+//   trace_m1, h4_abs_m1   the trace and waist-weight checks over the 34 suits kM1Ready lists
 //   oracle_m1_cloth     the same directory: the 5 authored-cloth suits equal the shipped m1 files, their MPP pin-row counts
 //                       equal the oracle trace's, and every relocated pin row points at its pin
+//   oracle_m1_gen       the same directory: the 2 generated-cloth suits equal the shipped m1 files; fit_cloth_chunk on a generated
+//                       chunk (vle_sk_h), with_spares onto the suit's own cloth and attach's cloth path with no pin rows are
+//                       asserted on the real data
+//   mpv_threshold_is_math_dist   build_mpv's threshold compares CPython's math.dist (vector_norm), not a plain sqrt of squares
+//   gen_numeric         the generated cloth's numeric sites (Cosine, Distance, VerticalRatio, LoopKey) against interpreter pins
+//   gen_prep_synthetic, gen_cloth_synthetic, walk_rejects_unterminated_writes   cloth_gen's prep (its asserts), build on a
+//                       hand-made skirt against the recipe's own chunk (length and SHA-1), and walk refusing a write list
+//                       without its terminator
 //   argsort_is_what_matters   the same plus the traces: under a stable argsort (ScopedArgsortForTest) exactly vcr_cm_c and
 //                       vtn_sh_c differ, as Python's census measured
 //   cloth_numeric, unstick_rounds   the cloth's primitives (Gemv3, MathDist, PySetOrder) against interpreter pins, and the
@@ -46,6 +54,7 @@
 #include "../../src/doa4_suitconv_catx.h"
 #include "../../src/doa4_suitconv_cloth.h"
 #include "../../src/doa4_suitconv_core.h"
+#include "../../src/doa4_suitconv_gencloth.h"
 #include "../../src/doa4_suitconv_hands.h"
 #include "../../src/doa4_suitconv_inputs.h"
 #include "../../src/doa4_suitconv_num.h"
@@ -692,13 +701,44 @@ static void TestLevelGates() {
   const SuitInputs in = SynthInputs(s);
   SuitRecipe suit = SynthSuit();
   const GirlRecipe girl = SynthGirl();
-  suit.gen_cloth = true;  // the generated cloth (Task 11) is the one M1 feature still gated
-  {
-    ConvertFailure f;
-    const auto r = ConvertSuit(suit, girl, in, Level::kM1, nullptr, nullptr, &f);
-    CKF(!r && f.stage == "level" && f.what == "not ported yet: gen_cloth", "%s / %s", f.stage.c_str(), f.what.c_str());
+  {  // no M1 feature is refused by a level gate any more: every flag of the recipe, one at a time and all together
+    const auto no_level_failure = [&](const SuitRecipe& sr, const GirlRecipe& gr, const char* what) {
+      ConvertFailure f;
+      const auto r = ConvertSuit(sr, gr, in, Level::kM1, nullptr, nullptr, &f);
+      CKF(r || f.stage != "level", "%s: %s / %s", what, f.stage.c_str(), f.what.c_str());
+    };
+    SuitRecipe a = suit;
+    a.gen_cloth = true;
+    no_level_failure(a, girl, "gen_cloth");  // (the synthetic suit has no skirt: it fails at gen_prep, not at a gate)
+    a = suit;
+    a.port_cloth = true;
+    no_level_failure(a, girl, "port_cloth");
+    a = suit;
+    a.fit_leg_colliders = true;
+    no_level_failure(a, girl, "fit_leg_colliders");
+    a = suit;
+    a.unstick_cloth = true;
+    no_level_failure(a, girl, "unstick_cloth");
+    a = suit;
+    a.back_margin = 0.012;
+    no_level_failure(a, girl, "back_margin");
+    a = suit;
+    a.sink_hamstrings = 0.008;
+    no_level_failure(a, girl, "sink_hamstrings");
+    GirlRecipe g = girl;
+    g.hair_spares = true;
+    no_level_failure(suit, g, "hair_spares");
+    g = girl;
+    g.head_physics = true;
+    no_level_failure(suit, g, "head_physics");
+    SuitRecipe all = suit;
+    all.gen_cloth = all.port_cloth = all.fit_leg_colliders = all.unstick_cloth = true;
+    all.back_margin = 0.012;
+    all.sink_hamstrings = 0.008;
+    g = girl;
+    g.hair_spares = g.head_physics = true;
+    no_level_failure(all, g, "all flags");
   }
-  suit.gen_cloth = false;
   {  // the authored cloth and its options are ported: no longer refused at M1 by the gate
     SuitRecipe s2 = suit;
     s2.port_cloth = true;
@@ -1368,6 +1408,33 @@ static void TestMpvHeaderMarks() {
               mpv.size(), mpp_off, double(float(fd)), double(float(fu)));
 }
 
+// mpv_threshold_is_math_dist: build_mpv keeps a vertex when max(math.dist(down, 0), math.dist(up, 0)) is not below the
+// threshold (physics_port.py line 138). math.dist is CPython's vector_norm, not the square root of the plain sum of squares:
+// for this offset (a seeded synthetic vector) CPython 3.12.1 gives 0x1.761cc3566e09ap-11 and the plain sqrt one ulp less. With
+// the threshold at math.dist's own value the vertex is kept (not below); a threshold one ulp higher drops it (the control).
+static void TestMpvThresholdIsMathDist() {
+  Group("mpv_threshold_is_math_dist");
+  const core::Vec3 v{0x1.58296810665e0p-12, 0x1.e488b6d0ca5b8p-12, -0x1.c68deb4ecfaa4p-12};
+  const double thresh = 0x1.761cc3566e09ap-11;
+  CK(std::sqrt((v[0] * v[0] + v[1] * v[1]) + v[2] * v[2]) < thresh);  // vacuity: the plain norm is below the threshold
+  CK(num::MathDist3(v, core::Vec3{0.0, 0.0, 0.0}) == thresh);
+  const double fd = 1.0 / 0.562, fu = 1.0 / 0.704;
+  const auto count_records = [&](double th) {
+    auto ch = synth::conv::MakeChest();
+    ch.parts[0]->bust->first[2] = v;
+    ch.parts[0]->bust->second[2] = core::Vec3{0.0, 0.0, 0.0};
+    const auto mpv = cb::BuildMpv(ch.objects, ch.geos, ch.bind4, ch.chest, th, fd, fu);
+    const uint32_t mpp_off = Be32(mpv, 36 + 4 * 4);
+    size_t n = 0;
+    while (Be32(mpv, mpp_off + 0x50 + 4 * n) != 0xFFFFFFFFu) ++n;
+    return std::make_pair(n, size_t(ch.kept));
+  };
+  const auto [kept_at, base] = count_records(thresh);
+  CKF(kept_at == base + 1, "threshold = math.dist: %zu records, the fixture's %zu plus the vertex", kept_at, base);
+  const auto [kept_above, base2] = count_records(std::nextafter(thresh, 1.0));
+  CKF(kept_above == base2, "threshold one ulp above: %zu records, the fixture's %zu", kept_above, base2);
+}
+
 // prep_bust on a hand-built model (seeded numbers, no game data): one chest part with a 7-buffer morph decl and five
 // vertices, a part whose up and down buffers run backwards, a decl with one buffer only, a part with no model, a body
 // part (the border grid) and a strap part (the model prep_bust compares against). Offsets are multiples of 1/64 and the
@@ -1690,17 +1757,18 @@ static InputSet* OpenSet(const OracleEnv& env) {
 
 static std::string Stem(const SuitRecipe& s) { return std::string(s.design) + "_" + std::to_string(s.colour); }
 
-// The suits that convert at level m1 so far, written once: the cloth features extend this one list. The first 16 need no
-// feature after the hands; the next 11 add the hair collision spares (Kasumi, Kokoro and Lei Fang as the wearer) or Tina's
-// carried head physics; the last 5 carry the suit's own authored cloth (--port-cloth, with the collider fit, unstick, back
-// margin and hamstring sink where the recipe gives them). The group tests derive the same set from the recipe flags and
-// assert it equals this list.
+// The suits that convert at level m1, written once. The first 16 need no feature after the hands; the next 11 add the hair
+// collision spares (Kasumi, Kokoro and Lei Fang as the wearer) or Tina's carried head physics; the next 5 carry the suit's own
+// authored cloth (--port-cloth, with the collider fit, unstick, back margin and hamstring sink where the recipe gives them);
+// the last 2 carry a generated cloth (--gen-cloth). The group tests derive the same set from the recipe flags and assert it
+// equals this list.
 static const char* const kM1Ready[] = {"vay_cs_b", "vay_on_k", "vay_sk_d", "vht_cs_f", "vht_sp_h", "vht_on_e", "vks_wi_b",
                                        "vhe_cm_a", "vhe_on_d", "vhe_dl_l", "vls_cs_h", "vls_on_j", "vls_sp_a", "vcr_cs_g",
                                        "vcr_on_n", "vcr_ch_e",  // 16
                                        "vks_ch_d", "vks_cs_a", "vks_hn_i", "vco_cs_i", "vhe_on_c", "vco_ch_f", "vle_cs_c",
                                        "vle_dl_a", "vtn_cs_e", "vtn_ch_i", "vls_on_b",  // + 11
-                                       "vhe_sk_a", "vtn_sh_c", "vcr_cm_c", "vco_sk_c", "vle_on_i"};  // + 5 authored cloth
+                                       "vhe_sk_a", "vtn_sh_c", "vcr_cm_c", "vco_sk_c", "vle_on_i",  // + 5 authored cloth
+                                       "vks_on_o", "vle_sk_h"};  // + 2 generated cloth
 static bool InM1Ready(const SuitRecipe& s) {
   for (const char* n : kM1Ready)
     if (std::string(n) == s.design) return true;
@@ -2000,15 +2068,14 @@ static void H4Abs(Level level, const char* group) {
 // ---------------------------------------------------------------------------------------------------------------
 // oracle_m1_without_extras, oracle_m1_spares_head: at level m1 the suits kM1Ready lists equal the shipped m1 files
 // ---------------------------------------------------------------------------------------------------------------
-// DOA4_SUITCONV_ORACLE_DIR is the folder of the shipped m1 outputs (<design>_<colour>.tpr / .cat). A suit is ready at m1
-// unless it has the generated cloth (gen_cloth, still gated). Of the ready ones, the 16 with no cloth feature (none of
-// port_cloth, fit_leg_colliders, unstick_cloth, back_margin, sink_hamstrings) whose girl has neither hair_spares nor
-// head_physics need nothing after the hands: the recipe's m1 output is its L3 output, so the C++ m1 must equal both the
-// shipped file and the C++ L3 (oracle_m1_without_extras). The 11 with no cloth feature that add the hair collision spares
-// (the girls vks, vco, vle) or Tina's head physics must equal the shipped file while differing from the C++ L3
-// (oracle_m1_spares_head). The 5 with the authored cloth are oracle_m1_cloth. The other 2 (gen_cloth) stay gated.
+// DOA4_SUITCONV_ORACLE_DIR is the folder of the shipped m1 outputs (<design>_<colour>.tpr / .cat). Every suit is ready at m1.
+// The 16 with no cloth feature (none of port_cloth, gen_cloth, fit_leg_colliders, unstick_cloth, back_margin,
+// sink_hamstrings) whose girl has neither hair_spares nor head_physics need nothing after the hands: the recipe's m1 output
+// is its L3 output, so the C++ m1 must equal both the shipped file and the C++ L3 (oracle_m1_without_extras). The 11 with no
+// cloth feature that add the hair collision spares (the girls vks, vco, vle) or Tina's head physics must equal the shipped
+// file while differing from the C++ L3 (oracle_m1_spares_head). The 5 with the authored cloth are oracle_m1_cloth, the 2
+// with the generated cloth oracle_m1_gen.
 
-static bool M1Ready(const SuitRecipe& s) { return !s.gen_cloth; }
 static bool ClothGatesFree(const SuitRecipe& s) {
   return !s.port_cloth && !s.gen_cloth && !s.fit_leg_colliders && !s.unstick_cloth && s.back_margin == 0.0 &&
          s.sink_hamstrings == 0.0;
@@ -2030,7 +2097,7 @@ static void TestOracleM1WithoutExtras() {
   InputSet* set = OpenSet(env);
   if (!set) return;
   std::set<std::string> want_ready(std::begin(kM1Ready), std::end(kM1Ready)), derived;
-  int equal = 0, same_as_l3 = 0, gated = 0, elsewhere = 0, n = 0;
+  int equal = 0, same_as_l3 = 0, elsewhere = 0, n = 0;
   for (const SuitRecipe& s : Suits()) {
     if (!OnlyAllows(s)) continue;
     ++n;
@@ -2038,9 +2105,8 @@ static void TestOracleM1WithoutExtras() {
     const GirlRecipe* girl = FindGirl(s.girl);
     CKF(girl != nullptr, "%s: no girl", stem.c_str());
     if (!girl) continue;
-    const bool ready = M1Ready(s);
     const bool free = ClothGatesFree(s) && !girl->hair_spares && !girl->head_physics;
-    if (ready) derived.insert(s.design);
+    derived.insert(s.design);
     SuitInputs in;
     try {
       in = ReadSuitInputs(*set, s, *girl);
@@ -2049,14 +2115,7 @@ static void TestOracleM1WithoutExtras() {
       continue;
     }
     ConvertFailure f;
-    if (!ready) {  // vacuity control: a suit with the generated cloth is still refused at m1
-      const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, nullptr, &f);
-      CKF(!m1 && f.stage == "level" && f.what.rfind("not ported yet: ", 0) == 0, "%s: m1 gate: %s / %s", stem.c_str(),
-          f.stage.c_str(), f.what.c_str());
-      if (!m1) ++gated;
-      continue;
-    }
-    if (!free) {  // the spares and head physics suits (oracle_m1_spares_head), the authored cloth (oracle_m1_cloth)
+    if (!free) {  // the spares and head physics suits (oracle_m1_spares_head), the cloth suits (oracle_m1_cloth, _gen)
       ++elsewhere;
       continue;
     }
@@ -2081,12 +2140,12 @@ static void TestOracleM1WithoutExtras() {
     }
   }
   std::printf("%s: derived list (%zu): %s\n", group, derived.size(), Names(derived).c_str());
-  std::printf("%s: %d/16 equal to the shipped m1 files, %d equal to C++ L3, %d suits with the generated cloth still gated, "
-              "%d in oracle_m1_spares_head and oracle_m1_cloth\n",
-              group, equal, same_as_l3, gated, elsewhere);
+  std::printf("%s: %d/16 equal to the shipped m1 files, %d equal to C++ L3, %d suits elsewhere ("
+              "oracle_m1_spares_head, oracle_m1_cloth, oracle_m1_gen)\n",
+              group, equal, same_as_l3, elsewhere);
   if (!Env("DOA4_SUITCONV_ONLY")) {
     CKF(derived == want_ready, "the derived list is kM1Ready's %zu (%zu derived)", want_ready.size(), derived.size());
-    CK(n == 34 && gated == 2 && elsewhere == 16);
+    CK(n == 34 && elsewhere == 18);
     CK(equal == 16 && same_as_l3 == 16);
   }
 }
@@ -2190,7 +2249,7 @@ static void TestOracleM1Cloth() {
   Group(group);
   InputSet* set = OpenSet(env);
   if (!set) return;
-  const std::set<std::string> want_five(std::begin(kM1Ready) + 27, std::end(kM1Ready));
+  const std::set<std::string> want_five(std::begin(kM1Ready) + 27, std::begin(kM1Ready) + 32);
   std::set<std::string> derived;
   int equal = 0, changed = 0, n = 0, rows_checked = 0, counts_checked = 0;
   for (const SuitRecipe& s : Suits()) {
@@ -2262,6 +2321,645 @@ static void TestOracleM1Cloth() {
     CK(!env.traces || counts_checked == 5);
     CK(!env.traces || rows_checked > 0);  // the relocation runs on real data
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// oracle_m1_gen: the two suits with the generated cloth equal the shipped m1 files
+// ---------------------------------------------------------------------------------------------------------------
+// vks_on_o (--gen-cloth, the girl's hair spares) and vle_sk_h (--gen-cloth with --unstick-cloth, the girl's hair spares).
+// Besides the files (the trace compare is trace_m1's) this asserts the paths these two suits reach for the first time, on
+// real data: fit_cloth_chunk on a generated chunk (vle_sk_h only: the stage exists, the chunk changes and keeps its size),
+// with_spares onto the suit's own cloth (both: the spares stage is `B spares`, longer than the cloth it started from), and
+// attach's cloth path with no pin rows (the MPP pin-row count is 0 and the oracle's trace has no `pins` stage). The L3
+// vacuity check: the m1 .cat differs from the C++ L3 .cat (the cloth is in it).
+static std::string TraceLine(const std::vector<std::string>& lines, const std::string& prefix) {
+  for (const std::string& l : lines)
+    if (l.rfind(prefix, 0) == 0) return l;
+  return std::string();
+}
+static size_t TraceLength(const std::string& b_line) {  // "B <name> <length> <sha1>"
+  const size_t a = b_line.find(' ', 2);
+  return a == std::string::npos ? 0 : size_t(std::stoull(b_line.substr(a + 1)));
+}
+static std::string TraceSha(const std::string& b_line) { return b_line.substr(b_line.rfind(' ') + 1); }
+
+static void TestOracleM1Gen() {
+  const char* group = "oracle_m1_gen";
+  OracleEnv env;
+  if (!OracleEnvOrSkip(group, &env, false)) return;
+  const char* odir = Env("DOA4_SUITCONV_ORACLE_DIR");
+  if (!odir) return SkipGroup(group, "DOA4_SUITCONV_ORACLE_DIR");
+  Group(group);
+  InputSet* set = OpenSet(env);
+  if (!set) return;
+  const std::set<std::string> want_two(std::begin(kM1Ready) + 32, std::end(kM1Ready));
+  std::set<std::string> derived;
+  int equal = 0, changed = 0, n = 0, fit_suits = 0, spares_checked = 0, nopin_checked = 0;
+  for (const SuitRecipe& s : Suits()) {
+    if (!OnlyAllows(s) || !s.gen_cloth) continue;
+    ++n;
+    derived.insert(s.design);
+    const std::string stem = Stem(s);
+    const GirlRecipe* girl = FindGirl(s.girl);
+    CKF(girl != nullptr, "%s: no girl", stem.c_str());
+    if (!girl) continue;
+    SuitInputs in;
+    try {
+      in = ReadSuitInputs(*set, s, *girl);
+    } catch (const std::exception& e) {
+      CKF(false, "%s: ReadSuitInputs: %s", stem.c_str(), e.what());
+      continue;
+    }
+    CKF(in.gen_donor_cat && in.gen_bend_cat, "%s: the gen donor and bend inputs are read", stem.c_str());
+    ConvertFailure f;
+    MemTrace mt;
+    const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, &mt, &f);
+    CKF(m1.has_value(), "%s: m1 converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
+    if (!m1) continue;
+    const auto wt = ReadFile(fs::path(odir) / (stem + ".tpr"));
+    const auto wc = ReadFile(fs::path(odir) / (stem + ".cat"));
+    CKF(wt.has_value() && wc.has_value(), "%s: no shipped m1 files", stem.c_str());
+    if (!wt || !wc) continue;
+    const bool et = CompareFile(stem.c_str(), "tpr", m1->tpr, *wt);
+    const bool ec = CompareFile(stem.c_str(), "cat", m1->cat, *wc);
+    CKF(et, "%s m1 .tpr equals the shipped file", stem.c_str());
+    CKF(ec, "%s m1 .cat equals the shipped file", stem.c_str());
+    if (et && ec) ++equal;
+    const auto l3 = ConvertSuit(s, *girl, in, Level::kL3, nullptr, nullptr, &f);
+    CKF(l3.has_value(), "%s: L3 converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
+    CKF(l3 && l3->cat != m1->cat, "%s: m1 .cat differs from L3", stem.c_str());
+    if (l3 && l3->cat != m1->cat) ++changed;
+
+    // the stages the generated cloth adds, in the order the recipe runs them
+    const auto find = [&](const char* line) -> int {
+      for (size_t i = 0; i < mt.lines.size(); ++i)
+        if (mt.lines[i] == line) return int(i);
+      return -1;
+    };
+    const int i_prep = find("S gen_prep"), i_gen = find("S gen_cloth"), i_fit = find("S fit"), i_mpv = find("S mpv"),
+              i_spares = find("S spares"), i_pins = find("S pins");
+    CKF(i_prep >= 0 && i_gen > i_prep && i_mpv > i_gen && i_spares > i_mpv, "%s: stage order gen_prep < gen_cloth < mpv < spares",
+        stem.c_str());
+    CKF(i_pins < 0, "%s: no pins stage (there is no pin table without authored cloth)", stem.c_str());
+    const std::string gen_line = TraceLine(mt.lines, "B gen_cloth ");
+    const std::string fit_line = TraceLine(mt.lines, "B fit ");
+    const std::string spares_line = TraceLine(mt.lines, "B spares ");
+    CKF(!gen_line.empty() && !spares_line.empty(), "%s: B gen_cloth and B spares lines", stem.c_str());
+    CKF(TraceLine(mt.lines, "K spares none").empty(), "%s: with_spares had a cloth to start from", stem.c_str());
+    if (!gen_line.empty() && !spares_line.empty()) {
+      CKF(TraceLength(spares_line) > TraceLength(gen_line), "%s: the spares make the cloth longer (%zu -> %zu)", stem.c_str(),
+          TraceLength(gen_line), TraceLength(spares_line));
+      ++spares_checked;
+    }
+    if (s.unstick_cloth || s.fit_leg_colliders) {  // fit_cloth_chunk on the generated chunk (vle_sk_h)
+      ++fit_suits;
+      CKF(i_fit > i_gen && i_fit < i_mpv, "%s: S fit between gen_cloth and mpv", stem.c_str());
+      CKF(!fit_line.empty() && !gen_line.empty() && TraceLength(fit_line) == TraceLength(gen_line) &&
+              TraceSha(fit_line) != TraceSha(gen_line),
+          "%s: fit_cloth_chunk changes the generated chunk and keeps its size", stem.c_str());
+    } else {
+      CKF(i_fit < 0 && fit_line.empty(), "%s: no fit stage", stem.c_str());
+    }
+    // attach's cloth path with no pin rows: the MPP's pin-row count is 0, as the oracle's trace says (no K nrows line)
+    const auto& cat = m1->cat;
+    if (cat.size() < 0x18 || GetBe(cat, 0xC) == 0 || GetBe(cat, 0x14) == 0) {
+      CKF(false, "%s: no MPV or no MULTI_CLOTH in the .cat", stem.c_str());
+      continue;
+    }
+    const uint32_t mpv_at = GetBe(cat, 0xC);
+    const uint32_t mpp = mpv_at + GetBe(cat, mpv_at + 36 + 16);
+    const uint32_t nrows = GetBe(cat, mpp + 0x44);
+    CKF(nrows == 0, "%s: MPP pin rows %u, want 0", stem.c_str(), nrows);
+    if (env.traces) {
+      const int64_t want_rows = OracleNrows(env, stem);
+      CKF(want_rows == 0, "%s: the oracle trace's pin rows %lld, want 0 (no pins stage)", stem.c_str(), (long long)want_rows);
+      ++nopin_checked;
+    }
+    std::printf("  %s: m1 %s, gen_cloth %zu bytes, spares %zu bytes, %s, MPP pin rows %u\n", stem.c_str(),
+                et && ec ? "equal " : "DIFFERS", TraceLength(gen_line), TraceLength(spares_line),
+                fit_line.empty() ? "no fit" : "fit ran", nrows);
+  }
+  std::printf("%s: derived list (%zu): %s\n", group, derived.size(), Names(derived).c_str());
+  std::printf("%s: %d/%d equal to the shipped m1 files, %d differ from C++ L3, %d with fit_cloth_chunk, %d with_spares checks, "
+              "%d pin-row checks\n",
+              group, equal, n, changed, fit_suits, spares_checked, nopin_checked);
+  if (!Env("DOA4_SUITCONV_ONLY")) {
+    CKF(derived == want_two, "the derived list is the 2 generated-cloth suits (%zu derived)", derived.size());
+    CK(n == 2 && equal == 2 && changed == 2);
+    CK(fit_suits == 1 && spares_checked == 2);
+    CK(!env.traces || nopin_checked == 2);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// gen_cloth_synthetic, walk_rejects_unterminated_writes, gen_prep_synthetic
+// ---------------------------------------------------------------------------------------------------------------
+// A hand-made skirt (no game byte): an 8-sided tube of 3 rows whose seam column is stored twice (27 vertices, 24 nodes after
+// the weld), a second mesh whose pass is not a skirt mesh (its triangle must be left out), synthetic donors with the offsets
+// cloth_gen reads. The expected chunk lengths and SHA-1s are what the recipe's own cloth_gen.build produced for the same
+// input in the recipe's interpreter. The seam duplicate sits at x = 0.00025, which divides by the weld size 0.0005 to exactly
+// 0.5: round() ties to even and welds it to the column at x = 0 (key 0); a round-half-away weld key (key 1) leaves it alone.
+namespace gensy {
+using doa4::suitconv::core::Vec3;
+
+static void PutWords(std::vector<uint8_t>& b, size_t at, std::initializer_list<uint32_t> words) {
+  for (uint32_t w : words) {
+    b[at] = uint8_t(w >> 24);
+    b[at + 1] = uint8_t(w >> 16);
+    b[at + 2] = uint8_t(w >> 8);
+    b[at + 3] = uint8_t(w);
+    at += 4;
+  }
+}
+static void PutBytes(std::vector<uint8_t>& b, size_t at, const char* s, size_t n) {
+  for (size_t i = 0; i < n; ++i) b[at + i] = uint8_t(s[i]);
+}
+
+static std::vector<uint8_t> Donor() {
+  std::vector<uint8_t> d = synth::Seeded(7, 0x80000);
+  const std::pair<size_t, const char*> clouds[] = {{0x538C0, "ks_skirt"}, {0x71450, "ht_skirt"}};
+  for (const auto& [base, name] : clouds) {
+    const size_t c = base + 0x50;
+    PutWords(d, base + 0x1C, {0x40});
+    PutWords(d, base + 0x40, {0x50});
+    PutBytes(d, c, "CLOTH_DATA", 10);
+    for (size_t i = 10; i < 16; ++i) d[c + i] = 0;
+    PutWords(d, c + 0x18, {0xF0});
+    PutWords(d, c + 0x20, {0x80});
+    PutWords(d, c + 0x38, {0x120});
+    PutBytes(d, c + 0x70, name, 8);
+    PutWords(d, c + 0x80 + 0x34, {std::bit_cast<uint32_t>(1.5f)});
+    PutWords(d, c + 0x80 + 0x5C, {std::bit_cast<uint32_t>(0.75f)});
+    PutWords(d, c + 0x120 + 8, {0x20});
+    PutWords(d, c + 0x120 + 0x20 + 8, {0});
+  }
+  return d;
+}
+static std::vector<uint8_t> Bend() {
+  std::vector<uint8_t> b = synth::Seeded(9, 0x600);
+  const size_t mm = 0x100;
+  PutBytes(b, mm, "MULTI_CLOTH", 11);
+  b[mm + 11] = 0;
+  PutWords(b, mm + 0x1C, {0x40});
+  PutWords(b, mm + 0x40, {0x50});
+  const size_t mc0 = mm + 0x50;
+  PutWords(b, mc0 + 0x34, {0x100});
+  const size_t th0 = mc0 + 0x100;
+  PutWords(b, th0 + 0x28, {0x60});
+  PutWords(b, th0 + 0x60, {1, 0x40});
+  PutWords(b, th0 + 0x60 + 0x2C, {2});
+  return b;
+}
+
+constexpr Vec3 kOwn{0.0, 0.25, -0.125};
+
+struct Skirt {
+  doa4::suitconv::core::Model suit;
+  doa4::suitconv::core::PartArena arena;
+  doa4::suitconv::core::Part* part = nullptr;
+  std::vector<tp::ObjGeo> geos;
+  doa4::suitconv::core::PyDict<int64_t, Vec3> bind4;
+};
+
+static void MakeSkirt(Skirt& sk) {
+  namespace core = doa4::suitconv::core;
+  const double ring[8][2] = {{0, 1}, {-0.75, 0.75}, {-1, 0}, {-0.75, -0.75}, {0, -1}, {0.75, -0.75}, {1, 0}, {0.75, 0.75}};
+  const double yrow[3] = {1.0, 0.75, 0.5};
+  core::Part* p = sk.arena.New();
+  sk.part = p;
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 9; ++c) {
+      const int k = c % 8;
+      double x = ring[k][0] * 0.25;
+      const double z = ring[k][1] * 0.25;
+      if (c >= 1 && c <= 7) x += double((c * 7 + r) % 3) * 0x1p-10;
+      const double y = yrow[r] + double((r * 5 + k * 3) % 4) * 0x1p-8;
+      if (c == 8 && r == 0) x = 0.00025;
+      core::Vert v;
+      v.pos = Vec3{x, y + kOwn[1], z + kOwn[2]};
+      p->verts.push_back(v);
+    }
+  std::vector<uint16_t> idx;
+  for (int r = 0; r < 2; ++r) {
+    for (int c = 0; c < 9; ++c) {
+      idx.push_back(uint16_t(r * 9 + c));
+      idx.push_back(uint16_t((r + 1) * 9 + c));
+    }
+    idx.push_back(0xFFFF);
+  }
+  for (uint16_t i : {0, 1, 2}) idx.push_back(i);
+  p->icount = uint32_t(idx.size());
+  for (uint16_t i : idx) {
+    p->ib.push_back(uint8_t(i >> 8));
+    p->ib.push_back(uint8_t(i));
+  }
+  for (const auto& [st, cnt] : {std::pair<uint32_t, uint32_t>{0, 38}, {38, 3}}) {
+    std::vector<uint8_t> m(0x40, 0);
+    PutWords(m, 0x10, {st, cnt});
+    p->meshes.push_back(m);
+  }
+  p->passes = {core::PassRec{1, 0, 0}, core::PassRec{5, 0, 0}};
+  tp::Decl d;
+  d.head = {0, 1, 0, uint32_t(idx.size()), 3, 27, 0, 0, 1, 0, 0, 0};
+  d.elems = {tp::DeclElem{0, 0, 0x2A23B9, 0, 0, 0, 0}, tp::DeclElem{0, 12, 0x2A23B9, 0, 3, 0, 0},
+             tp::DeclElem{0xFF, 0, 0, 0, 0, 0, 0}};
+  std::vector<uint8_t> tail(16, 0);
+  PutWords(tail, 4, {24});
+  d.tails = {tail};
+  sk.geos.resize(2);
+  sk.geos[1].decls = {d, d};
+  sk.bind4.Set(1, kOwn);
+}
+
+struct Pin {
+  const char* design;
+  size_t length;
+  const char* sha1;
+};
+static const Pin kPins[] = {{"vks_on_o", 7904, "3a012dac510bf2b612ddd36da3c733ad88832148"},
+                            {"vle_sk_h", 7664, "2d7e599e93107b2dedd109cd16d577ee41611442"}};
+
+static uint32_t U32At(const std::vector<uint8_t>& b, size_t at) { return GetBe(b, at); }
+static std::string What(const std::exception& e) { return e.what(); }
+}  // namespace gensy
+
+static void TestGenClothSynthetic() {
+  Group("gen_cloth_synthetic");
+  namespace gc = doa4::suitconv::gencloth;
+  const num::FpEnvGuard fp;
+  const std::vector<uint8_t> donor = gensy::Donor(), bend = gensy::Bend();
+  std::vector<uint8_t> first;
+  for (const gensy::Pin& pin : gensy::kPins) {
+    gensy::Skirt sk;
+    gensy::MakeSkirt(sk);
+    gc::Spec spec{pin.design, 1, 1, sk.part, {1}};
+    std::vector<uint8_t> chunk;
+    try {
+      chunk = gc::Build(spec, sk.geos, sk.bind4, donor, bend);
+    } catch (const std::exception& e) {
+      CKF(false, "%s: Build: %s", pin.design, e.what());
+      continue;
+    }
+    CKF(chunk.size() == pin.length, "%s: chunk length %zu, the recipe's %zu", pin.design, chunk.size(), pin.length);
+    CKF(trace::Sha1Hex(chunk) == pin.sha1, "%s: chunk sha1 %s, the recipe's %s", pin.design, trace::Sha1Hex(chunk).c_str(),
+        pin.sha1);
+    // the cloth's own counts (24 welded nodes, 32 faces, 8 pins): GRID_DATA header words at the grid, FIX_GRID count
+    const size_t c = 0x50;
+    const size_t grid = c + gensy::U32At(chunk, c + 0x24);
+    CKF(gensy::U32At(chunk, grid + 0x24) == 24 && gensy::U32At(chunk, grid + 0x2C) == 32, "%s: 24 nodes, 32 faces", pin.design);
+    const size_t fix = c + gensy::U32At(chunk, c + 0x2C);
+    CKF(gensy::U32At(chunk, fix + 0x1C) == 8, "%s: 8 pins", pin.design);
+    const size_t th = c + gensy::U32At(chunk, c + 0x34);
+    const bool soft = std::string(pin.design) == "vle_sk_h";
+    CKF(gensy::U32At(chunk, th + 0x1C) == 8 && gensy::U32At(chunk, th + 0x24) == (soft ? 0u : 2u), "%s: 8 strands, %u rings",
+        pin.design, soft ? 0u : 2u);
+    try {
+      gc::Walk(chunk, 0);
+      CK(true);
+    } catch (const std::exception& e) {
+      CKF(false, "%s: Walk of the built chunk: %s", pin.design, e.what());
+    }
+    // the donors' PROPERTY: the soft hem doubles the fall (+0x34: 1.5 -> 3.0) and sets +0x5C to 0.05; the other keeps both
+    const size_t prop = c + gensy::U32At(chunk, c + 0x20);
+    const float fall = std::bit_cast<float>(gensy::U32At(chunk, prop + 0x34)), bendv = std::bit_cast<float>(gensy::U32At(chunk, prop + 0x5C));
+    CKF(fall == (soft ? 3.0f : 1.5f) && bendv == (soft ? 0.05f : 0.75f), "%s: PROPERTY %g %g", pin.design, double(fall), double(bendv));
+    if (first.empty()) first = chunk;
+  }
+  CK(!first.empty());
+  {  // a bend block that is not the 0x40-byte, mode 2 block is refused with the recipe's assert
+    gensy::Skirt sk;
+    gensy::MakeSkirt(sk);
+    std::vector<uint8_t> bad = bend;
+    bad[0x100 + 0x50 + 0x100 + 0x60 + 4 + 3] = 0x41;
+    gc::Spec spec{"vks_on_o", 1, 1, sk.part, {1}};
+    std::string what;
+    try {
+      gc::Build(spec, sk.geos, sk.bind4, donor, bad);
+    } catch (const std::exception& e) {
+      what = gensy::What(e);
+    }
+    CKF(what.find("unexpected bend block") != std::string::npos, "bend block: %s", what.c_str());
+  }
+  {  // a bend pool that passes build's own asserts (size 0x40, mode 2) but not the loader's walk (its first word must be 1):
+     // build ends with walk, so the chunk is refused as walk's 'bend block' (and not as build's 'unexpected bend block')
+    gensy::Skirt sk;
+    gensy::MakeSkirt(sk);
+    std::vector<uint8_t> bad = bend;
+    bad[0x100 + 0x50 + 0x100 + 0x60 + 3] = 2;
+    gc::Spec spec{"vks_on_o", 1, 1, sk.part, {1}};
+    std::string what;
+    try {
+      gc::Build(spec, sk.geos, sk.bind4, donor, bad);
+    } catch (const std::exception& e) {
+      what = gensy::What(e);
+    }
+    CKF(what == "AssertionError: bend block", "walk inside build: '%s'", what.c_str());
+  }
+  {  // a donor that is not the named skirt
+    gensy::Skirt sk;
+    gensy::MakeSkirt(sk);
+    std::vector<uint8_t> bad = donor;
+    bad[0x538C0 + 0x50 + 0x70] = 'x';
+    gc::Spec spec{"vks_on_o", 1, 1, sk.part, {1}};
+    std::string what;
+    try {
+      gc::Build(spec, sk.geos, sk.bind4, bad, bend);
+    } catch (const std::exception& e) {
+      what = gensy::What(e);
+    }
+    CKF(what.find("donor is not") != std::string::npos, "donor: %s", what.c_str());
+  }
+  {  // a decl that is not writable
+    gensy::Skirt sk;
+    gensy::MakeSkirt(sk);
+    sk.geos[1].decls[1].head[8] = 0;
+    gc::Spec spec{"vks_on_o", 1, 1, sk.part, {1}};
+    std::string what;
+    try {
+      gc::Build(spec, sk.geos, sk.bind4, donor, bend);
+    } catch (const std::exception& e) {
+      what = gensy::What(e);
+    }
+    CKF(what.find("written decl is not writable") != std::string::npos, "writable: %s", what.c_str());
+  }
+}
+
+static void TestWalkRejectsUnterminatedWrites() {
+  Group("walk_rejects_unterminated_writes");
+  namespace gc = doa4::suitconv::gencloth;
+  const num::FpEnvGuard fp;
+  const std::vector<uint8_t> donor = gensy::Donor(), bend = gensy::Bend();
+  gensy::Skirt sk;
+  gensy::MakeSkirt(sk);
+  gc::Spec spec{"vks_on_o", 1, 1, sk.part, {1}};
+  std::vector<uint8_t> chunk;
+  try {
+    chunk = gc::Build(spec, sk.geos, sk.bind4, donor, bend);
+  } catch (const std::exception& e) {
+    CKF(false, "the synthetic chunk builds: %s", e.what());
+    return;
+  }
+  // positive control: the chunk as built walks
+  try {
+    gc::Walk(chunk, 0);
+    CK(true);
+  } catch (const std::exception& e) {
+    CKF(false, "the built chunk walks: %s", e.what());
+  }
+  // find the GRID_WRITE list's 0xFFFFFFFF terminator (the list starts 0x60 into the GRID_WRITE section)
+  const size_t c = 0x50;
+  const size_t gw = c + gensy::U32At(chunk, c + 0x30);
+  size_t q = gw + gensy::U32At(chunk, gw + 0x1C);
+  while (gensy::U32At(chunk, q) != 0xFFFFFFFFu) q += 4;
+  CK(q > gw + 0x60);
+  // the same chunk with the terminator, and every later 0xFFFFFFFF word (the threads' -1 links), zeroed: the list has no end
+  std::vector<uint8_t> bad = chunk;
+  for (size_t at = q; at + 4 <= bad.size(); at += 4)
+    if (gensy::U32At(chunk, at) == 0xFFFFFFFFu)
+      for (int i = 0; i < 4; ++i) bad[at + size_t(i)] = 0;
+  std::string what;
+  try {
+    gc::Walk(bad, 0);
+  } catch (const std::exception& e) {
+    what = e.what();
+  }
+  CKF(!what.empty(), "an unterminated write list is refused (%s)", what.c_str());
+  // the same with the terminator at the very end of the chunk cut off: refused as well
+  std::vector<uint8_t> cut(chunk.begin(), chunk.begin() + std::ptrdiff_t(q));
+  std::string what2;
+  try {
+    gc::Walk(cut, 0);
+  } catch (const std::exception& e) {
+    what2 = e.what();
+  }
+  CKF(!what2.empty(), "a chunk cut before the terminator is refused (%s)", what2.c_str());
+  // a write whose decl index is 46 or more is refused by rule 10
+  std::vector<uint8_t> bad10 = chunk;
+  const size_t first_write = gw + gensy::U32At(chunk, gw + 0x1C) + 4;  // the entry after the first node marker
+  bad10[first_write] = 46;
+  std::string what3;
+  try {
+    gc::Walk(bad10, 0);
+  } catch (const std::exception& e) {
+    what3 = e.what();
+  }
+  CKF(what3.find("rule 10") != std::string::npos, "rule 10: %s", what3.c_str());
+}
+
+static void TestGenPrepSynthetic() {
+  Group("gen_prep_synthetic");
+  namespace core = doa4::suitconv::core;
+  namespace gc = doa4::suitconv::gencloth;
+  core::Model suit, other;
+  core::PartArena arena;
+  core::PyDict<int64_t, int64_t> chan2id;
+  chan2id.Set(0x9002, 1);
+  auto make = [&](const core::Model* m, int64_t obj, int64_t decl) {
+    core::Part* p = arena.New();
+    p->model = m;
+    p->obj_id = obj;
+    p->decl_index = decl;
+    p->bust = std::make_pair(std::vector<core::Vec3>{}, std::vector<core::Vec3>{});
+    return p;
+  };
+  auto fails_with = [&](const char* design, std::vector<std::optional<core::Object>>& objs, const char* want) {
+    std::string what;
+    try {
+      gc::Prep(design, suit, objs, chan2id);
+    } catch (const std::exception& e) {
+      what = e.what();
+    }
+    CKF(what.find(want) != std::string::npos, "%s: '%s' (got '%s')", design, want, what.c_str());
+  };
+  {  // the normal case: the skirt part is the second part of the hips object; a part of another model with the same ids is ignored
+    core::Part* skirt = make(&suit, 113, 0);
+    core::Part* decoy = make(&other, 113, 0);
+    core::Part* neighbour = make(&suit, 113, 1);
+    std::vector<std::optional<core::Object>> objs(3);
+    objs[0] = core::Object{{decoy}, {}};
+    objs[1] = core::Object{{neighbour, skirt}, {}};
+    const gc::Spec spec = gc::Prep("vks_on_o", suit, objs, chan2id);
+    CK(spec.design == "vks_on_o" && spec.oid == 1 && spec.k == 1 && spec.part == skirt);
+    CK(spec.meshes == (std::vector<int64_t>{1, 2, 3}));
+    CK(skirt->writable && !skirt->bust.has_value());
+    CK(!neighbour->writable && neighbour->bust.has_value() && !decoy->writable);
+  }
+  {  // vle_sk_h: object 76, mesh 1
+    core::Part* skirt = make(&suit, 76, 0);
+    std::vector<std::optional<core::Object>> objs(2);
+    objs[1] = core::Object{{skirt}, {}};
+    const gc::Spec spec = gc::Prep("vle_sk_h", suit, objs, chan2id);
+    CK(spec.oid == 1 && spec.k == 0 && spec.meshes == (std::vector<int64_t>{1}));
+  }
+  {  // found twice (in two objects)
+    std::vector<std::optional<core::Object>> objs(3);
+    objs[0] = core::Object{{make(&suit, 113, 0)}, {}};
+    objs[1] = core::Object{{make(&suit, 113, 0)}, {}};
+    fails_with("vks_on_o", objs, "skirt decl found twice");
+  }
+  {  // not in the converted model
+    std::vector<std::optional<core::Object>> objs(2);
+    objs[1] = core::Object{{make(&suit, 5, 0)}, {}};
+    fails_with("vks_on_o", objs, "skirt decl not in the converted model");
+  }
+  {  // on an object that is not the hips
+    std::vector<std::optional<core::Object>> objs(3);
+    objs[2] = core::Object{{make(&suit, 113, 0)}, {}};
+    fails_with("vks_on_o", objs, "skirt must be on the rigid hips object");
+  }
+  {  // on the hips object, but skinned (a palette)
+    std::vector<std::optional<core::Object>> objs(2);
+    objs[1] = core::Object{{make(&suit, 113, 0)}, {7}};
+    fails_with("vks_on_o", objs, "skirt must be on the rigid hips object");
+  }
+  {  // a design that is not generated: the recipe's KeyError
+    std::vector<std::optional<core::Object>> objs(2);
+    objs[1] = core::Object{{make(&suit, 113, 0)}, {}};
+    fails_with("vay_cs_b", objs, "KeyError");
+  }
+}
+
+// gen_numeric: the generated cloth's census-chosen numeric sites against pins from the recipe's interpreter (numpy 1.26.3) on
+// seeded synthetic inputs (no game data). Each table holds cases where the plain-arithmetic variant of the site differs from
+// numpy's result (the flag columns: for cosine, "1 x" the plain dot product changes the result and "x 1" the plain norms do;
+// for vertical, "1 x" sequential sums change it and "x 1" per-row 1-D norms instead of the axis reduce do), so swapping a
+// site for its runner-up is red. The sites are exposed by gencloth.h: Cosine (lines 87 and 106), Distance (65, 223, 457),
+// VerticalRatio (262) and LoopKey (207).
+static void TestGenNumeric() {
+  Group("gen_numeric");
+  namespace gc = doa4::suitconv::gencloth;
+  const num::FpEnvGuard fp;
+  using V = core::Vec3;
+  struct Cs {
+    V v, w;
+    double want;
+  };
+  struct Dd {
+    V p, q;
+    double want;
+  };
+  struct Vr {
+    std::vector<V> steps;
+    double want;
+  };
+  struct Mn {
+    std::vector<double> ys;
+    double want;
+  };
+  const auto plain_dot = [](const V& a, const V& b) { return (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]; };
+  const Cs cosine[] = {
+      {{0x1.089d4f525d6e8p-3, -0x1.df19f8c4e1b80p-7, -0x1.668486a25748ep+0}, {-0x1.80571cc193558p-4, 0x1.8113bb1244e50p-1, -0x1.82353fef7465cp-4}, 0x1.9f556e9b54212p-4},  // 0 1
+      {{0x1.cef558cf82f60p-5, 0x1.cd85bedcad6d0p-5, -0x1.76db10f79b266p+0}, {-0x1.06b4863b28660p-8, -0x1.f423525e9aa0ap-2, -0x1.76923b48be2c8p-3}, 0x1.416a9d8a22155p-2},  // 1 1
+      {{0x1.a1a275927541cp-2, 0x1.bf2471da2211ep-4, -0x1.a91331a06a300p-3}, {-0x1.f7b73901e5cccp-4, -0x1.012924e77e1c2p+1, 0x1.3ce5f71d8ba18p+1}, -0x1.0b2d8ce246b8fp-1},  // 0 1
+      {{0x1.fcbba714a1a06p-1, 0x1.3bf39eb611a18p+1, 0x1.7eaca62119ab0p-3}, {-0x1.1606a046efee6p-4, -0x1.98b7562ce63dcp-4, 0x1.720cb09b2b320p-1}, -0x1.767c577ae8653p-4},  // 0 1
+      {{-0x1.a96b96e7959e0p-2, -0x1.9e0b02151272cp-4, -0x1.bfdd33d9e595ap-1}, {0x1.65821c1570b3cp+0, 0x1.9883198c4c958p-3, -0x1.0dbc34871f0fep+0}, 0x1.7fdc55567e19bp-3},  // 0 1
+      {{-0x1.2f6b426d9f672p-2, 0x1.251962570fc50p-2, 0x1.f885a51445444p-2}, {0x1.a06789aff83a0p-6, 0x1.1dfd7301ef82ep+0, 0x1.da285805fe038p-1}, 0x1.a624bf781f897p-1},  // 0 1
+      {{-0x1.d5c288deac374p-2, 0x1.25fc5708bec50p+0, -0x1.c5d72fe970f48p-6}, {-0x1.7ad32d620c138p-3, -0x1.f5086de84b5dcp-3, -0x1.2b095e2d9bbbcp-1}, -0x1.c38c3d02944d7p-3},  // 1 0
+      {{-0x1.dc75c15108d80p-4, 0x1.cc1ffdc734600p-6, 0x1.28993557f0d18p-1}, {0x1.2b8d5882622e8p-5, 0x1.1aea928d4310ap+1, -0x1.1f7aa9d0f8562p-1}, -0x1.95fb5cce9724cp-3},  // 1 1
+      {{-0x1.0aab253c4daeap+1, 0x1.3d16145e1a516p+0, -0x1.2c2a4a4091220p-4}, {-0x1.d1aacdf9a928ap-4, 0x1.8c69f4ff1a9c0p-2, 0x1.d2037e9938634p-2}, 0x1.da3ca35fe8a3bp-2},  // 0 1
+      {{0x1.b7dbeda49f100p-4, -0x1.18285512a44b0p-4, -0x1.80ed9e6349990p-4}, {0x1.f0d173a52afd0p-4, -0x1.e4bf45807ee18p+0, -0x1.04d22c529eb56p+1}, 0x1.8428ad0b271a6p-1},  // 1 0
+      {{-0x1.4bd1bf8b5fa68p-2, 0x1.d8d8436debb1ap-2, -0x1.3dd4566e56c60p-7}, {-0x1.91ecc841f4720p-1, -0x1.8e2b67de513e8p-1, 0x1.a45340e45c658p-2}, -0x1.4ebfe71bc7cd5p-3},  // 1 0
+      {{-0x1.3a1d29f761a0ep-2, -0x1.52324af0e5930p-5, -0x1.d2ccbbb958a38p-4}, {0x1.4fed762cd21dap-1, 0x1.5f5cc3f6bc0b0p-5, 0x1.447f02d955d18p-5}, -0x1.e91c2bfce9a19p-1},  // 1 0
+      {{-0x1.5ad773c7fc486p-4, 0x1.adef6ff24136ep+1, 0x1.3903b9390ba48p-3}, {-0x1.cf36aa2ec1014p+0, 0x1.d840d0b532370p-4, 0x1.2831136d49990p+0}, 0x1.96276920d10d1p-4},  // 0 1
+      {{0x1.3b57f8636a030p-3, 0x1.ef63706b94116p-4, 0x1.c8629ab2ccdc4p-4}, {0x1.6673cbe800350p-6, -0x1.4c3c72865e488p-1, -0x1.6711b6e19b560p+0}, -0x1.5440ef32c5c2dp-1},  // 1 0
+      {{0x1.3adf45a027bd4p-2, 0x1.ac617e7cd3a78p+0, 0x1.6145f7e270f00p-7}, {-0x1.f4d93ec992934p-1, -0x1.99dfd7983debcp+0, 0x1.647bae1cf9be0p-4}, -0x1.dd48528c5ac84p-1},  // 0 1
+      {{-0x1.4cb67febbcdfcp-5, 0x1.b2a74cf52ccf8p+1, -0x1.4aba1bcf64cf6p+0}, {-0x1.34f1443cdd338p-1, -0x1.47c0e70fedcfep-4, -0x1.689fdbdf35a10p-2}, 0x1.4d0d9c07cc940p-4},  // 1 0
+      {{-0x1.b24248a709a1cp+0, -0x1.1aa87a61cfd8ep-3, -0x1.ee5f388517a60p-6}, {0x1.7f28043920d2cp-1, 0x1.08bcb6815f6c4p-2, 0x1.7ee4355cc0492p-1}, -0x1.6eaf4ad1aac10p-1},  // 0 1
+      {{0x1.2be71f5a25d78p-6, 0x1.445ae65a4dfe4p-3, 0x1.f89547dccb68cp-5}, {0x1.9ad247b246124p+0, -0x1.c264c46f02244p-3, 0x1.53ad3e1a8b7d0p-2}, 0x1.b228b0f61eb6ap-5},  // 1 0
+      {{0x1.6e62d80abd5f4p-1, -0x1.9897a0e0f4090p-3, 0x1.12f814c31e44ap-4}, {0x1.1f7958da16f40p-4, -0x1.578587e649540p+1, -0x1.a0edf49038638p-1}, 0x1.03d4df2098e98p-2},  // 1 0
+      {{0x1.dccda3aadedf0p-4, -0x1.e7136be830db0p-4, 0x1.bbb1fb3d59c24p+0}, {-0x1.f01fe5d168ce4p-3, -0x1.5efa452197320p-2, -0x1.1592fdd4bfc40p-5}, -0x1.01ec8fd5e0374p-4},  // 0 1
+      {{-0x1.abf94f3feea2ep-2, -0x1.2631d27ba48a8p-4, 0x1.3a1ec41f4fcb4p-4}, {-0x1.62ce16d219db4p-2, 0x1.66d8db01c055cp-5, -0x1.89f3fbc783b30p-2}, 0x1.00768083dd0fap-1},  // 1 0
+      {{-0x1.2a384b69f70bep-1, -0x1.dd1242cddbe88p+0, 0x1.eff12dc6ac420p-4}, {-0x1.23af46a157380p-4, -0x1.15ce1d7695a02p+1, -0x1.32d842ef8a118p-4}, 0x1.eb19dbedefa32p-1},  // 1 1
+  };
+  const Dd dist[] = {
+      {{-0x1.be6bcabf5e2f8p-1, -0x1.173c548ff7b92p+0, -0x1.0bcff1baf7cb8p+0}, {-0x1.93720f1ece090p+1, -0x1.7df0ad655b56ep+2, 0x1.1508f07572e6ap-3}, 0x1.60c1134234f29p+2},
+      {{-0x1.535d40322f180p-4, 0x1.6f71461f0990ep-1, 0x1.7f39c296584c6p+0}, {0x1.524a5e8fedea4p-2, 0x1.96e39b2b98900p-3, 0x1.370baf83ac900p-2}, 0x1.5d7ffc8826e33p+0},
+      {{0x1.e5d406fcd9200p-7, -0x1.43fd0a4f954b8p+0, 0x1.ff0e136c2490ap-1}, {-0x1.9c8336b340e00p-3, -0x1.3feb223664ae0p-4, 0x1.5a4829bfb18dcp+0}, 0x1.420b928838f46p+0},
+      {{0x1.99310b83224c0p-5, -0x1.cf1ed466f7deap-2, 0x1.1ee6dfcbf3518p+0}, {-0x1.589e1b24a57c0p-5, 0x1.288691310bc70p-2, 0x1.6641265212f4cp+0}, 0x1.9879058e1567bp-1},
+      {{-0x1.7b495ce7a55ccp+2, 0x1.dadf969e21aa2p-3, -0x1.9eaa610227304p+2}, {-0x1.18ed5e54c77fcp-3, 0x1.2b609c61ec440p-6, 0x1.f51a29907b3a4p-1}, 0x1.2e3147561f0b0p+3},
+      {{0x1.34452c88d24e0p-4, -0x1.2c6c4bb5563a0p-2, 0x1.a05ea8bb40ff0p+1}, {-0x1.dc13dac9f7a68p-3, 0x1.a923c384c90e4p-4, 0x1.3746a2a5b65d4p+1}, 0x1.ecd70c1284c75p-1},
+      {{-0x1.15d7851c4bef6p-1, -0x1.7077d8593f136p+0, -0x1.048efdd51f99ap+1}, {0x1.86551c00484e0p-2, -0x1.1dd5aa61ad3a8p+1, -0x1.adc8410670460p-7}, 0x1.2e333c95d6786p+1},
+      {{0x1.a4aa1939854c4p-4, 0x1.fc8bb0352af98p+1, 0x1.5aeee381a442ap-2}, {0x1.2248054bd29a0p-3, 0x1.53eb0c01e0f00p-5, -0x1.47e7cc9be5ebap+1}, 0x1.38b1f09ba1e30p+2},
+      {{-0x1.421ff5b02723cp-4, -0x1.e11e48615c23cp+1, -0x1.7c7402dfbe600p+0}, {0x1.cac4f1f4bfae2p+1, 0x1.e4b89c877ddb8p-5, 0x1.2911a4bc8a1eap+2}, 0x1.03113ef637c64p+3},
+      {{0x1.a4e1c20b039d4p-2, -0x1.4d6bc24d0a954p-2, 0x1.504dbf25f3c78p+0}, {-0x1.3527cd55e5bc0p-7, 0x1.a6dc8fe3303aep-1, -0x1.0a4cf5476f848p-4}, 0x1.d849c9dfaf051p+0},
+      {{-0x1.68c5ab191c54cp+1, -0x1.f71f929bc53ecp+0, -0x1.be4b2c6e39838p-2}, {0x1.62480b889196cp-3, -0x1.75954620edb90p-3, -0x1.881b27e6aa1f0p-3}, 0x1.bedbf72e3b66fp+1},
+      {{-0x1.66f15444bd006p-2, -0x1.6dbf0dc545740p-2, -0x1.7c7e5a2611ff4p-3}, {-0x1.7d197c31fbc08p-3, -0x1.06f335870bd44p-1, 0x1.fbdea6a5d590cp-3}, 0x1.f54d11597d1d0p-2},
+  };
+  const Vr vert[] = {
+      {{{-0x1.408aae915f13ep+0, -0x1.92c016c0f0ec2p-1, -0x1.fc696dcaa77e8p-1}, {0x1.37cbbc9234b4cp-2, 0x1.f319cd6346836p-4, 0x1.aecccbfd6c566p-2}, {-0x1.f2eda41be9322p-4, 0x1.b2018a9607db6p-3, -0x1.e14224bf4e572p-4}, {-0x1.f45c294e9f486p-4, 0x1.a69f28cf31af4p-3, 0x1.d5b4169b19fdap-1}, {0x1.7df8ea700ce80p-4, -0x1.9bc1a2b87411cp-5, -0x1.8da5d443abd58p-3}, {0x1.3eeb307e64086p+0, -0x1.66a9018c7ced4p-5, -0x1.88503907b6c58p-4}, {0x1.27693e24d53fcp-5, -0x1.059ea3f569394p-2, 0x1.1a1eaa6f9ce8ep-1}, {0x1.4f4ab919bb180p-7, 0x1.2e8710becbe48p-3, 0x1.0e64365c8a350p-8}, {-0x1.621c3427ea7b0p-4, 0x1.4ead9aacfc620p-2, -0x1.3cdbc6dda23dcp-4}, {0x1.387ec41da0278p-1, -0x1.f030efacb1620p-5, 0x1.927cb07223b3ap-1}, {-0x1.ed6e6cc92e726p-2, -0x1.42c8edc0eca46p-2, -0x1.beaee575d2900p-6}, {-0x1.6c0a024dfca10p-2, -0x1.1ab9417e79e9ap-2, 0x1.1cfecbebe7ab8p-4}}, 0x1.60ac414a37f4ep-2},  // 1 0
+      {{{-0x1.700b90c614588p-5, 0x1.04d570c252a72p-5, 0x1.fa03cae54278cp-3}, {-0x1.77c540899ce10p-8, 0x1.cf88e4b5a27fep+0, -0x1.e52ffe9f056b6p-2}, {0x1.5dfdb7bfeb600p-9, -0x1.de1bcc622486cp-5, 0x1.1a778c791ffdcp-4}, {0x1.70ffd51dd8b20p-7, -0x1.ccd24e96ac030p-3, 0x1.4ed1fd82f5fd6p+0}, {0x1.7843a26c4e5c8p-2, 0x1.62a3bb96827d0p+0, 0x1.2671e310f39dcp-4}, {-0x1.f3aaad200cc80p-5, -0x1.4a71fc8ebf9c0p-7, 0x1.58d2fb3e34a24p-2}, {-0x1.da19d9e542722p-5, 0x1.936afd5d1c7bep-1, 0x1.3c870e5669ad0p-3}, {-0x1.7ae9d21c040a4p-5, -0x1.4f9070527172cp-6, 0x1.93f396a7a6c7ep-2}, {-0x1.c5898ac42f254p-6, 0x1.775467d3fa912p-3, -0x1.cbb93fa4ca280p-4}, {0x1.b34be12ed0160p-6, 0x1.f467aee8c76acp-5, 0x1.6f60f5a4dce1ap+0}, {-0x1.5b015a983a258p+0, 0x1.d78c640016238p-6, 0x1.34c05edb29470p-1}, {-0x1.9d2c54aad0864p-2, -0x1.bb7139b3c4ef6p-2, -0x1.bfe1c8e98feeep-4}, {0x1.086056a5168a2p-3, 0x1.1104643c7043cp-4, 0x1.1768fa62a49a0p-3}, {-0x1.8763251e141e8p-7, 0x1.95a4ded69e558p-3, 0x1.f16a91efc15e4p-3}, {0x1.3f85dad4f0cacp-4, 0x1.6d77b9bad3290p-7, 0x1.e2fba0a08d0c0p-2}, {-0x1.10aa341b5daa0p-2, 0x1.c8f3d199863d8p-5, 0x1.f5bc91853a614p-4}, {0x1.65fd7763a1bb6p+0, -0x1.e243fdd50d9bap-2, -0x1.87c287ffbbd70p-7}}, 0x1.caf42a78c123cp-2},  // 1 0
+      {{{-0x1.6175021b51896p+0, -0x1.910cbe3cb14e4p-4, 0x1.9a406dfcc5016p+0}, {0x1.b09fc36315d08p-4, -0x1.6ae2ae3fbaae2p+0, 0x1.430a0e87c91c8p-2}, {-0x1.5554895fc2ff0p-5, -0x1.7441d996a9cdap-3, 0x1.559585660aebap+0}, {0x1.4357edb656bfap+0, 0x1.982d02fddb692p-2, -0x1.240d69e885820p-4}, {-0x1.b4f087e2d4d40p-7, 0x1.b63222ef02f80p+0, 0x1.876bf2fb7941cp-6}, {0x1.272f275c5d100p-9, 0x1.377ba6501be80p-7, -0x1.0b08f24358044p-3}, {-0x1.f3d61f58f690ep-2, 0x1.1942cc9991498p-4, 0x1.d3ac25ef4fdbcp-1}, {-0x1.6b638c562d5d4p-6, 0x1.39db750d58cacp-4, 0x1.93e1a0692011cp-2}, {0x1.f6d57072658ecp-2, 0x1.642632081cd20p-1, -0x1.ed6d01b699f80p-1}}, 0x1.b8f9b40133442p-2},  // 1 0
+      {{{0x1.914c606c4432ap-3, -0x1.22e1807009aa8p-1, 0x1.384890b23e9c8p+0}, {0x1.29b30468567cep-2, 0x1.54afe55877534p-2, -0x1.e3a6aca855dd4p-2}, {0x1.53e4d1abc44dcp-4, -0x1.cffa27152610ep+0, 0x1.cc5281d6c2d20p-1}, {0x1.beee499dc76fep-3, -0x1.913050addfcacp-2, 0x1.975e4df96188ep-3}, {0x1.4fb375c382280p-6, -0x1.158b8b8d1dab0p+0, -0x1.6d8d706b90fa0p-6}, {-0x1.12e37b64572c4p-3, 0x1.9ca363df6fa18p-7, -0x1.5db93072af5a0p-8}, {-0x1.1ae81b79443d8p+0, 0x1.db0b75eadafb0p-4, -0x1.03220779536d2p-2}, {-0x1.e0681de130340p-6, -0x1.2cfa029848a40p-8, 0x1.69acbf485422cp-4}, {-0x1.357445a54623cp-5, 0x1.59e34ffb03dacp-2, 0x1.0b59395f36848p-5}, {-0x1.c5e970ce3a1e0p-3, -0x1.d73cb04a4cd58p-2, 0x1.69ab73cb18848p-4}, {0x1.a47a4874c0f54p+0, -0x1.e4e1d0cf2a7c0p-8, 0x1.fa19cae6ee35cp-1}, {0x1.419b877febcecp-5, 0x1.bbffdf374cc70p+0, -0x1.f91dc5f3f1b06p-4}, {0x1.e7210c4815014p-4, 0x1.8767d3961896ep-2, -0x1.c766221e6c3a8p-4}, {-0x1.89af340baba38p-6, 0x1.5a9b237a45c88p-3, 0x1.5ea5a5698db76p+0}, {-0x1.d77316b86f8bcp+0, 0x1.33d5979c92908p-4, 0x1.4d820f7fda8dap-3}, {-0x1.8670198abcb18p-5, 0x1.2c4c26296b354p-4, -0x1.0d48970fabf98p-3}}, 0x1.fa4c7f3fe11e1p-2},  // 1 0
+      {{{0x1.3cf742784c128p-3, -0x1.40b054e057620p-3, 0x1.cdb9d479eb800p-10}, {0x1.e3429a8b5f9e0p-8, -0x1.bae4b03d06d92p-4, 0x1.4d3824997fca6p-5}, {-0x1.2eaf5b75219f2p-1, -0x1.12f51ac4f034cp+0, 0x1.8a4553bd2e620p-1}, {-0x1.1000d50ec350cp-2, -0x1.b8d8b72a3b892p-4, 0x1.8bef5413b338ap-2}, {0x1.1985a0ba486aap-2, -0x1.30a1809650ae2p-4, -0x1.e06ec9bf78780p-9}, {0x1.25fa79c0e3620p-8, -0x1.ad6c0685ec63cp-1, -0x1.cb9279964ac20p-6}, {-0x1.4ca66b67670e0p-6, -0x1.c1da0607ed430p-7, -0x1.72f4f7779c9d4p-5}, {-0x1.30370b235261cp-2, 0x1.315f56a5336c0p-5, 0x1.c978b58d112fep-4}, {-0x1.fad40c2b19a20p-4, 0x1.74828da5af480p-2, 0x1.ec10c212d4f18p-7}, {-0x1.a7171ef7bd438p-2, 0x1.7c4deb227ca60p-4, 0x1.ac6c4e5e9dd40p-5}, {0x1.2b802d2970480p-5, -0x1.c0e55a41e0ee0p-3, -0x1.f26b68bc23d64p-4}, {0x1.55468d99f48c4p-6, -0x1.2f21bf160aa94p-4, 0x1.526d36ae4c560p-5}}, 0x1.496a8656ec3b5p-1},  // 1 1
+      {{{0x1.87c3c05ad8458p-4, -0x1.bf5a53b3af300p-3, 0x1.d6045e8f28574p-1}, {0x1.1ff964cade830p-7, 0x1.99576a6fe99cap-5, 0x1.f373f3dd77710p-1}, {0x1.06ea6781a7810p-4, -0x1.5e16b49e89050p-4, -0x1.47c3f4b70c290p-7}, {0x1.a63a999867094p-2, -0x1.44aa2a79859d0p-4, -0x1.6efa5f2c4229cp-4}, {-0x1.25761231fca40p-6, -0x1.033b5b6f8e7ecp-5, -0x1.843d201f239d2p-3}, {-0x1.708816b09d3e4p-5, 0x1.b68e416c8a2fep-2, 0x1.9f637457af0e4p-1}, {-0x1.217d08255be30p-5, 0x1.77385df22ad02p-3, 0x1.3afe3cd98a8fap-5}, {-0x1.aca1058a8eb40p-2, -0x1.86d91c3f9cd24p-5, -0x1.2e7a71a73eeacp-6}, {-0x1.3089a87672b20p-3, -0x1.22beb6b0eee78p-6, 0x1.3211ba5fdf3a8p-1}, {-0x1.e490ef58fb198p-2, 0x1.4848fd145879cp-4, -0x1.6f755f73e5e28p-5}, {0x1.97ddd6b9a414cp+0, 0x1.c763d302e31d4p-5, -0x1.4eed367dbc2dcp-5}, {0x1.d542aad19f9dcp-3, -0x1.60f88746ba600p-6, 0x1.ee70bbc8b9d18p-7}, {-0x1.e2c45601719a0p-3, -0x1.c9aadddd844c6p-3, -0x1.4518f3d8f6b7ep-4}}, 0x1.a2e1498761b0bp-3},  // 1 0
+      {{{-0x1.bcc4f83082c9cp-1, -0x1.16d0cd228a380p-5, -0x1.08c42824880c0p-9}, {-0x1.710d705974c08p-2, -0x1.4dcc6acff87c2p-1, 0x1.b74a80a22a05cp-4}, {-0x1.d34a4242438b4p-5, 0x1.680cd627fe17ep+0, 0x1.b43854875e8d0p-5}, {-0x1.4454c0c348c64p-3, 0x1.859121070410cp-1, -0x1.6f6533f7f64b8p-4}, {-0x1.30fbf4987e818p-5, -0x1.f159e33c48d38p-5, -0x1.8c7336f2d3268p-6}, {-0x1.c78fafbdbad96p-5, -0x1.3c28dd67f4df4p-6, -0x1.f1c3bb50daf28p+0}, {-0x1.51046f418ac0cp-2, 0x1.8146947e1d578p-1, -0x1.142672d6f834ap-3}, {0x1.9388340c2e918p-1, -0x1.70a8e298dc374p-2, 0x1.8b5c917d973c0p-8}, {-0x1.6c29fc4326088p-2, 0x1.32fcc8d43690ep-3, 0x1.67d592d0c3e98p-3}}, 0x1.0e006a99fef13p-1},  // 0 1
+      {{{0x1.afaa2373dba8cp-2, 0x1.5d3a8720af54ep-1, 0x1.eea28fbaaf140p-8}, {-0x1.84ffabd84a516p-3, -0x1.18c0e87de661ap+0, -0x1.36ea0a91bb980p-7}, {0x1.2b9fdfa50877ep-5, 0x1.a39c52bb73a5cp-5, 0x1.b49236b0f83fap-3}, {0x1.38e2274c4c35ap+0, -0x1.a3604c9fdf9e8p-7, 0x1.2839cb0284b64p-6}, {0x1.3e4fef7a4050ep-3, -0x1.37c2608b83852p-3, 0x1.f3cc5208ef168p+0}, {0x1.3d4b4fd9cb8eep-5, -0x1.a650d55519e40p-6, -0x1.11c535db639aep-3}, {-0x1.a92dcd1265dc0p-1, 0x1.b722b51f81578p-6, -0x1.e81d75b85614ep-1}, {0x1.cccced6334ba0p-3, -0x1.21865ec40ee28p-7, 0x1.843211e09167cp-6}, {0x1.803152389720cp-3, -0x1.000599a6cebeap-3, 0x1.aada23a90d4f4p+0}, {0x1.c220ef694a7eep-3, -0x1.aba07d10c45a0p-7, -0x1.15fd272252fc2p-3}, {0x1.2b3ca4d95d908p-7, 0x1.915c5a2d8c0b8p-2, 0x1.9fa527dd5b450p-4}}, 0x1.1cb410795093cp-2},  // 1 1
+      {{{-0x1.8d8bbf4474392p-4, 0x1.054002cc948f4p-1, 0x1.b3e924b21f654p-1}, {-0x1.a1002d1dfe620p-6, -0x1.804f3d9485140p-9, 0x1.65a21290c5550p-4}, {0x1.647eff39d5a20p-5, 0x1.67dcd418b4eb0p-3, 0x1.dba293c6fd088p-5}, {-0x1.63b941b40087ep-2, 0x1.96988ac4b2958p-5, -0x1.a1f595744f2c8p-2}, {0x1.4d3ad2bf4490ep-1, 0x1.b3c171e185a20p-1, -0x1.2329762a6c6e4p-5}, {0x1.8eb3d5aaf2cb4p-3, 0x1.5501476b510c8p-3, -0x1.8a22f04fe5818p-5}, {0x1.3c32a4eadcfccp-5, -0x1.6b5feacb03c20p+0, 0x1.5c16f9d47ca64p-5}, {0x1.5dcd04f0eecc2p-1, 0x1.b2792560e8720p-4, 0x1.43dc2d4f9cab2p-4}, {0x1.a6cbef08d37bcp-4, -0x1.31578c37fab88p+0, 0x1.004198821ddd0p-6}, {-0x1.245f3faa86884p-1, 0x1.923b43a65ea64p-5, 0x1.6cb8b576028c8p-3}, {0x1.c19b7e4b54f30p-6, -0x1.1f1f0c826476ep-3, -0x1.358a3fb3d7a50p-2}, {0x1.d86418b4b5410p-5, -0x1.6a267e49ef5b0p-1, -0x1.efdc46a9b9f02p-1}, {0x1.f1e85cb4bd304p-3, -0x1.a0e9fa7f62accp-3, -0x1.30b0b97998220p-5}, {-0x1.6896f30b5b674p-6, 0x1.0531017e74360p-4, 0x1.93e02fb95d800p-12}}, 0x1.414ad7138a128p-1},  // 1 1
+      {{{-0x1.62befaf3cbd90p-2, -0x1.0d73acc8e0c28p-4, -0x1.ebd27d81fab84p-3}, {0x1.500ab43b46c92p-2, -0x1.96fcd7af22238p-3, 0x1.5105d90b78ff0p-4}, {0x1.c3a5c2c8f4da2p-1, -0x1.9dbf1eb119e80p-5, 0x1.457a39a1618f4p-2}, {0x1.a1c71982757d8p-5, -0x1.5060703651d70p-4, -0x1.d154daa6351b0p-4}, {0x1.61a346cd55500p-7, -0x1.e5adc2504c9ecp-2, -0x1.1effee4046f28p-4}, {0x1.3dce8cc54ad18p-2, 0x1.f3ef051aaa8b2p+0, -0x1.8091782fa6560p-4}, {-0x1.f24b83e06c254p-6, 0x1.5bd5487f75bdcp-4, 0x1.75f9d962f65bep-1}, {-0x1.cac13baf46e78p-5, 0x1.bbb3ca5ea61a4p-4, 0x1.fc8627e41a028p-1}, {0x1.0dece6c6305f4p-5, -0x1.dfdb8d0f7fa2cp-2, 0x1.1a60ce2d9d51cp+0}, {0x1.ee5147db5b244p-4, -0x1.45bfddaa03494p-5, 0x1.061b030b94994p-3}, {0x1.ace5a49db6f50p-3, -0x1.e3afa4e26b060p-8, -0x1.f0b565558354ep-1}, {-0x1.27377b77a15d0p-7, 0x1.dafa707ac54d8p-2, 0x1.92365f1349982p-3}, {-0x1.1e263e972a500p-4, 0x1.2dd3f292684c4p-1, 0x1.2c245cc87c7c2p-5}, {0x1.438d69e096af4p+0, 0x1.413b37b91250ap-2, 0x1.490172e1a47b8p-3}, {0x1.aefc93febb2a0p-2, 0x1.fe962a092b268p-1, 0x1.a24c93432001ap-4}, {-0x1.f5b63dfbbb540p-4, 0x1.03acb1b964f00p+0, -0x1.3dcad2c36600cp-4}}, 0x1.104812ee650f3p-1},  // 0 1
+      {{{0x1.5012aaf482024p-3, 0x1.15cfd2079b83ap-2, 0x1.95abe329e1570p-6}, {0x1.c62620276c0bap-1, -0x1.483cc8f480cb8p-2, 0x1.4cf5b132e17f6p+0}, {-0x1.49dfa0e38683cp-1, -0x1.f4cca2e505930p-4, -0x1.dd22934a2ffe8p-3}, {-0x1.49c8b36662814p-5, 0x1.8e4063b17ded2p-5, 0x1.68d02cbb34136p-3}, {0x1.e9328c4743e48p-4, 0x1.6a32048d048ecp-3, -0x1.d7bcb29d07af0p-7}, {-0x1.a2af53a2ede8ap-3, 0x1.dc96b10791c24p-3, -0x1.6ac4463a949bap-5}, {-0x1.ac714a783a720p-6, -0x1.009daafea69d0p-5, 0x1.e457420fa3996p-2}, {-0x1.c9e73ca99ecf0p-4, 0x1.be47dfae06a90p-8, 0x1.eec0f953480e6p-5}, {0x1.6ccf059ed5610p-7, 0x1.04be9af98fa70p-5, 0x1.84c2a9283de26p-2}, {0x1.145bd86bd0600p-3, 0x1.fba16f7fde754p-4, -0x1.b724172945deep-4}, {0x1.bc3c6ccb3499ep-3, 0x1.201a88906801ap-1, -0x1.96bd14c75cd28p-6}, {0x1.62085e12a751ep-3, -0x1.d6a69e48c82dep+0, -0x1.24b5177d8ae70p-5}, {-0x1.7b61b6788e9b4p-1, -0x1.cfe25f3f7ec96p-4, -0x1.47072d738925cp-5}, {-0x1.5759694af9164p-1, 0x1.e31b1034b2630p-6, -0x1.d2e1d3153afc8p-2}, {-0x1.bfa9c1b71aeb0p-3, 0x1.261869dd447f0p-6, -0x1.8eb4cac0d6438p-7}}, 0x1.cb0e28d365068p-2},  // 0 1
+  };
+  const Mn means[] = {
+      {{0x1.40759673fa1acp+0, 0x1.5a5cbca74ceeap-1, 0x1.110a9081eeeebp-1, 0x1.022e565229e73p-1, 0x1.9ec71a1def536p-1, 0x1.526d586606c32p+0, 0x1.3d2c2273893fdp-1, 0x1.1c27ce055bc09p-1, 0x1.6b0c06685ccbbp+0, 0x1.73279679ac7acp-1, 0x1.588bf21b02f26p+0, 0x1.4fc9dafc5ccfep-1, 0x1.6e87fcf02a3c0p+0}, 0x1.d2aa74517d017p-1},
+      {{0x1.542a97112932ep-1, 0x1.0964ab91216eep+0, 0x1.7605da3b05378p-1, 0x1.752c1f130297ep+0, 0x1.7b7b545855bf6p+0, 0x1.7d682d5e758ccp+0, 0x1.4e785a6226bcap-1, 0x1.0de93c805b4e4p+0, 0x1.6c69324414625p-1, 0x1.35b6e193bb928p+0, 0x1.1452f1fac8b49p+0, 0x1.53ba8fe310b83p+0, 0x1.6cd119f7818dap+0}, 0x1.1a098a3fd0752p+0},
+      {{0x1.398f620577effp+0, 0x1.177be66facf78p+0, 0x1.107ed424b1d08p+0, 0x1.97050123e2aa9p-1, 0x1.786d4034af68ap+0, 0x1.5f7eea442b618p+0, 0x1.0b99d7beeec59p-1, 0x1.c45c40d58c141p-1, 0x1.48cc8be4f44d0p+0, 0x1.9630a73ae2dfep-1, 0x1.0e16924d1639fp+0, 0x1.61764f7098476p+0, 0x1.15f251e15878dp-1, 0x1.2880f46d92e7dp+0, 0x1.70eaaa002d1eep+0, 0x1.59f91cb0a4c74p-1}, 0x1.0c1c6eae5b329p+0},
+      {{0x1.ccbbdd1fb2c18p-1, 0x1.d5eb264bf123cp-1, 0x1.8e3651a9e48afp-1, 0x1.6797a461b4067p+0, 0x1.1484acc40d5bep+0, 0x1.27eee53efef02p+0, 0x1.4775a5b131e22p+0, 0x1.46a9b374ce431p+0, 0x1.edf6f616d2ca2p-1, 0x1.320359da7d994p-1, 0x1.f34cb8a59a09cp-1, 0x1.4f2f9cc3b6e14p+0, 0x1.00400df454d24p-1, 0x1.9d32363dc5c94p-1}, 0x1.fe055b08d2031p-1},
+      {{0x1.3fff77230b5f3p+0, 0x1.4d4df36b21573p+0, 0x1.7e4f7893b73e2p+0, 0x1.b0ca7e1d56307p-1, 0x1.14c06e7d06b4ep-1, 0x1.2bc75e1df251cp-1, 0x1.194a6a92cd922p-1, 0x1.51f41aa9ee38bp-1}, 0x1.ce7952c71a5d6p-1},
+      {{0x1.ee0476ec9904dp-1, 0x1.700cdbad4c5f3p-1, 0x1.237f54251a1dap+0, 0x1.b389e02e6340cp-1, 0x1.b3a54a3e041f1p-1, 0x1.16f1698a4023ap+0, 0x1.215c3bd3c6ca4p-1, 0x1.72c41d4d42ff6p-1, 0x1.8dbe2f484cf6fp-1}, 0x1.b4e39c88b4729p-1},
+      {{0x1.6e20563942fe2p+0, 0x1.d916533529a03p-1, 0x1.0c435b538d85ap-1, 0x1.bd88bfba062e7p-1, 0x1.6f1982b26acd1p+0, 0x1.56c8b839e1b05p-1, 0x1.51ca0d9cd9c36p+0, 0x1.014d962a42e65p-1, 0x1.574b1b748f834p+0, 0x1.3e8c26b9aba1ap-1, 0x1.03e099c770139p-1, 0x1.377f9aaf8e7b5p-1, 0x1.64f265e8b3998p-1, 0x1.93f37e9488af1p-1}, 0x1.bf99c92a362e3p-1},
+      {{0x1.0de37ae2cd0d9p-1, 0x1.9cc9e06dac7bfp-1, 0x1.69a2691d207acp+0, 0x1.41ef7aba75f98p+0, 0x1.30e2b3f843509p+0, 0x1.9d750b7b1eda6p-1, 0x1.ea9be2e048ebep-1, 0x1.bcd0f279c06a9p-1, 0x1.162bfba837741p-1, 0x1.1e384ed1c79eap+0, 0x1.59a0ae55e7c8ap+0, 0x1.743711193a697p-1, 0x1.4b7d047cf8f62p+0, 0x1.5f17888acb843p+0, 0x1.a80a6558e88bfp-1, 0x1.03de0067bb574p-1}, 0x1.f239ef2a652c8p-1},
+  };
+  int ok = 0, dot_differs = 0, norm_differs = 0;
+  for (const Cs& r : cosine) {
+    const double got = gc::Cosine(r.v, r.w);
+    CKF(std::bit_cast<uint64_t>(got) == std::bit_cast<uint64_t>(r.want), "Cosine %a, want %a", got, r.want);
+    ok += got == r.want;
+    const double nv = gc::Distance(r.v, V{0, 0, 0}), nw = gc::Distance(r.w, V{0, 0, 0});
+    dot_differs += plain_dot(r.v, r.w) / (nv * nw + 1e-12) != r.want;
+    norm_differs += num::NpDotFused(r.v.data(), r.w.data(), 3) / (std::sqrt(plain_dot(r.v, r.v)) * std::sqrt(plain_dot(r.w, r.w)) + 1e-12) != r.want;
+  }
+  CKF(dot_differs >= 12 && norm_differs >= 12, "vacuity: plain dot differs on %d, plain norms on %d (12 each at least)", dot_differs,
+      norm_differs);
+  int dist_ok = 0, dist_differs = 0;
+  for (const Dd& r : dist) {
+    const double got = gc::Distance(r.p, r.q);
+    CKF(std::bit_cast<uint64_t>(got) == std::bit_cast<uint64_t>(r.want), "Distance %a, want %a", got, r.want);
+    dist_ok += got == r.want;
+    const V d{r.p[0] - r.q[0], r.p[1] - r.q[1], r.p[2] - r.q[2]};
+    dist_differs += std::sqrt(plain_dot(d, d)) != r.want;
+  }
+  CKF(dist_differs == int(std::size(dist)), "vacuity: plain sqrt differs on %d of %zu", dist_differs, std::size(dist));
+  int vert_ok = 0, seq_differs = 0, row_differs = 0;
+  for (const Vr& r : vert) {
+    const double got = gc::VerticalRatio(r.steps);
+    CKF(std::bit_cast<uint64_t>(got) == std::bit_cast<uint64_t>(r.want), "VerticalRatio %a, want %a", got, r.want);
+    vert_ok += got == r.want;
+    double sn = 0.0, sd = 0.0;
+    std::vector<double> rows, ay;
+    for (const V& s : r.steps) {
+      const double sq[3] = {s[0] * s[0], s[1] * s[1], s[2] * s[2]};
+      const double n = std::sqrt(num::NpSumLastAxis(std::span<const double>(sq, 3)));
+      sn += std::fabs(s[1]);
+      sd += n;
+      ay.push_back(std::fabs(s[1]));
+      rows.push_back(gc::Distance(s, V{0, 0, 0}));
+    }
+    seq_differs += sn / (sd + 1e-12) != r.want;
+    row_differs += num::NpSum1D(std::span<const double>(ay.data(), ay.size())) / (num::NpSum1D(std::span<const double>(rows.data(), rows.size())) + 1e-12) != r.want;
+  }
+  CKF(seq_differs >= 6 && row_differs >= 6, "vacuity: sequential sums differ on %d, per-row norms on %d (6 each at least)", seq_differs,
+      row_differs);
+  int mean_ok = 0, mean_differs = 0;
+  for (const Mn& r : means) {
+    const double got = gc::LoopKey(r.ys);
+    CKF(std::bit_cast<uint64_t>(got) == std::bit_cast<uint64_t>(r.want), "LoopKey %a, want %a", got, r.want);
+    mean_ok += got == r.want;
+    double acc = 0.0;
+    for (double y : r.ys) acc += y;
+    mean_differs += acc / double(r.ys.size()) != r.want;
+  }
+  CKF(mean_differs == int(std::size(means)), "vacuity: the sequential mean differs on %d of %zu", mean_differs, std::size(means));
+  std::printf("gen_numeric: %d/%zu Cosine, %d/%zu Distance, %d/%zu VerticalRatio, %d/%zu LoopKey equal to the interpreter's\n", ok,
+              std::size(cosine), dist_ok, std::size(dist), vert_ok, std::size(vert), mean_ok, std::size(means));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2360,6 +3058,10 @@ int main() {
   RunGroup(TestLevelGates, "level_gates");
   RunGroup(TestClothNumeric, "cloth_numeric");
   RunGroup(TestUnstickRounds, "unstick_rounds");
+  RunGroup(TestGenPrepSynthetic, "gen_prep_synthetic");
+  RunGroup(TestGenClothSynthetic, "gen_cloth_synthetic");
+  RunGroup(TestGenNumeric, "gen_numeric");
+  RunGroup(TestWalkRejectsUnterminatedWrites, "walk_rejects_unterminated_writes");
   RunGroup(TestAttachFrame, "attach_frame");
   RunGroup(TestAttachApa, "attach_apa_synthetic");
   RunGroup(TestAttachClothPins, "attach_cloth_pins");
@@ -2367,6 +3069,7 @@ int main() {
   RunGroup(TestHeadPhysicsSynthetic, "head_physics_synthetic");
   RunGroup(TestHandsNumeric, "hands_numeric");
   RunGroup(TestMpvHeaderMarks, "mpv_header_marks");
+  RunGroup(TestMpvThresholdIsMathDist, "mpv_threshold_is_math_dist");
   RunGroup(TestPrepBustSynthetic, "prep_bust_synthetic");
   RunGroup(TestBustPeakRules, "bust_peak_rules");
   RunGroup(TestL1Synthetic, "l1_synthetic");
@@ -2384,6 +3087,7 @@ int main() {
   RunGroup(TestOracleM1WithoutExtras, "oracle_m1_without_extras");
   RunGroup(TestOracleM1SparesHead, "oracle_m1_spares_head");
   RunGroup(TestOracleM1Cloth, "oracle_m1_cloth");
+  RunGroup(TestOracleM1Gen, "oracle_m1_gen");
   RunGroup(TestArgsortIsWhatMatters, "argsort_is_what_matters");
   RunGroup(TestTraceM1, "trace_m1");
   RunGroup(TestH4AbsM1, "h4_abs_m1");

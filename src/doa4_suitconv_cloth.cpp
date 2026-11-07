@@ -173,50 +173,7 @@ const char* const kIndexAsFloat = "IndexError: arrays used as indices must be of
 }  // namespace
 
 // ------------------------------------------------------------------ CPython helpers
-double MathDist(const Vec3& p, const Vec3& q) {
-  // math_dist_impl: diffs[i] = fabs(px - qx), max the largest, found_nan; then vector_norm(n, diffs, max, found_nan).
-  double vec[3], max = 0.0;
-  bool found_nan = false;
-  for (int i = 0; i < 3; ++i) {
-    vec[i] = std::fabs(p[i] - q[i]);
-    found_nan = found_nan || std::isnan(vec[i]);
-    if (vec[i] > max) max = vec[i];
-  }
-  constexpr double kDblMin = 2.2250738585072014e-308;
-  double scale_back = 1.0;
-  for (;;) {  // vector_norm, with its recursion for max_e < -1023 unrolled
-    if (std::isinf(max)) return scale_back * max;
-    if (found_nan) return std::numeric_limits<double>::quiet_NaN();
-    if (max == 0.0) return scale_back * max;
-    int max_e = 0;
-    std::frexp(max, &max_e);
-    if (max_e < -1023) {
-      for (double& v : vec) v /= kDblMin;
-      max /= kDblMin;
-      scale_back *= kDblMin;
-      continue;
-    }
-    const double scale = std::ldexp(1.0, -max_e);
-    double csum = 1.0, frac1 = 0.0, frac2 = 0.0;
-    for (double v : vec) {
-      const double x = v * scale;                                 // lossless scaling
-      const double hi = x * x, lo = num::SoftFma(x, x, -hi);       // dl_mul: lossless squaring
-      const double s = csum + hi, sl = (csum - s) + hi;           // dl_fast_sum
-      csum = s;
-      frac1 += lo;
-      frac2 += sl;
-    }
-    double h = std::sqrt(csum - 1.0 + (frac1 + frac2));
-    const double hi = -h * h, lo = num::SoftFma(-h, h, -hi);
-    const double s = csum + hi, sl = (csum - s) + hi;
-    csum = s;
-    frac1 += lo;
-    frac2 += sl;
-    const double x = csum - 1.0 + (frac1 + frac2);
-    h += x / (2.0 * h);  // differential correction
-    return scale_back * (h / scale);
-  }
-}
+double MathDist(const Vec3& p, const Vec3& q) { return num::MathDist3(p, q); }
 
 double Gemv3(const Vec3& a, const Vec3& u) {
   // OpenBLAS 0.3.23 kernel/x86_64/dgemv_t_4.c, the m3 == 3 remainder: y[j] += aj[0]*xtemp0 + aj[1]*xtemp1 +

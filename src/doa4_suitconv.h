@@ -1,6 +1,6 @@
 // Suit converter (Plan 2): one suit through the converter. ConvertSuit runs convert.main's order of calls for one suit
 // and one recipe level (the oracle harness's LEVELS: L0 is geometry only; L1 adds the bust, L2 the waist, L3 the hands,
-// M1 the rest of the physics). Levels whose features are not ported yet return a ConvertFailure{"level", ...}.
+// M1 the rest of the physics: the cloth, the spares and the head physics).
 //
 // The work runs under num::RunUnderConvertEnv (the converter's floating-point environment); the cancel token is
 // looked at between stages; everything thrown inside (ConvertError, InputChanged, std::bad_alloc, any exception) is

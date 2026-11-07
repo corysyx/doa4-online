@@ -47,12 +47,10 @@ Cell KeyOf(const Vec3& pos, double cell) {
   return Cell{{CellOf(pos[0], cell), CellOf(pos[1], cell), CellOf(pos[2], cell)}};
 }
 
-// math.dist(v, (0, 0, 0)) as the port computes every distance (plan row 8): sum of squares, then the square root.
-double Norm(const Vec3& v) {
-  num::PySum s;
-  for (int c = 0; c < 3; ++c) s.Add((v[c] - 0.0) * (v[c] - 0.0));
-  return std::sqrt(s.Result());
-}
+// math.dist(v, (0, 0, 0)) at physics_port.py 138 (build_mpv's threshold): CPython's vector_norm, num::MathDist3. (Plan row 8
+// had it as sqrt of a PySum of squares; the cloth census showed that is not what math.dist computes: 3887 to 7034 bit
+// mismatches over the five authored-cloth suits' calls.)
+double Norm(const Vec3& v) { return num::MathDist3(v, Vec3{0.0, 0.0, 0.0}); }
 
 // float(np.sqrt(((arr - np.array(pos)) ** 2).sum(1).min())): the row sums are numpy's last-axis sums; min propagates NaN.
 double NearestDist(const std::vector<Vec3>& arr, const Vec3& pos) {

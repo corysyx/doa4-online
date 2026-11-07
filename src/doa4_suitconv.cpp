@@ -17,6 +17,7 @@
 #include "doa4_suitconv_catx.h"
 #include "doa4_suitconv_cloth.h"
 #include "doa4_suitconv_core.h"
+#include "doa4_suitconv_gencloth.h"
 #include "doa4_suitconv_hands.h"
 #include "doa4_suitconv_inputs.h"
 #include "doa4_suitconv_num.h"
@@ -62,8 +63,7 @@ struct Job {
 // --mesh-passes, --leg-midline (Lei Fang), --carry-head (Tina), --cat 2,4,ref4,6, and at L1 and above --bust-down /
 // --bust-up (the suit's strengths) and --strap-fade (when non-zero), at L2 and above --waist-fit, at L3 and above
 // --hands (the girl's hand donor), and at M1 the girl's --hair-spares and --head-physics (Tina) and the suit's
-// --port-cloth, --fit-leg-colliders, --unstick-cloth, --back-margin and --sink-hamstrings. The generated cloth
-// (--gen-cloth) is not ported yet (ConvertSuit refuses it at M1).
+// --port-cloth, --gen-cloth, --fit-leg-colliders, --unstick-cloth, --back-margin and --sink-hamstrings.
 void RunConvert(Job& job) {
   const SuitRecipe& sr = *job.suit;
   const GirlRecipe& gr = *job.girl;
@@ -393,6 +393,20 @@ void RunConvert(Job& job) {
   step("cloth_specs");
   c::Assert(cloth_specs.size() <= 1, "one MULTI_CLOTH per body type in the spike");  // line 1499
 
+  std::optional<gencloth::Spec> gen_spec;  // lines 1500-1504: cloth_gen.prep(a.gen_cloth, ...) when --gen-cloth
+  if (m1 && sr.gen_cloth) {
+    c::Assert(cloth_specs.empty(), "authored and generated cloth on one suit");
+    stage("gen_prep");
+    gen_spec = gencloth::Prep(sr.design, suit, bo.objects, chan2id);
+    if (tr.on()) {
+      std::string meshes;
+      for (int64_t m : gen_spec->meshes) meshes += (meshes.empty() ? "" : ",") + std::to_string(m);
+      tr.K("gen", "design=" + gen_spec->design + " oid=" + std::to_string(gen_spec->oid) + " k=" +
+                      std::to_string(gen_spec->k) + " part=" + std::to_string(gen_spec->part->index) + " meshes=" + meshes);
+      tr.State(bo.objects);
+    }
+  }
+
   // line 1527: face_channels, head_physics = prep_head_physics(...) when `a.carry_head and a.head_physics` (Tina, at m1)
   std::optional<catx::HeadPhysics> head_physics;
   if (job.level == Level::kM1 && gr.carry_head && gr.head_physics) {
@@ -473,9 +487,19 @@ void RunConvert(Job& job) {
       tr.Geos(enc.geos, nullptr);
     }
   }
+  if (gen_spec) {  // line 1521: cloth_blob = cloth_gen.build(gen_spec, geos, bind4, strip_tris, report)
+    stage("gen_cloth");
+    cloth = gencloth::Build(*gen_spec, enc.geos, bo.bind4, Need(in.gen_donor_cat, "generated cloth donor (DOAX2 werone 283)"),
+                            Need(in.gen_bend_cat, "bend limit donor (DOA4 chrthree 91)"));
+    if (tr.on()) {
+      tr.B("gen_cloth", *cloth);
+      tr.Geos(enc.geos, nullptr);
+    }
+  }
   if (m1 && (sr.fit_leg_colliders || sr.unstick_cloth) && cloth && !cloth->empty()) {  // lines 1522-1528
     step("fit_inputs");
-    const int64_t cloth_owner = cloth_specs.at(0).owner;  // (the generated cloth's owner is Task 11's)
+    // cloth_owner = cloth_specs[0][3] if cloth_specs else gen_spec['oid']
+    const int64_t cloth_owner = !cloth_specs.empty() ? cloth_specs.at(0).owner : gen_spec->oid;
     c::PyDict<int64_t, c::Vec3> bones;
     for (int64_t n = 0; n < 15; ++n)
       if (const int64_t* id = chan2id.Find(0x9000 + n)) bones.Set(n, bo.bind4.At(*id));
@@ -573,11 +597,6 @@ std::optional<SuitOutput> Failed(ConvertFailure* failure, std::string stage, std
 
 std::optional<SuitOutput> ConvertSuit(const SuitRecipe& suit, const GirlRecipe& girl, const SuitInputs& in, Level level,
                                       const CancelToken* cancel, Trace* trace, ConvertFailure* failure) {
-  // B1: the features that are not ported yet. Each later task deletes its own gate.
-  if (level == Level::kM1) {
-    if (suit.gen_cloth) return Failed(failure, "level", "not ported yet: gen_cloth");
-  }
-
   Job job{&suit, &girl, &in, cancel, trace, level, "start", std::nullopt};
   try {
     num::RunUnderConvertEnv(&RunJob, &job);
