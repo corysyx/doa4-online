@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -24,6 +25,9 @@ class Trace {
  public:
   virtual ~Trace();
   virtual void Line(std::string_view line) = 0;
+  // Test seam: called by Tracer::State beside each `B p<i>.h4` line with the part's index and its h4 rows (the doubles
+  // the line's SHA-1 covers). Does nothing by default.
+  virtual void H4(int index, const std::vector<std::array<double, 4>>& rows) { (void)index; (void)rows; }
 };
 
 }  // namespace doa4::suitconv

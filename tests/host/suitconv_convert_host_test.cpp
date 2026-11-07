@@ -15,6 +15,8 @@
 //   trace_L0_all        the three and DOA4_SUITCONV_TRACE_DIR: the C++ trace equals the Python's line for line, all 34
 //   oracle_L1_all, trace_L1_all   the same two at level L1 (the bust channel: prep_bust, bust_peak, build_mpv)
 //   oracle_L2_all, trace_L2_all   the same two at level L2 (L1 plus --waist-fit: prep_waist_fit, H4 weights in encode_objects)
+//                       the trace comparison exempts the hash of `B p<i>.h4` lines (counted; skipped without H4_DIR)
+//   h4_ulp_L2           also DOA4_SUITCONV_H4_DIR (the sidecar of the waist weights as doubles): C++ against Python, |diff| <= kH4MaxAbs
 // On a difference the oracle groups print the first differing offset and what is there (WhereInTpr / WhereInCat:
 // object, decl, vertex and field; or the .cat section and record) and, with traces, the first differing trace line,
 // both lines and the last S line before it. No byte of any game file is stored: the real sections read the player's
@@ -37,12 +39,14 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -61,6 +65,7 @@ static int g_checks = 0;
 static int g_failures = 0;
 static int g_skipped = 0;
 static int g_printed = 0;
+static size_t g_h4_exempt = 0, g_h4_equal = 0;  // `B p<i>.h4` trace lines exempt (hash differs) / equal in full
 static constexpr int kPrintCap = 40;
 
 static void Check(bool ok, const char* file, int line, const char* expr, const char* fmt = nullptr, ...) {
@@ -119,6 +124,12 @@ class CompareTrace : public Trace {
     if (!diff_) {
       if (n_ < exp_.size() && exp_[n_] == s) {
         if (s.rfind("S ", 0) == 0) last_s_ = std::string(s);
+        if (IsH4(s)) ++h4_equal_;
+      } else if (n_ < exp_.size() && IsH4(s) && IsH4(exp_[n_]) && BeforeSha1(s) == BeforeSha1(exp_[n_])) {
+        // `B p<i>.h4 <bytes> <sha1>`: the part and the byte count agree, only the hash of the doubles differs. numpy's
+        // exp on this PC is the C runtime's, which the kit's Exp matches to 1 ulp but not bit for bit; the doubles are
+        // checked by absolute difference in the h4_ulp_L2 section instead. Exempt, and counted.
+        ++h4_exempt_;
       } else {
         diff_ = true;
         at_ = n_;
@@ -136,6 +147,15 @@ class CompareTrace : public Trace {
     }
     return !diff_;
   }
+  size_t h4_exempt() const { return h4_exempt_; }  // `B p<i>.h4` lines whose hash differs (exempt)
+  size_t h4_equal() const { return h4_equal_; }    // `B p<i>.h4` lines equal in full
+  static bool IsH4(std::string_view l) {
+    if (l.rfind("B p", 0) != 0) return false;
+    size_t k = 3;
+    while (k < l.size() && l[k] >= '0' && l[k] <= '9') ++k;
+    return k > 3 && l.compare(k, 4, ".h4 ") == 0;
+  }
+  static std::string_view BeforeSha1(std::string_view l) { return l.substr(0, l.rfind(' ')); }
   void Print(const char* label) const {
     std::printf("  %s: trace differs at line %zu (C++ wrote %zu lines, Python %zu)\n", label, at_ + 1, n_, exp_.size());
     std::printf("    last S line: %s\n", last_s_.c_str());
@@ -145,7 +165,7 @@ class CompareTrace : public Trace {
 
  private:
   std::vector<std::string> exp_;
-  size_t n_ = 0, at_ = 0;
+  size_t n_ = 0, at_ = 0, h4_exempt_ = 0, h4_equal_ = 0;
   bool diff_ = false;
   std::string got_, last_s_ = "-";
 };
@@ -1033,6 +1053,10 @@ static int OracleOne(InputSet& set, const OracleEnv& env, const SuitRecipe& s, L
     ct->Print(stem.c_str());
     ok = false;
   }
+  if (ct) {
+    g_h4_exempt += ct->h4_exempt();
+    g_h4_equal += ct->h4_equal();
+  }
   CKF(!ct || ct->Equal(), "%s: trace", stem.c_str());
   if (files && out) {
     const auto wt = ReadFile(fs::path(env.levels) / lv / (stem + ".tpr"));
@@ -1107,12 +1131,18 @@ static void TraceAll(Level level, const char* group) {
   InputSet* set = OpenSet(env);
   if (!set) return;
   int eq = 0, n = 0;
+  const size_t ex0 = g_h4_exempt, eqh0 = g_h4_equal;
   for (const SuitRecipe& s : Suits()) {
     if (!OnlyAllows(s)) continue;
     eq += OracleOne(*set, env, s, level, false, true, nullptr);
     ++n;
   }
   std::printf("%s: %d/%d traces equal at %s\n", group, eq, n, LevelDir(level));
+  // The exempt `B p<i>.h4` lines (hash of the waist weights differs, part and byte count agree) are checked by absolute difference in
+  // h4_ulp_L2; without DOA4_SUITCONV_H4_DIR they are not checked at all, so the section counts as skipped.
+  const size_t ex = g_h4_exempt - ex0, eqh = g_h4_equal - eqh0;
+  std::printf("%s: %zu h4 lines exempt (hash differs), %zu h4 lines equal in full\n", group, ex, eqh);
+  if (ex > 0 && !Env("DOA4_SUITCONV_H4_DIR")) SkipGroup(group, "DOA4_SUITCONV_H4_DIR");
 }
 
 static void TestOracleAll() { OracleAll(Level::kL0, "oracle_L0_all"); }
@@ -1121,6 +1151,138 @@ static void TestOracleL1All() { OracleAll(Level::kL1, "oracle_L1_all"); }
 static void TestTraceL1All() { TraceAll(Level::kL1, "trace_L1_all"); }
 static void TestOracleL2All() { OracleAll(Level::kL2, "oracle_L2_all"); }
 static void TestTraceL2All() { TraceAll(Level::kL2, "trace_L2_all"); }
+
+// ---------------------------------------------------------------------------------------------------------------
+// h4_ulp_L2: the waist weights (p.h4, doubles) against the Python's, by absolute difference
+// ---------------------------------------------------------------------------------------------------------------
+// The trace hashes these doubles, but numpy's exp is the C runtime's here and the kit's Exp is within 1 ulp of it, not
+// bit-equal, so the trace comparer exempts the hash of `B p<i>.h4` lines and this section checks the values instead.
+// Test seam: Trace::H4, called by Tracer::State beside each such line (a no-op for every other Trace).
+// Sidecar (DOA4_SUITCONV_H4_DIR/L2/<design>_<colour>.h4, written by plan2_oracle/t7_debug/dump_h4.py): magic "SH4\1",
+// u32 part count; per part u32 trace index, u32 vertex count, count*4 little-endian float64.
+
+// The largest absolute difference any waist weight may have from the Python's. Measured maximum: 2.22e-16 over 391,104
+// values (34 suits, L2); the bound is twice that. The weights are row-normalised, so an error of 1 ulp in exp's argument
+// is an absolute error of about 1 ulp of 1.0 however small the weight: ulp distance is the wrong metric for them. A real
+// waist bug (a wrong band, grid or blend) moves weights by far more.
+static constexpr double kH4MaxAbs = 0x1p-51;  // 4.44e-16
+
+class H4Trace : public Trace {
+ public:
+  void Line(std::string_view) override {}
+  void H4(int index, const std::vector<std::array<double, 4>>& rows) override { parts.emplace(index, rows); }  // first wins
+  std::map<int, std::vector<std::array<double, 4>>> parts;
+};
+
+// Distance in representable doubles; +0 and -0 are 0 apart. NaN must be excluded by the caller.
+static uint64_t UlpDistance(double a, double b) {
+  auto key = [](double x) {
+    const int64_t k = std::bit_cast<int64_t>(x);
+    return k < 0 ? (std::numeric_limits<int64_t>::min)() - k : k;
+  };
+  const int64_t ka = key(a), kb = key(b);
+  return ka > kb ? uint64_t(ka) - uint64_t(kb) : uint64_t(kb) - uint64_t(ka);
+}
+
+static void TestH4UlpL2() {
+  const char* group = "h4_ulp_L2";
+  OracleEnv env;
+  if (!OracleEnvOrSkip(group, &env, false)) return;
+  const char* h4dir = Env("DOA4_SUITCONV_H4_DIR");
+  if (!h4dir) return SkipGroup(group, "DOA4_SUITCONV_H4_DIR");
+  Group(group);
+  InputSet* set = OpenSet(env);
+  if (!set) return;
+  int suits = 0, parts = 0;
+  uint64_t values = 0, differ = 0, max_ulp = 0;
+  std::string max_at;
+  uint64_t hist[12] = {};  // ulp distance: 0, 1, 2, 3-4, 5-8, 9-16, 17-32, 33-64, 65-128, 129-256, 257-512, more
+  double max_abs = 0;
+  for (const SuitRecipe& s : Suits()) {
+    if (!OnlyAllows(s)) continue;
+    const std::string stem = Stem(s);
+    const GirlRecipe* girl = FindGirl(s.girl);
+    CKF(girl != nullptr, "%s: no girl", stem.c_str());
+    if (!girl) continue;
+    const auto sb = ReadFile(fs::path(h4dir) / "L2" / (stem + ".h4"));
+    CKF(sb.has_value(), "%s: no h4 sidecar", stem.c_str());
+    if (!sb) continue;
+    SuitInputs in;
+    try {
+      in = ReadSuitInputs(*set, s, *girl);
+    } catch (const std::exception& e) {
+      CKF(false, "%s: ReadSuitInputs: %s", stem.c_str(), e.what());
+      continue;
+    }
+    H4Trace tr;
+    ConvertFailure f;
+    const auto out = ConvertSuit(s, *girl, in, Level::kL2, nullptr, &tr, &f);
+    CKF(out.has_value(), "%s: converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
+    if (!out) continue;
+    ++suits;
+    // parse the sidecar
+    const std::vector<uint8_t>& b = *sb;
+    auto u32 = [&](size_t o) { uint32_t v = 0; std::memcpy(&v, b.data() + o, 4); return v; };
+    bool shape = b.size() >= 8 && std::memcmp(b.data(), "SH4\1", 4) == 0;
+    CKF(shape, "%s: sidecar magic", stem.c_str());
+    if (!shape) continue;
+    const uint32_t np = u32(4);
+    size_t o = 8;
+    bool same_parts = np == tr.parts.size();
+    for (uint32_t k = 0; k < np && o + 8 <= b.size(); ++k) {
+      const uint32_t idx = u32(o), cnt = u32(o + 4);
+      o += 8;
+      if (o + size_t(cnt) * 32 > b.size()) {
+        same_parts = false;
+        break;
+      }
+      const auto it = tr.parts.find(int(idx));
+      if (it == tr.parts.end() || it->second.size() != cnt) {
+        same_parts = false;
+        o += size_t(cnt) * 32;
+        continue;
+      }
+      ++parts;
+      for (uint32_t r = 0; r < cnt; ++r)
+        for (int c = 0; c < 4; ++c) {
+          double want;
+          std::memcpy(&want, b.data() + o + (size_t(r) * 4 + c) * 8, 8);
+          const double got = it->second[r][c];
+          ++values;
+          if (std::isnan(got) || std::isnan(want)) {
+            CKF(false, "%s p%u row %u col %d: NaN (C++ %g, Python %g)", stem.c_str(), idx, r, c, got, want);
+            continue;
+          }
+          const uint64_t d = UlpDistance(got, want);
+          if (d) ++differ;
+          {
+            int hb = 0;
+            for (uint64_t lim = 0; hb < 11 && d > lim; ++hb) lim = lim ? lim * 2 : 1;
+            ++hist[hb];
+            max_abs = (std::max)(max_abs, std::fabs(got - want));
+          }
+          if (d > max_ulp) {
+            max_ulp = d;
+            max_at = stem + " p" + std::to_string(idx) + " row " + std::to_string(r) + " col " + std::to_string(c);
+          }
+          if (!(std::fabs(got - want) <= kH4MaxAbs))
+            CKF(false, "%s p%u row %u col %d: C++ %.17g, Python %.17g, |diff| %.3g > bound %.3g", stem.c_str(), idx, r, c,
+                got, want, std::fabs(got - want), kH4MaxAbs);
+        }
+      o += size_t(cnt) * 32;
+    }
+    same_parts = same_parts && o == b.size();
+    CKF(same_parts, "%s: part indices and vertex counts agree with the sidecar (C++ %zu parts, Python %u)", stem.c_str(),
+        tr.parts.size(), np);
+  }
+  std::printf("%s: %d suits, %d parts, %llu values: %llu differ, max abs diff %.3g (bound %.3g), max %llu ulp (information) at %s\n", group,
+              suits, parts, (unsigned long long)values, (unsigned long long)differ, max_abs, kH4MaxAbs,
+              (unsigned long long)max_ulp, max_at.empty() ? "-" : max_at.c_str());
+  std::printf("%s: ulp histogram (information) 0:%llu 1:%llu 2:%llu 3-4:%llu 5-8:%llu 9-16:%llu 17-32:%llu 33-64:%llu 65-128:%llu 129-256:%llu 257-512:%llu more:%llu\n", group,
+              (unsigned long long)hist[0], (unsigned long long)hist[1], (unsigned long long)hist[2], (unsigned long long)hist[3], (unsigned long long)hist[4], (unsigned long long)hist[5], (unsigned long long)hist[6], (unsigned long long)hist[7], (unsigned long long)hist[8], (unsigned long long)hist[9], (unsigned long long)hist[10], (unsigned long long)hist[11]);
+  CK(suits == 34 || Env("DOA4_SUITCONV_ONLY"));
+  CK(values > 0);
+}
 
 static void RunGroup(void (*fn)(), const char* name) {
   try {
@@ -1149,6 +1311,7 @@ int main() {
   RunGroup(TestTraceL1All, "trace_L1_all");
   RunGroup(TestOracleL2All, "oracle_L2_all");
   RunGroup(TestTraceL2All, "trace_L2_all");
+  RunGroup(TestH4UlpL2, "h4_ulp_L2");
   RunGroup(TestWaistBandShortFails, "waist_band_short_fails");
   RunGroup(TestWaistSynthetic, "waist_synthetic");
   std::printf("skipped sections: %d\n", g_skipped);

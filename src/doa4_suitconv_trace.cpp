@@ -211,6 +211,7 @@ void Tracer::State(const std::vector<std::optional<core::Object>>& objects) {
           for (double x : t) h.D(x);
         }
         B(i + ".h4", h.bytes());
+        t_->H4(p->index, *p->h4);
       }
       if (p->bust) {  // ser((down list, up list)): each a list of per-vertex 3-tuples of floats
         Ser u;
