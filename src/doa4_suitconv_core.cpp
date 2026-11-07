@@ -5,10 +5,13 @@
 #include "doa4_suitconv_core.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
+#include <span>
 #include <tuple>
 
 #include "doa4_suitconv_be.h"
@@ -56,6 +59,44 @@ Weights Weights::Above(double threshold) const {
   for (const auto& [k, v] : items_)
     if (v > threshold) out.items_.emplace_back(k, v);
   return out;
+}
+
+// Python's repr() of the values an assert's tuple carries, closely enough to diagnose: ints in decimal, lists and
+// tuples with ", ", strings in single quotes, floats by their shortest round-trip digits.
+static std::string ReprD(double v) {
+  if (std::isnan(v)) return "nan";
+  if (std::isinf(v)) return v < 0 ? "-inf" : "inf";
+  char buf[64];
+  const auto r = std::to_chars(buf, buf + sizeof buf, v);
+  std::string s(buf, r.ptr);
+  if (s.find_first_of(".eE") == std::string::npos) s += ".0";
+  return s;
+}
+static std::string ReprI(int64_t v) { return std::to_string(v); }
+static std::string ReprInts(const std::vector<int64_t>& v) {
+  std::string s = "[";
+  for (size_t i = 0; i < v.size(); ++i) s += (i ? ", " : "") + ReprI(v[i]);
+  return s + "]";
+}
+static std::string ReprU32s(std::span<const uint32_t> v) {  // a tuple of ints
+  std::string s = "(";
+  for (size_t i = 0; i < v.size(); ++i) s += (i ? ", " : "") + ReprI(v[i]);
+  return s + (v.size() == 1 ? ",)" : ")");
+}
+static std::string ReprS(const std::string& v) { return "'" + v + "'"; }
+static std::string HexPy(uint64_t v) {  // hex(v)
+  char buf[24];
+  std::snprintf(buf, sizeof buf, "0x%llx", static_cast<unsigned long long>(v));
+  return buf;
+}
+static std::string HexBytesPy(std::span<const uint8_t> b) {  // bytes.hex()
+  static const char* d = "0123456789abcdef";
+  std::string s;
+  for (uint8_t x : b) {
+    s += d[x >> 4];
+    s += d[x & 15];
+  }
+  return s;
 }
 
 namespace {
@@ -339,7 +380,7 @@ std::vector<tpr::Node> BuildSkeleton(const Model& ref, int64_t main_max, const s
   std::sort(ids.begin(), ids.end());
   bool ok = static_cast<int64_t>(ids.size()) == main_max + 1;
   for (size_t i = 0; ok && i < ids.size(); ++i) ok = ids[i] == static_cast<int64_t>(i);
-  Assert(ok, "ids == list(range(main_max + 1))");
+  Assert(ok, ReprInts(ids));
   return nodes;
 }
 
@@ -466,12 +507,18 @@ std::optional<std::set<int64_t>> SelectCopy(const Model& suit, const Model& body
   std::vector<Scored> sorted = scored;
   std::stable_sort(sorted.begin(), sorted.end());
   const Scored& best = sorted[0];
-  Assert(best.s < 0.005, "('no suit copy fits the body', ...)");
+  auto repr_scored = [](const std::vector<Scored>& v, size_t n) {  // repr of v[:n]: (mean, root, ids) tuples
+    std::string t = "[";
+    for (size_t i = 0; i < v.size() && i < n; ++i)
+      t += (i ? ", (" : "(") + ReprD(v[i].s) + ", " + ReprI(v[i].r) + ", " + ReprInts(v[i].ids) + ")";
+    return t + "]";
+  };
+  Assert(best.s < 0.005, "('no suit copy fits the body', " + repr_scored(scored, 3) + ")");
   const Scored& second = sorted[1];
   if (best.s == 0.0 && second.s > 0.0) {
     // (report only)
   } else {
-    Assert(second.s > 0.01, "('two suit copies fit the body', ...)");
+    Assert(second.s > 0.01, "('two suit copies fit the body', " + repr_scored(sorted, 2) + ")");
   }
   return std::set<int64_t>(best.ids.begin(), best.ids.end());
 }
@@ -544,13 +591,26 @@ PyDict<int64_t, int64_t> SuitToBodyIds(const Model& suit, const Model& body,
     }
     std::stable_sort(cands.begin(), cands.end());
     if (cands.empty()) Fail("IndexError: list index out of range");
-    Assert(cands[0].first < 0.05, "('suit id without a body match', " + Str(sid) + ")");
-    Assert(cands.size() < 2 || cands[1].first > cands[0].first, "('ambiguous suit id', " + Str(sid) + ")");
+    std::string cands3 = "[";  // cands[:3]
+    for (size_t i = 0; i < cands.size() && i < 3; ++i)
+      cands3 += (i ? ", (" : "(") + ReprD(cands[i].first) + ", " + ReprI(cands[i].second) + ")";
+    cands3 += "]";
+    Assert(cands[0].first < 0.05, "('suit id without a body match', " + Str(sid) + ", " + cands3 + ")");
+    Assert(cands.size() < 2 || cands[1].first > cands[0].first,
+           "('ambiguous suit id', " + Str(sid) + ", " + cands3 + ")");
     out.Set(sid, cands[0].second);
   }
   std::set<int64_t> vals;
   for (const auto& [s, b] : out.items()) vals.insert(b);
-  Assert(vals.size() == out.size(), "('two suit ids matched one body id', ...)");
+  if (vals.size() != out.size()) {  // the dict out, in insertion order
+    std::string d = "{";
+    bool first = true;
+    for (const auto& [a, b] : out.items()) {
+      d += (first ? "" : ", ") + ReprI(a) + ": " + ReprI(b);
+      first = false;
+    }
+    Assert(false, "('two suit ids matched one body id', " + d + "})");
+  }
   return out;
 }
 
@@ -664,9 +724,10 @@ PassRec SourcePass(const Model& model, int64_t oid, size_t mesh_index) {
   const tpr::ObjInfo& inf = Idx(model.info, oid);
   const Bytes& recb = Idx(inf.infos, static_cast<int64_t>(mesh_index));
   const auto rec = Reader(recb).U32s(0, 8);
-  Assert(rec[0] == mesh_index, "('ObjInfo record names another mesh', " + Str(oid) + ")");
+  Assert(rec[0] == mesh_index, "('ObjInfo record names another mesh', " + Str(oid) + ", " + Str(int64_t(mesh_index)) +
+                                   ", " + Str(rec[0]) + ")");
   Assert((rec[2] == 2 || rec[2] == 4 || rec[2] == 8) && (rec[4] == 0 || rec[4] == 1),
-         "('unknown draw pass', " + Str(oid) + ")");
+         "('unknown draw pass', " + Str(oid) + ", " + Str(int64_t(mesh_index)) + ", " + ReprU32s(rec) + ")");
   return PassRec{static_cast<int64_t>(mesh_index), rec[2], rec[4]};
 }
 
@@ -693,7 +754,15 @@ Part* DecodePart(const Context& ctx, PartArena& arena, const Model& model, int64
     if (e.e == 0 && e.f == 0) pos_e.push_back(e);
     if (e.e == 1) bw_e.push_back(e);
   }
-  Assert(pos_e.size() == 1 && Dt(pos_e[0].c).name == "F3", "els");
+  if (!(pos_e.size() == 1 && Dt(pos_e[0].c).name == "F3")) {  // the message is els, a list of 7-tuples
+    std::string t = "[";
+    for (size_t i = 0; i < els.size(); ++i) {
+      const auto& e = els[i];
+      t += (i ? ", (" : "(") + Str(e.a) + ", " + Str(e.b) + ", " + Str(e.c) + ", " + Str(e.d) + ", " + Str(e.e) + ", " +
+           Str(e.f) + ", " + Str(e.g) + ")";
+    }
+    Assert(false, t + "]");
+  }
   for (const auto& e : els)
     if (!(e.e == 0 || e.e == 1 || e.e == 2) && !(e.e == 5 && e.f >= 3)) kept.push_back(e);
   for (const auto& e : kept) p->kept.push_back(KeptElem{e.c, e.e, e.f});
@@ -716,7 +785,7 @@ Part* DecodePart(const Context& ctx, PartArena& arena, const Model& model, int64
     for (int64_t b : pal)
       Assert(id_map->Contains(b) || b == 65535,
              "('palette names a bone outside the body match (an accessory bone inside a skinned object is not "
-             "supported)', ...)");
+             "supported)', " + ReprS(model.name + " obj " + Str(obj_id)) + ", " + ReprInts(pal) + ")");
   }
   const Vec3 own2 = model.joint.At(owner_doax2);
   const auto data = Sp(model.x.data);
@@ -827,11 +896,16 @@ Part* DecodePart(const Context& ctx, PartArena& arena, const Model& model, int64
     Bytes mm = m;
     if (nst == 4) {
       const auto stages = tpr::MeshTextures(m);
-      Assert(Idx(stages, 3).kind == 7, "stages");
+      if (Idx(stages, 3).kind != 7) {  // the message is stages, a list of (stage, kind, texture) tuples
+        std::string t = "[";
+        for (size_t i = 0; i < stages.size(); ++i)
+          t += (i ? ", (" : "(") + Str(stages[i].stage) + ", " + Str(stages[i].kind) + ", " + Str(stages[i].texture) + ")";
+        Assert(false, t + "]");
+      }
       if (mm.size() < 0x40) Fail("ValueError: mesh record shorter than its stages");
       mm.resize(mm.size() - 0x40);
       be::PackIntoU32(mm, 0x18, 3);
-      Assert(Idx(w, 12) == 0x3B, "hex(w[12])");
+      Assert(Idx(w, 12) == 0x3B, HexPy(Idx(w, 12)));
       be::PackIntoU32(mm, 0x30, 0x34);
     }
     p->meshes.push_back(tpr::MeshPatch(mm, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
@@ -1136,7 +1210,12 @@ std::vector<Part*> AttachAccessories(const Context& ctx, PartArena& arena, const
         best_c = static_cast<int64_t>(mc);
       }
     }
-    if (best_c < 0) Fail("IndexError: list index out of range");  // cand[-1] with no candidate under inf
+    // When every distance is NaN or infinite, nothing beats np.inf, so best stays (inf, -1, -1) and the Python carries
+    // on with cand[-1] and pts[-1] (the last candidate, the last point) and d = inf ** 0.5 = inf.
+    if (best_c < 0) {
+      best_a = static_cast<int64_t>(pts.size()) - 1;
+      best_c = static_cast<int64_t>(nC) - 1;
+    }
     const double d = std::sqrt(best_d);
     const auto& [cp, ci] = cand[static_cast<size_t>(best_c)];
     AttachInfo at;
@@ -1222,9 +1301,9 @@ BuiltObjects BuildObjects(Context& ctx, const std::vector<Part*>& parts, const s
       }
       pal = np;
       if (pal.size() == 1) pal = {pal[0], pal[0]};
-      Assert(pal.size() <= kMaxPalette, "('palette too long', " + Str(oid) + ")");
+      Assert(pal.size() <= kMaxPalette, "('palette too long', " + Str(oid) + ", " + ReprInts(pal) + ")");
       Assert(!ctx.owner_slot.count(oid) || (ctx.neck_id && oid == *ctx.neck_id) || ctx.allow_owner_slot,
-             "('owner-slot palette off the neck (R13)', " + Str(oid) + ")");
+             "('owner-slot palette off the neck (R13)', " + Str(oid) + ", " + ReprInts(pal) + ")");
     }
     std::vector<const std::vector<int64_t>*> natives;
     for (const Part* p : ps)
@@ -1322,7 +1401,8 @@ Encoded EncodeObjects(const Context& ctx, const std::vector<std::optional<Object
       const Part* p = ps[k];
       if (p->native) {
         const NativeDecl& nat = *p->native;
-        Assert(pal == nat.src_pal, "('verbatim decl needs its own palette', " + Str(oid) + ")");
+        Assert(pal == nat.src_pal, "('verbatim decl needs its own palette', " + Str(oid) + ", " + ReprInts(pal) + ", " +
+                                       ReprInts(nat.src_pal) + ")");
         std::vector<Vec3> pts;
         for (const Vert& v : p->verts) pts.push_back(Vec3{v.pos[0] - own[0], v.pos[1] - own[1], v.pos[2] - own[2]});
         const uint64_t vb_i = e.vbs.size(), ib_i = e.ibs.size();
@@ -1516,7 +1596,9 @@ std::vector<TexSpan> TexSpans(const Model& model) {
         found = true;
       }
     if (!found) Fail("ValueError: min() arg is an empty sequence");
-    Assert(mip == 0 || (base < mip && mip < nxt), "('texture mip chain not inside its span', ...)");
+    Assert(mip == 0 || (base < mip && mip < nxt),
+           "('texture mip chain not inside its span', " + ReprS(HexPy(base)) + ", " + ReprS(HexPy(mip)) + ", " +
+               ReprS(HexPy(nxt)) + ")");
     TexSpan t;
     t.desc = b;
     const uint64_t e = std::min<uint64_t>(nxt, model.x.data.size());
@@ -1538,10 +1620,10 @@ const uint8_t kDoa4IbHead[12] = {0, 2, 0, 1, 0, 0, 0, 0, 0xff, 0xff, 0, 0};
 
 Bytes Doa4TexDesc(std::span<const uint8_t> desc) {
   if (desc.size() == 0x28) {
-    Assert(std::memcmp(desc.data(), kDoa4TxHead, 16) == 0, "desc[:16].hex()");
+    Assert(std::memcmp(desc.data(), kDoa4TxHead, 16) == 0, HexBytesPy(desc.first(16)));
     return Bytes(desc.begin(), desc.end());
   }
-  Assert(desc.size() == 0x34 && std::memcmp(desc.data(), kDoax2TxHead, 28) == 0, "desc.hex()");
+  Assert(desc.size() == 0x34 && std::memcmp(desc.data(), kDoax2TxHead, 28) == 0, HexBytesPy(desc));
   Bytes out(kDoa4TxHead, kDoa4TxHead + 16);
   out.insert(out.end(), desc.begin() + 28, desc.end());
   return out;
@@ -1660,7 +1742,8 @@ Bytes BuildCat(const Model& ref, const Model& body, const std::vector<int>& sect
         found = true;
       }
     if (!found) Fail("ValueError: min() arg is an empty sequence");
-    Assert(out.size() <= t2_end, "('our type-2 map is longer than the reference one', ...)");
+    Assert(out.size() <= t2_end, "('our type-2 map is longer than the reference one', " + Str(int64_t(out.size())) + ", " +
+                                     Str(int64_t(t2_end)) + ")");
     out.resize(t2_end, 0);
     const auto s = Reader(rc).Slice(std::min<uint64_t>(t2_end, rc.size()), std::min<uint64_t>(t5_end, rc.size()));
     out.insert(out.end(), s.begin(), s.end());
@@ -1690,7 +1773,8 @@ Bytes BuildCat(const Model& ref, const Model& body, const std::vector<int>& sect
     uint64_t nxt = U32(rc, 4);
     for (const auto& [t, v] : tpr::CatDir(rc))
       if (v > o && v < nxt) nxt = v;
-    Assert(nxt >= o + 0x18, "('reference type-6 block shorter than 24 bytes', ...)");
+    Assert(nxt >= o + 0x18, "('reference type-6 block shorter than 24 bytes', " + Str(int64_t(o)) + ", " +
+                                Str(int64_t(nxt)) + ")");
     const auto s = Reader(rc).Slice(std::min<uint64_t>(o, rc.size()), std::min<uint64_t>(o + 0x18, rc.size()));
     put(6, Bytes(s.begin(), s.end()));
   }

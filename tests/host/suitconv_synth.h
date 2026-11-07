@@ -12,6 +12,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -409,13 +410,15 @@ inline std::vector<SObj> BodyObjects() {
 
 inline std::vector<SNode> SuitNodes() { return {{2, 0, 0, 0}, {0, 0, 1.2f, 0}, {40, 0, 0.95f, 0}, {50, 0, 1.0f, -0.3f}}; }
 
-inline std::vector<SObj> SuitObjects() {
+// nan_accessory: the accessory's vertices have NaN x, so every contact distance is NaN (attach_accessories' cand[-1] path).
+inline std::vector<SObj> SuitObjects(bool nan_accessory = false) {
   std::vector<SObj> o;
   // two vertices on the body's pelvis vertices 0 and 1 with other weights (rule S1 gives them the body's)
   o.push_back({40, {40, 0}, {{{{-0.06f, 0, 0.12f, 0.8f, 0.2f}, {0.06f, 0, 0.12f, 0.5f, 0.5f},
                               {0, 0.04f, 0.13f, 0.6f, 0.4f}},
                              true}}});
-  o.push_back({50, {50}, {{{{0, 0, 0, 0, 0}, {0.02f, 0, 0, 0, 0}, {0, 0.02f, 0, 0, 0}}}}});
+  const float nx = nan_accessory ? std::numeric_limits<float>::quiet_NaN() : 0.0f;
+  o.push_back({50, {50}, {{{{nx, 0, 0, 0, 0}, {nan_accessory ? nx : 0.02f, 0, 0, 0, 0}, {nx, 0.02f, 0, 0, 0}}}}});
   return o;
 }
 
@@ -456,11 +459,11 @@ struct Inputs {
   std::vector<uint8_t> body_tpr, body_cat, suit_tpr, suit_cat, ref_tpr, ref_cat;
 };
 
-inline Inputs MakeInputs() {
+inline Inputs MakeInputs(bool nan_accessory = false) {
   Inputs in;
   in.body_tpr = BuildModel(BodyNodes(), BodyObjects(), 41);
   in.body_cat = BuildCat({{4, Type4({0x101010, 0x202020, 0x303030}, 0x11)}});
-  in.suit_tpr = BuildModel(SuitNodes(), SuitObjects(), 51);
+  in.suit_tpr = BuildModel(SuitNodes(), SuitObjects(nan_accessory), 51);
   in.suit_cat = BuildCat({{4, Type4({0x404040}, 0x22)}});
   std::vector<SNode> rn;
   const auto body = BodyNodes();

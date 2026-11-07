@@ -52,7 +52,8 @@ const GirlRecipe* FindGirl(std::string_view girl);
 
 // Reads (and re-checks) the entries the suit needs: the body pair from chr.afs at body_index / +1, the suit pair from
 // its archive at tpr_index / +1, the reference and hand pairs from the girl, the waist pair from WaistTemplate, and the
-// gen pair (GenDonor, GenBend) only when the suit has gen_cloth. Throws InputChanged as InputSet::Read does.
+// gen pair (GenDonor, GenBend) only when the suit has gen_cloth. Throws InputChanged as InputSet::Read does, and
+// ConvertError when the recipe tables have no disc entry for an index the suit or girl names.
 SuitInputs ReadSuitInputs(InputSet& set, const SuitRecipe& suit, const GirlRecipe& girl);
 
 }  // namespace doa4::suitconv

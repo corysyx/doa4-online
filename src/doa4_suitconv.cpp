@@ -190,7 +190,7 @@ void RunL0(Job& job) {
   }
   stage("accessories");
   const std::vector<int64_t> acc = c::AccessoryIds(suit, body, keep);
-  tr.K("acc", Join(acc));
+  if (tr.on()) tr.K("acc", Join(acc));
   const std::set<int64_t> accset(acc.begin(), acc.end());
   stage("smap");
   const c::IdMap smap = c::SuitToBodyIds(suit, body, keep, accset);
@@ -226,7 +226,7 @@ void RunL0(Job& job) {
     std::vector<int64_t> head_ids;
     for (int64_t code : {0x9001, 0x9011, 0x9015})
       if (const int64_t* id = chan2id.Find(code)) head_ids.push_back(*id);
-    c::Assert(!head_ids.empty() && chan2id.Contains(0x9001), "('--carry-head: the reference has no head node')");
+    c::Assert(!head_ids.empty() && chan2id.Contains(0x9001), "--carry-head: the reference has no head node");
     std::vector<int64_t> carry;
     for (int64_t h : head_ids)
       if (std::find(carry.begin(), carry.end(), h) == carry.end()) carry.push_back(h);
@@ -385,7 +385,7 @@ namespace {
 EntryRef FindDisc(ArcId arc, uint32_t index) {
   for (const EntryRef& e : DiscEntries())
     if (e.arc == arc && e.index == index) return e;
-  throw std::runtime_error("the recipe tables have no disc entry " + std::string(ArcName(arc)) + " " +
+  throw ConvertError("the recipe tables have no disc entry " + std::string(ArcName(arc)) + " " +
                            std::to_string(index));
 }
 }  // namespace

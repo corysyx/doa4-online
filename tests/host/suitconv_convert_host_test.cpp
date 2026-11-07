@@ -168,6 +168,10 @@ static std::string WhereInTpr(const std::vector<uint8_t>& file, size_t off) {
   try {
     const tp::Xpr x = tp::Xpr::Parse(Sp(file));
     char buf[512];
+    if (!x.hs) {  // the parser read no header size: say what is known
+      std::snprintf(buf, sizeof buf, "(expected .tpr: header size unknown, %zu resources, offset 0x%zx)", x.res.size(), off);
+      return buf;
+    }
     const size_t data0 = 12 + *x.hs;
     if (off < 16 + 16 * x.res.size()) return "XPR2 header / resource table";
     if (off < data0) {
@@ -419,6 +423,28 @@ static void TestSyntheticBodyConverts() {
 // level_gates, attach_frame
 // ---------------------------------------------------------------------------------------------------------------
 
+// attach_accessories: when every contact distance is NaN nothing beats np.inf, so the Python keeps best = (inf, -1, -1)
+// and carries on with cand[-1] and pts[-1] (it does not fail). The synthetic accessory has NaN x on every vertex.
+static void TestAttachNanFallback() {
+  Group("attach_nan_fallback");
+  const auto s = synth::conv::MakeInputs(true);
+  const SuitInputs in = SynthInputs(s);
+  ConvertFailure f;
+  MemTrace t;
+  const auto r = ConvertSuit(SynthSuit(), SynthGirl(), in, Level::kL0, nullptr, &t, &f);
+  CKF(r.has_value(), "failed at %s: %s", f.stage.c_str(), f.what.c_str());
+  int attach_lines = 0, nan_shift = 0;
+  for (const auto& l : t.lines)
+    if (l.find(".attach owner=") != std::string::npos) {
+      ++attach_lines;
+      // d = inf > far, so rule A1b shifts by (contact - NaN point): NaN components (0x7ff8... when the NaN is quiet)
+      if (l.find("shift=") != std::string::npos && l.find("7ff8000000000000", l.find("shift=")) != std::string::npos)
+        ++nan_shift;
+    }
+  CKF(attach_lines >= 1 && nan_shift >= 1, "%d attach lines, %d with a NaN shift", attach_lines, nan_shift);
+  std::printf("attach_nan_fallback: converted; %d attach lines, %d with a NaN shift\n", attach_lines, nan_shift);
+}
+
 static void TestLevelGates() {
   Group("level_gates");
   const auto s = synth::conv::MakeInputs();
@@ -666,6 +692,7 @@ static void RunGroup(void (*fn)(), const char* name) {
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunGroup(TestSyntheticBodyConverts, "synthetic_body_converts");
+  RunGroup(TestAttachNanFallback, "attach_nan_fallback");
   RunGroup(TestLevelGates, "level_gates");
   RunGroup(TestAttachFrame, "attach_frame");
   RunGroup(TestOracleVayOnK, "oracle_L0_vay_on_k");
