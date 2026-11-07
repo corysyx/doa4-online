@@ -141,4 +141,17 @@ std::vector<double> NpLinspace(double start, double stop, int num);
 // np.radians(x) (numpy/core/src/npymath/npy_math_internal.h.src npy_deg2rad, lines 445-455): x * (pi / 180).
 double NpRadians(double x);
 
+// a*b + c rounded once (correctly rounded under round-to-nearest, no FTZ / DAZ), computed without an FMA instruction
+// or the C runtime: Dekker's exact product, then Boldo and Melquiond's correctly rounded sum with a round-to-odd
+// middle step. Valid for |a|, |b| <= 2^500 and |a*b| >= 2^-400, where the split and the error terms neither overflow
+// nor underflow. Two cases are NOT fused and return the plain a*b + c: (1) a result that is not finite, or a zero
+// operand a, b or c (one rounding already, so the plain value is the correctly rounded one); (2) an operand or product
+// outside the range above (|a| or |b| > 2^500, or |a*b| < 2^-400), where the plain value may differ from the fused one
+// by a rounding. The converter's operands never reach the range limits.
+double SoftFma(double a, double b, double c);
+
+// Sequential acc = fma(x[i], y[i], acc) from acc = 0.0 (SoftFma): numpy's 1-D dot / np.linalg.norm via OpenBLAS ddot
+// on the oracle PC (Cooperlake kernel, census-matched for n = 3).
+double NpDotFused(const double* x, const double* y, size_t n);
+
 }  // namespace doa4::suitconv::num

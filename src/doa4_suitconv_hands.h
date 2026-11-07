@@ -20,16 +20,6 @@
 
 namespace doa4::suitconv::hands {
 
-// a*b + c rounded once, computed without an FMA instruction or the C runtime (Dekker's product, then Boldo and
-// Melquiond's correctly rounded sum with a round-to-odd middle step). The recipe's np.linalg.norm of a 3-vector is
-// OpenBLAS's ddot, which fuses each multiply-add on this PC's kernel; this gives the same bits on every PC. Finite
-// operands without overflow or underflow in the product; anything else returns a*b + c.
-double SoftFma(double a, double b, double c);
-
-// float(np.linalg.norm(v)) of a 3-vector: sqrt of the dot product v . v taken as acc = 0, then acc = fma(v[i], v[i], acc)
-// in index order (census: equal to numpy 1.26.3 on this PC for 20,000 of 20,000 vectors [0, a, b]).
-double Norm3(const core::Vec3& v);
-
 // One coordinate of the weld key in _tuck_open_edge: np.round(x / 0.0002).astype(int), numpy's rint (half to even), then
 // the int32 truncation of this Windows numpy (a NaN, infinity or value beyond int32 gives -2147483648).
 int32_t WeldCoord(double x);

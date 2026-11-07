@@ -854,4 +854,58 @@ double NpRadians(double x) {
   return x * kDeg2Rad;
 }
 
+namespace {
+
+void TwoSum(double a, double b, double& s, double& e) {
+  s = a + b;
+  const double bb = s - a;
+  e = (a - (s - bb)) + (b - bb);
+}
+
+void Split(double a, double& hi, double& lo) {
+  const double c = 134217729.0 * a;  // 2^27 + 1
+  hi = c - (c - a);
+  lo = a - hi;
+}
+
+// p + e = a * b exactly (Dekker), for operands that neither overflow in the split nor underflow in the error term.
+void TwoProd(double a, double b, double& p, double& e) {
+  p = a * b;
+  double ah, al, bh, bl;
+  Split(a, ah, al);
+  Split(b, bh, bl);
+  e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+}
+
+}  // namespace
+
+double SoftFma(double a, double b, double c) {
+  const double plain = a * b + c;
+  if (!std::isfinite(plain) || a == 0.0 || b == 0.0 || c == 0.0) return plain;  // a zero operand: one rounding already
+  const double big = 0x1p+500, small = 0x1p-400;
+  if (std::fabs(a) > big || std::fabs(b) > big || std::fabs(a * b) < small) return plain;
+  double uh, ul;
+  TwoProd(a, b, uh, ul);
+  double th, tl;
+  TwoSum(c, uh, th, tl);
+  // v = RO(tl + ul): round to odd. The exact sum is s + t; if t != 0 and s is even, the odd neighbour on t's side.
+  double s, t;
+  TwoSum(tl, ul, s, t);
+  if (t != 0.0 && s != 0.0) {
+    uint64_t bits = std::bit_cast<uint64_t>(s);
+    if ((bits & 1) == 0) {
+      const bool away = (t > 0.0) == (s > 0.0);  // t pushes the magnitude of s up
+      bits = away ? bits + 1 : bits - 1;
+      s = std::bit_cast<double>(bits);
+    }
+  }
+  return th + s;
+}
+
+double NpDotFused(const double* x, const double* y, size_t n) {
+  double acc = 0.0;
+  for (size_t i = 0; i < n; ++i) acc = SoftFma(x[i], y[i], acc);
+  return acc;
+}
+
 }  // namespace doa4::suitconv::num

@@ -27,59 +27,9 @@ using core::Assert;
 using core::Fail;
 using core::Vec3;
 
-// ------------------------------------------------------------------ the fused multiply-add and np.linalg.norm
-namespace {
-
-void TwoSum(double a, double b, double& s, double& e) {
-  s = a + b;
-  const double bb = s - a;
-  e = (a - (s - bb)) + (b - bb);
-}
-
-void Split(double a, double& hi, double& lo) {
-  const double c = 134217729.0 * a;  // 2^27 + 1
-  hi = c - (c - a);
-  lo = a - hi;
-}
-
-// p + e = a * b exactly (Dekker), for operands that neither overflow in the split nor underflow in the error term.
-void TwoProd(double a, double b, double& p, double& e) {
-  p = a * b;
-  double ah, al, bh, bl;
-  Split(a, ah, al);
-  Split(b, bh, bl);
-  e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
-}
-
-}  // namespace
-
-double SoftFma(double a, double b, double c) {
-  const double plain = a * b + c;
-  if (!std::isfinite(plain) || a == 0.0 || b == 0.0 || c == 0.0) return plain;  // a zero operand: one rounding already
-  const double big = 0x1p+500, small = 0x1p-400;
-  if (std::fabs(a) > big || std::fabs(b) > big || std::fabs(a * b) < small) return plain;
-  double uh, ul;
-  TwoProd(a, b, uh, ul);
-  double th, tl;
-  TwoSum(c, uh, th, tl);
-  // v = RO(tl + ul): round to odd. The exact sum is s + t; if t != 0 and s is even, the odd neighbour on t's side.
-  double s, t;
-  TwoSum(tl, ul, s, t);
-  if (t != 0.0 && s != 0.0) {
-    uint64_t bits = std::bit_cast<uint64_t>(s);
-    if ((bits & 1) == 0) {
-      const bool away = (t > 0.0) == (s > 0.0);  // t pushes the magnitude of s up
-      bits = away ? bits + 1 : bits - 1;
-      s = std::bit_cast<double>(bits);
-    }
-  }
-  return th + s;
-}
-
-double Norm3(const Vec3& v) {
-  double acc = 0.0;
-  for (int i = 0; i < 3; ++i) acc = SoftFma(v[i], v[i], acc);
-  return std::sqrt(acc);
+// float(np.linalg.norm(v)) of a 3-vector: sqrt of the dot product v . v (num::NpDotFused, census-matched for n = 3).
+static double Norm3(const Vec3& v) {
+  return std::sqrt(num::NpDotFused(v.data(), v.data(), 3));
 }
 
 // ndarray.astype(int) of an already integral float64 on this Windows numpy: an int32 (C long); NaN and values outside
@@ -354,6 +304,7 @@ std::vector<std::pair<int64_t, std::vector<uint8_t>>> BuildHands(
       if (k >= geo.decls.size()) Fail("IndexError: list index out of range");
       const tpr::Decl& dc = geo.decls[k];
       bool pos_f3 = false, nrm_f3 = false;
+      std::string names = "[";  // names = [(e[4], e[1], DT[e[2]][0]) for e in dc.elems[:-1]], as Python's repr prints it
       for (size_t i = 0; i + 1 < dc.elems.size(); ++i) {  // dc.elems[:-1]
         const tpr::DeclElem& e = dc.elems[i];
         const tpr::DtEntry* dt = tpr::DtFind(e.c);
@@ -361,8 +312,11 @@ std::vector<std::pair<int64_t, std::vector<uint8_t>>> BuildHands(
         const bool f3 = dt->name == "F3";
         if (e.e == 0 && e.b == 0 && f3) pos_f3 = true;
         if (e.e == 3 && e.b == 12 && f3) nrm_f3 = true;
+        if (i) names += ", ";
+        names += "(" + Repr(e.e) + ", " + Repr(e.b) + ", '" + std::string(dt->name) + "')";
       }
-      Assert(pos_f3 && nrm_f3, "('hand decl: position and normal are not float at 0 and 12', [...])");
+      names += "]";
+      Assert(pos_f3 && nrm_f3, "('hand decl: position and normal are not float at 0 and 12', " + names + ")");
     }
     // the frames can differ by a fitted translation: take it from the data
     // near = np.array([P[np.argmin(((P - q) ** 2).sum(1))] - q for q in rest[::8]]); delta = np.median(near, axis=0)
@@ -441,6 +395,9 @@ std::vector<std::pair<int64_t, std::vector<uint8_t>>> BuildHands(
         for (int c = 3; c < 6; ++c) AppendF32(mpp, x[c]);
       }
     }
+    // moved = max(np.abs(np.array(p[0::6]) - rest[:, 0]).max() for p in poses) is for the report only, but max() of no
+    // poses raises, after the channel's bytes are built
+    if (mr.poses.empty()) Fail("ValueError: max() arg is an empty sequence");
     out.emplace_back(index, std::move(mpp));
   }
   return out;
