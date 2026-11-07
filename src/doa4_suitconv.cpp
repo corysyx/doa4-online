@@ -11,6 +11,7 @@
 #include <set>
 #include <stdexcept>
 
+#include "doa4_suitconv_bust.h"
 #include "doa4_suitconv_catx.h"
 #include "doa4_suitconv_core.h"
 #include "doa4_suitconv_inputs.h"
@@ -47,16 +48,19 @@ struct Job {
   const SuitInputs* in;
   const CancelToken* cancel;
   Trace* trace;
+  Level level;
   std::string stage;
   std::optional<SuitOutput> out;
 };
 
-// The L0 run of convert.main (lines 1315-1563) with the level's arguments: --neck-weights owner --expand-formats
-// --mesh-passes, --leg-midline (Lei Fang), --carry-head (Tina), --cat 2,4,ref4,6, and no other option.
-void RunL0(Job& job) {
+// The run of convert.main (lines 1315-1563) with the level's arguments: --neck-weights owner --expand-formats
+// --mesh-passes, --leg-midline (Lei Fang), --carry-head (Tina), --cat 2,4,ref4,6, and at L1 and above --bust-down /
+// --bust-up (the suit's strengths) and --strap-fade (when non-zero). No other option is ported yet.
+void RunConvert(Job& job) {
   const SuitRecipe& sr = *job.suit;
   const GirlRecipe& gr = *job.girl;
   const SuitInputs& in = *job.in;
+  const bool bust_on = job.level >= Level::kL1 && sr.bust_down != 0.0;  // `if a.bust_down` (a float: 0.0 is false)
   trace::Tracer tr(job.trace);
   auto step = [&](const char* name) {
     if (job.cancel && job.cancel->cancelled()) throw Cancelled{};
@@ -293,6 +297,25 @@ void RunL0(Job& job) {
     tr.B("bind4", s.bytes());
   }
 
+  int64_t chest = -1;
+  if (bust_on) {  // line 1486; cloth_objs is empty (no --port-cloth before M1), cloth_model=suit
+    stage("bust");
+    chest = bust::PrepBust(bo.objects, parts, chan2id, sr.bust_down, sr.bust_up, {}, &suit, sr.strap_fade);
+    if (tr.on()) {
+      tr.K("chest", std::to_string(chest));
+      for (const c::Part* p : bo.objects[static_cast<size_t>(chest)]->ps) {
+        if (!p->bust) continue;
+        for (size_t j = 0; j < p->bust->first.size(); ++j) {
+          std::string l = "D " + std::to_string(p->index) + " " + std::to_string(j);
+          for (const auto* side : {&p->bust->first, &p->bust->second})
+            for (double x : (*side)[j]) l += " " + trace::Hx(x);
+          tr.Line(l);
+        }
+      }
+      tr.State(bo.objects);
+    }
+  }
+
   ctx.mesh_passes = true;  // MESH_PASSES = bool(a.mesh_passes) (line 1510)
   stage("encode");
   c::Encoded enc = c::EncodeObjects(ctx, bo.objects, bo.bind4);
@@ -302,6 +325,17 @@ void RunL0(Job& job) {
     tr.Geos(enc.geos, &enc.infos);
     for (size_t i = 0; i < enc.vbs.size(); ++i) tr.B("vb" + std::to_string(i), enc.vbs[i]);
     for (size_t i = 0; i < enc.ibs.size(); ++i) tr.B("ib" + std::to_string(i), enc.ibs[i]);
+  }
+
+  std::optional<std::vector<uint8_t>> mpv;
+  if (bust_on) {
+    stage("peak");  // line 1518
+    const auto peak = bust::BustPeak(bo.objects, chest, bo.bind4);
+    if (tr.on()) tr.K("peak", peak ? trace::Hx((*peak)[0]) + " " + trace::Hx((*peak)[1]) : "none");
+    stage("mpv");  // line 1532: full_down = 1.0 / a.bust_down, full_up = 1.0 / a.bust_up; no hand channels, no pins at L1
+    mpv = bust::BuildMpv(bo.objects, enc.geos, bo.bind4, chest, 0.0005, c::PyDiv(1.0, sr.bust_down),
+                         c::PyDiv(1.0, sr.bust_up));
+    tr.B("mpv", *mpv);
   }
 
   stage("tpr");
@@ -324,12 +358,12 @@ void RunL0(Job& job) {
   stage("cat");
   const c::Bytes base = c::BuildCat(ref, body, {2, 4, 6}, kept_ids, {"ref4"});
   tr.B("cat_base", base);
-  out.cat = catx::Attach(base, nullptr, nullptr, nullptr, nullptr);
+  out.cat = catx::Attach(base, mpv ? &*mpv : nullptr, nullptr, nullptr, nullptr);
   tr.B("cat", out.cat);
   job.out = std::move(out);
 }
 
-void RunJob(void* p) { RunL0(*static_cast<Job*>(p)); }
+void RunJob(void* p) { RunConvert(*static_cast<Job*>(p)); }
 
 std::optional<SuitOutput> Failed(ConvertFailure* failure, std::string stage, std::string what) {
   if (failure) *failure = ConvertFailure{std::move(stage), std::move(what)};
@@ -353,9 +387,8 @@ std::optional<SuitOutput> ConvertSuit(const SuitRecipe& suit, const GirlRecipe& 
   }
   if (level >= Level::kL3) return Failed(failure, "level", "not ported yet: hands");  // gate: hands (L3)
   if (level >= Level::kL2) return Failed(failure, "level", "not ported yet: waist");  // gate: waist (L2)
-  if (level >= Level::kL1) return Failed(failure, "level", "not ported yet: bust");   // gate: bust (L1)
 
-  Job job{&suit, &girl, &in, cancel, trace, "start", std::nullopt};
+  Job job{&suit, &girl, &in, cancel, trace, level, "start", std::nullopt};
   try {
     num::RunUnderConvertEnv(&RunJob, &job);
   } catch (const Cancelled&) {

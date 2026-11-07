@@ -14,11 +14,13 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "../../src/doa4_afs_overlay.h"
 #include "../../src/doa4_gamefiles.h"
+#include "../../src/doa4_suitconv_core.h"
 #include "../../src/doa4_suitconv_recipe.h"
 #include "../../src/doa4_suitconv_tpr.h"
 #include "xdvdfs_fixtures.h"
@@ -484,6 +486,71 @@ inline Inputs MakeInputs(bool nan_accessory = false) {
   in.ref_tpr = BuildModel(rn, {}, 0);
   in.ref_cat = BuildCat({{2, t2}, {4, Type4({0x202020, 0x505050}, 0x33)}, {6, t6}});
   return in;
+}
+
+// A chest object for build_mpv, from seeded data only: object 3 holds two morphing parts (decls 0 and 1, strides 32 and
+// 20), the first with 7 vertices and the second with 5. Offsets are in metres, down mostly negative in y and up mostly
+// positive. The chest bone is at (0.5, 1.25, -0.125). Two vertices carry offsets under the 0.0005 threshold: vertex 2
+// of part 0 on both targets (dropped) and vertex 4 of part 0 on the down target only (kept, because the up target
+// is large: the threshold is on the larger of the two lengths).
+struct Chest {
+  int64_t chest = 3;
+  std::vector<std::optional<doa4::suitconv::core::Object>> objects;
+  std::vector<tp::ObjGeo> geos;
+  doa4::suitconv::core::PyDict<int64_t, doa4::suitconv::core::Vec3> bind4;
+  std::vector<std::unique_ptr<doa4::suitconv::core::Part>> parts;
+  doa4::suitconv::core::Vec3 own{0.5, 1.25, -0.125};
+  uint32_t strides[2] = {32, 20};
+  int kept = 0;  // vertices at or over the threshold
+};
+
+inline Chest MakeChest() {
+  namespace core = doa4::suitconv::core;
+  Chest c;
+  c.objects.resize(4);
+  c.geos.resize(4);
+  c.bind4.Set(3, c.own);
+  core::Object ob;
+  const int counts[2] = {7, 5};
+  uint32_t x = 99;
+  auto next = [&](double scale) {
+    x = x * 1664525u + 1013904223u;
+    return scale * ((x >> 8) / double(1 << 24) + 0.25);
+  };
+  for (int k = 0; k < 2; ++k) {
+    c.parts.push_back(std::make_unique<core::Part>());
+    core::Part* p = c.parts.back().get();
+    p->index = k;
+    p->owner = 3;
+    std::vector<core::Vec3> dn, up;
+    for (int j = 0; j < counts[k]; ++j) {
+      core::Vert v;
+      v.pos = {c.own[0] + next(0.1) - 0.1, c.own[1] + next(0.1), c.own[2] + next(0.1) + 0.05};
+      p->verts.push_back(v);
+      dn.push_back({next(0.004), -next(0.02), next(0.004)});
+      up.push_back({next(0.004), next(0.02), next(0.004)});
+    }
+    if (k == 0) {
+      dn[2] = {0.0001, -0.0001, 0.0001};
+      up[2] = {0.0001, 0.0001, -0.0001};
+      dn[4] = {0.0001, -0.0001, 0.0001};  // up[4] stays large
+    }
+    p->bust = std::make_pair(dn, up);
+    ob.ps.push_back(p);
+    tp::Decl d;
+    d.head = {0, 1, 0, 0, 1, uint32_t(counts[k]), 0, 0, 1, 0, 0, 0};
+    std::vector<uint8_t> tail;
+    PutBe32(tail, 0);
+    PutBe32(tail, c.strides[k]);
+    PutBe32(tail, 0);
+    PutBe32(tail, 0);
+    d.tails = {tail};
+    d.elems = {tp::DeclElem{0, 0, 0x2A23B9, 0, 0, 0, 0}};
+    c.geos[3].decls.push_back(d);
+  }
+  c.objects[3] = ob;
+  c.kept = 7 + 5 - 1;
+  return c;
 }
 
 }  // namespace conv

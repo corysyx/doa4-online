@@ -5,18 +5,22 @@
 // Groups: synthetic_body_converts (synthetic models from suitconv_synth.h: the output parses with Task 4's parser, every
 // skinned object's palette starts with its owner's parent, two runs give equal bytes and equal traces), level_gates
 // (the levels not ported yet fail with ConvertFailure{"level", ...}; a cancelled token fails with "cancelled"),
-// attach_frame (physics_port.attach at L0 and its not-ported branches); and three groups gated by environment variables
+// attach_frame (physics_port.attach at L0, with an MPV, and its not-ported branches), mpv_header_marks (a synthetic chest
+// object through build_mpv, read back by doa4_suits_bust.h's reader), l1_synthetic (the synthetic suit has no morph
+// decl, so L1 fails the way the Python does); and five groups gated by environment variables
 // (each prints "<group>: SKIPPED (<VAR> unset)" when a variable is unset):
 //   oracle_L0_vay_on_k  DOA4_SUITCONV_DISC, DOA4_SUITCONV_GAME_DIR, DOA4_SUITCONV_LEVELS_DIR: C++ L0 equals the Python's
 //                       L0 for vay_on_k, both files (with DOA4_SUITCONV_TRACE_DIR also the trace)
 //   oracle_L0_all       the same three: both files, all 34 suits; prints each suit's conversion time (one thread)
 //   trace_L0_all        the three and DOA4_SUITCONV_TRACE_DIR: the C++ trace equals the Python's line for line, all 34
+//   oracle_L1_all, trace_L1_all   the same two at level L1 (the bust channel: prep_bust, bust_peak, build_mpv)
 // On a difference the oracle groups print the first differing offset and what is there (WhereInTpr / WhereInCat:
 // object, decl, vertex and field; or the .cat section and record) and, with traces, the first differing trace line,
 // both lines and the last S line before it. No byte of any game file is stored: the real sections read the player's
 // files at test time. Last lines: "skipped sections: K", then "PASSED: N checks, 0 failures" or "FAILED: ...".
 
 #include "../../src/doa4_suitconv.h"
+#include "../../src/doa4_suitconv_bust.h"
 #include "../../src/doa4_suitconv_catx.h"
 #include "../../src/doa4_suitconv_core.h"
 #include "../../src/doa4_suitconv_inputs.h"
@@ -24,10 +28,14 @@
 #include "../../src/doa4_suitconv_recipe.h"
 #include "../../src/doa4_suitconv_tpr.h"
 #include "../../src/doa4_suitconv_trace.h"
+#include "../../src/doa4_suits_bust.h"
 #include "suitconv_synth.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -45,6 +53,8 @@
 using namespace doa4::suitconv;
 namespace fs = std::filesystem;
 namespace tp = doa4::suitconv::tpr;
+namespace cb = doa4::suitconv::bust;
+namespace rdr = doa4::suits::bust;  // the game side reader of the MPV marks (an independent consumer)
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -455,8 +465,8 @@ static void TestLevelGates() {
     Level level;
     const char* what;
   };
-  for (const Case& k : {Case{Level::kL1, "not ported yet: bust"}, Case{Level::kL2, "not ported yet: waist"},
-                        Case{Level::kL3, "not ported yet: hands"}, Case{Level::kM1, "not ported yet: hands"}}) {
+  for (const Case& k : {Case{Level::kL2, "not ported yet: waist"}, Case{Level::kL3, "not ported yet: hands"},
+                        Case{Level::kM1, "not ported yet: hands"}}) {
     ConvertFailure f;
     const auto r = ConvertSuit(suit, girl, in, k.level, nullptr, nullptr, &f);
     CKF(!r && f.stage == "level" && f.what == k.what, "level %d: %s / %s", int(k.level), f.stage.c_str(), f.what.c_str());
@@ -508,13 +518,379 @@ static void TestAttachFrame() {
     }
     return false;
   };
-  CK(throws([&] { catx::Attach(cat, &one, nullptr, nullptr, nullptr); }, "MPV"));
+  {  // the MPV branch: appended at the next 16-byte boundary, +0xC points at it, the end is aligned again
+    const auto with = catx::Attach(cat, &one, nullptr, nullptr, nullptr);
+    CK(with.size() == 64);
+    CK(with[48] == 1 && with[49] == 0 && with[63] == 0);
+    CK((uint32_t(with[0xC]) << 24 | uint32_t(with[0xD]) << 16 | uint32_t(with[0xE]) << 8 | with[0xF]) == 48);
+    bool same = true;
+    for (size_t i = 0; i < cat.size(); ++i)
+      if ((i < 0xC || i > 0xF) && with[i] != cat[i]) same = false;
+    CK(same);
+    // a 16-byte multiple needs no padding before the block
+    std::vector<uint8_t> c32(32, 9);
+    const auto w2 = catx::Attach(c32, &one, nullptr, nullptr, nullptr);
+    CK(w2.size() == 48 && w2[32] == 1 && w2[0xF] == 32);
+  }
   CK(throws([&] { catx::Attach(cat, nullptr, &one, nullptr, nullptr); }, "MULTI_CLOTH"));
+  CK(throws([&] { catx::Attach(cat, &one, &one, nullptr, nullptr); }, "pin rows"));
   CK(throws([&] { catx::Attach(cat, nullptr, nullptr, &empty, nullptr); }, "donor"));
   CK(throws([&] { catx::Attach(cat, nullptr, nullptr, nullptr, &one); }, "head physics"));
   std::vector<uint8_t> b(17, 1);
   CK(catx::Al(b, 16) == 32);
   CK(catx::Al(b, 16) == 32);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// mpv_header_marks, l1_synthetic
+// ---------------------------------------------------------------------------------------------------------------
+
+// Guest memory for the game side reader: big-endian words over a byte array, addresses start at kBase.
+namespace {
+constexpr uint32_t kBase = 0x40000000;
+struct MpvMem {
+  std::vector<uint8_t> bytes;
+  uint32_t ReadU32(uint32_t a) const {
+    const uint8_t* p = &bytes.at(a - kBase);
+    return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+  }
+  void WriteU32(uint32_t a, uint32_t v) {
+    uint8_t* p = &bytes.at(a - kBase);
+    p[0] = uint8_t(v >> 24);
+    p[1] = uint8_t(v >> 16);
+    p[2] = uint8_t(v >> 8);
+    p[3] = uint8_t(v);
+  }
+  float F(uint32_t a) const { return std::bit_cast<float>(ReadU32(a)); }
+};
+uint32_t Be32(const std::vector<uint8_t>& b, size_t at) {
+  return uint32_t(b.at(at)) << 24 | uint32_t(b.at(at + 1)) << 16 | uint32_t(b.at(at + 2)) << 8 | b.at(at + 3);
+}
+}  // namespace
+
+static void TestMpvHeaderMarks() {
+  Group("mpv_header_marks");
+  const auto ch = synth::conv::MakeChest();
+  const double fd = 1.0 / 0.562, fu = 1.0 / 0.704;
+  const auto mpv = cb::BuildMpv(ch.objects, ch.geos, ch.bind4, ch.chest, 0.0005, fd, fu);
+  CK(mpv.size() > 0x40 && mpv[0] == 'M' && mpv[1] == 'P' && mpv[2] == 'V' && mpv[3] == 0);
+  CK(Be32(mpv, 4) == 1 && Be32(mpv, 12) == 5 && Be32(mpv, 32) == 5);
+  const uint32_t mpp_off = Be32(mpv, 36 + 4 * 4);  // channel 4's slot
+  CKF(mpp_off == 0x40, "channel 4 at 0x%x", mpp_off);
+  // The expected records, derived here from the fixture by plain loops (not by the code under test).
+  struct Rec {
+    uint32_t word;
+    float rest[3], down[3], up[3];
+  };
+  std::vector<Rec> want;
+  for (int k = 0; k < 2; ++k) {
+    const auto& p = *ch.parts[k];
+    for (size_t j = 0; j < p.verts.size(); ++j) {
+      const auto& dn = p.bust->first[j];
+      const auto& up = p.bust->second[j];
+      const double nd = std::sqrt(dn[0] * dn[0] + dn[1] * dn[1] + dn[2] * dn[2]);
+      const double nu = std::sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+      if ((std::max)(nd, nu) < 0.0005) continue;
+      Rec r{};
+      r.word = (uint32_t(k) << 24) | uint32_t(j * ch.strides[k]) | (want.empty() ? 0u : 0x80000000u);
+      for (int c = 0; c < 3; ++c) {
+        const double lp = p.verts[j].pos[c] - ch.own[c];
+        r.rest[c] = float(lp);
+        r.down[c] = float(lp + dn[c]);
+        r.up[c] = float(lp + up[c]);
+      }
+      want.push_back(r);
+    }
+  }
+  CKF(int(want.size()) == ch.kept, "%zu expected records, fixture says %d", want.size(), ch.kept);
+  CK(!want.empty());
+  // The mark and the record count, then the four ratios, through doa4_suits_bust.h.
+  MpvMem m;
+  m.bytes = mpv;
+  const uint32_t mpp = kBase + mpp_off;
+  CK(rdr::IsMarked(m, mpp));
+  CK(m.ReadU32(mpp + 0x28) == 0x44583242u);
+  CKF(m.ReadU32(mpp + 0x2C) == want.size(), "records %u, expected %zu", m.ReadU32(mpp + 0x2C), want.size());
+  CK(m.F(mpp + 0x30) == 1.0f && m.F(mpp + 0x38) == 1.0f);
+  CK(m.F(mpp + 0x34) == float(fd) && m.F(mpp + 0x3C) == float(fu));
+  CK(m.F(mpp + 0x34) != m.F(mpp + 0x3C));
+  // The words: first without the high bit, the rest with it, then the terminator.
+  const uint32_t words_at = mpp_off + 0x50;
+  for (size_t i = 0; i < want.size(); ++i) CKF(Be32(mpv, words_at + 4 * i) == want[i].word, "word %zu", i);
+  CK(Be32(mpv, words_at + 4 * want.size()) == 0xFFFFFFFFu);
+  // Bind as the game does (+8 = 1, absolute pose addresses), then rescale to the full DOAX2 range with the reader.
+  uint32_t pose_at[3];
+  for (int i = 0; i < 3; ++i) {
+    pose_at[i] = mpp + Be32(mpv, mpp_off + 28 + 4 * i);
+    CK((pose_at[i] - mpp) % 16 == 0);
+    m.WriteU32(mpp + 0x1C + 4 * i, pose_at[i]);
+  }
+  m.WriteU32(mpp + 0x08, 1);
+  const std::vector<uint8_t> before = m.bytes;
+  CK(rdr::Rescale(m, mpp, true));
+  CK(m.F(mpp + 0x30) == float(fd) && m.F(mpp + 0x38) == float(fu));
+  int scaled_down = 0, scaled_up = 0;
+  for (size_t i = 0; i < want.size(); ++i)
+    for (int c = 0; c < 3; ++c) {
+      const float r = want[i].rest[c];
+      CK(m.F(pose_at[0] + 12 * i + 4 * c) == r);  // the rest pose is not touched
+      const float fdn = float(fd) / 1.0f, fup = float(fu) / 1.0f;
+      const float ed = r + (want[i].down[c] - r) * fdn, eu = r + (want[i].up[c] - r) * fup;
+      CKF(m.F(pose_at[1] + 12 * i + 4 * c) == ed, "down record %zu comp %d", i, c);
+      CKF(m.F(pose_at[2] + 12 * i + 4 * c) == eu, "up record %zu comp %d", i, c);
+      if (m.F(pose_at[1] + 12 * i + 4 * c) != want[i].down[c]) ++scaled_down;
+      if (m.F(pose_at[2] + 12 * i + 4 * c) != want[i].up[c]) ++scaled_up;
+    }
+  CKF(scaled_down > 0 && scaled_up > 0, "%d down and %d up components moved", scaled_down, scaled_up);
+  // Nothing else moved: only the two ratio words and exactly records * 12 bytes of each of the two poses.
+  size_t changed_outside = 0;
+  for (size_t i = 0; i < m.bytes.size(); ++i) {
+    if (m.bytes[i] == before[i]) continue;
+    const uint32_t a = kBase + uint32_t(i);
+    const bool in_down = a >= pose_at[1] && a < pose_at[1] + 12 * want.size();
+    const bool in_up = a >= pose_at[2] && a < pose_at[2] + 12 * want.size();
+    const bool ratio = (a >= mpp + 0x30 && a < mpp + 0x34) || (a >= mpp + 0x38 && a < mpp + 0x3C);
+    if (!in_down && !in_up && !ratio) ++changed_outside;
+  }
+  CKF(changed_outside == 0, "%zu bytes changed outside the two poses and their ratios", changed_outside);
+  CK(rdr::Rescale(m, mpp, false));  // back to the file's strength
+  CK(m.F(mpp + 0x30) == 1.0f && m.F(mpp + 0x38) == 1.0f);
+
+  // extra channels and pins, in the same function: sorted channel slots, the pin block after the poses.
+  const std::map<int64_t, std::vector<uint8_t>> extra{{1, std::vector<uint8_t>(20, 0xEE)}};
+  std::vector<cb::PinRow> pins(1);
+  pins[0].rel = -0x100;
+  pins[0].rest = {1.0, 2.0, 3.0};
+  pins[0].down = {4.0, 5.0, 6.0};
+  pins[0].up = {7.0, 8.0, 9.0};
+  const auto mpv2 = cb::BuildMpv(ch.objects, ch.geos, ch.bind4, ch.chest, 0.0005, fd, fu, &extra, &pins);
+  CK(Be32(mpv2, 36 + 4) == 0x40 && mpv2[0x40] == 0xEE && mpv2[0x53] == 0xEE);
+  const uint32_t mpp2 = Be32(mpv2, 36 + 16);
+  CKF(mpp2 == 0x60, "channel 4 at 0x%x", mpp2);
+  const uint32_t pin_at = Be32(mpv2, mpp2 + 0x40);
+  CK(pin_at % 16 == 0 && pin_at >= 0x50 && Be32(mpv2, mpp2 + 0x44) == 1);
+  CK(Be32(mpv2, mpp2 + pin_at) == uint32_t(-0x100));
+  CK(std::bit_cast<float>(Be32(mpv2, mpp2 + pin_at + 4)) == 1.0f &&
+     std::bit_cast<float>(Be32(mpv2, mpp2 + pin_at + 36)) == 9.0f);
+  CK(mpv2.size() == mpp2 + pin_at + 40);
+  MpvMem m2;
+  m2.bytes = mpv2;
+  CK(rdr::IsMarked(m2, kBase + mpp2));
+  // an empty list of pins is Python's None
+  const std::vector<cb::PinRow> none;
+  CK(cb::BuildMpv(ch.objects, ch.geos, ch.bind4, ch.chest, 0.0005, fd, fu, nullptr, &none) == mpv);
+  // build_mpv's own asserts
+  auto throws = [&](auto fn, const char* text) {
+    try {
+      fn();
+    } catch (const ConvertError& e) {
+      return std::string(e.what()).find(text) != std::string::npos;
+    }
+    return false;
+  };
+  CK(throws([&] { cb::BuildMpv(ch.objects, ch.geos, ch.bind4, ch.chest, 1.0, fd, fu); }, "no bust vertex"));
+  auto geos2 = ch.geos;
+  geos2[3].decls[0].elems[0].b = 4;
+  CK(throws([&] { cb::BuildMpv(ch.objects, geos2, ch.bind4, ch.chest, 0.0005, fd, fu); }, "position is not first"));
+  std::printf("mpv_header_marks: %zu records, MPV %zu bytes, channel 4 at 0x%x, ratios %.6f / %.6f\n", want.size(),
+              mpv.size(), mpp_off, double(float(fd)), double(float(fu)));
+}
+
+// prep_bust on a hand-built model (seeded numbers, no game data): one chest part with a 7-buffer morph decl and five
+// vertices, a part whose up and down buffers run backwards, a decl with one buffer only, a part with no model, a body
+// part (the border grid) and a strap part (the model prep_bust compares against). Offsets are multiples of 1/64 and the
+// strengths 0.5 and 0.25, so every expected number is exact; the cell size is 0.002.
+//   vertex 0 (0,0,0): the strap is 0.02 away of the 0.04 fade range, t = 0.5, k_f = 0.5: both offsets halve
+//   vertex 1 (10,0,0): nothing near
+//   vertex 2 (20.0,0,0): the body vertex at 20.0005 is one cell away (cell 9999 and 10000 with float //): held still
+//   vertex 3 (30.0,0,0): the body vertex at 30.0025 is two cells away (14999 and 15001): not held
+//   vertex 4 (0.022,5,0): the body vertex at (0.025,5,0) is two cells away with float // (10 and 12) but one cell away
+//                         with floor(x / cell) (11 and 12): not held
+static void TestPrepBustSynthetic() {
+  Group("prep_bust_synthetic");
+  namespace core = doa4::suitconv::core;
+  using synth::conv::PutBe32;
+  using synth::conv::PutBeF;
+  const int n = 5;
+  core::Model chest_model, strap_model, body_model;
+  std::vector<uint8_t> data;
+  auto desc = [](uint32_t base, uint32_t size) {
+    std::vector<uint8_t> d;
+    PutBe32(d, base);
+    PutBe32(d, size);
+    return d;
+  };
+  chest_model.vbs = {desc(0, 16 * n), desc(80, 12 * n), desc(140, 12 * n)};
+  for (int j = 0; j < n; ++j) {  // main buffer: position + 4 pad bytes
+    PutBeF(data, 0.0625f * j);
+    PutBeF(data, 0.125f);
+    PutBeF(data, -0.25f);
+    PutBe32(data, 0);
+  }
+  auto up_off = [](int j) { return std::array<float, 3>{0.0625f * (j + 1), 0.25f, 0.015625f * j}; };
+  auto dn_off = [](int j) { return std::array<float, 3>{-0.0625f, -0.5f * (j + 1), 0.125f}; };
+  for (int j = 0; j < n; ++j) {  // buffer 1: the up target = P + up_off
+    const auto o = up_off(j);
+    PutBeF(data, 0.0625f * j + o[0]);
+    PutBeF(data, 0.125f + o[1]);
+    PutBeF(data, -0.25f + o[2]);
+  }
+  for (int j = 0; j < n; ++j) {  // buffer 2: the down target
+    const auto o = dn_off(j);
+    PutBeF(data, 0.0625f * j + o[0]);
+    PutBeF(data, 0.125f + o[1]);
+    PutBeF(data, -0.25f + o[2]);
+  }
+  chest_model.x.data = data;
+  auto tail = [](uint32_t vb, uint32_t stride) {
+    std::vector<uint8_t> t;
+    PutBe32(t, vb);
+    PutBe32(t, stride);
+    PutBe32(t, 0);
+    PutBe32(t, 0);
+    return t;
+  };
+  auto morph_decl = [&](uint32_t up_vb, uint32_t down_vb) {
+    tp::Decl d;
+    d.head = {0, 7, 0, 0, 2, uint32_t(n), 0, 0, 0, 0, 0, 0};
+    d.elems = {tp::DeclElem{0, 0, 0x2A23B9, 0, 0, 0, 0}, tp::DeclElem{0xFF, 0, 0, 0, 0, 0, 0}};
+    d.tails = {tail(0, 16), tail(0, 0), tail(0, 0), tail(0, 0), tail(0, 0), tail(up_vb, 12), tail(down_vb, 12)};
+    return d;
+  };
+  chest_model.geo.resize(1);
+  chest_model.geo[0].decls = {morph_decl(1, 2), morph_decl(2, 1)};
+  tp::Decl plain;
+  plain.head = {0, 1, 0, 0, 2, uint32_t(n), 0, 0, 0, 0, 0, 0};
+  plain.elems = {tp::DeclElem{0, 0, 0x2A23B9, 0, 0, 0, 0}, tp::DeclElem{0xFF, 0, 0, 0, 0, 0, 0}};
+  plain.tails = {tail(0, 16)};
+  chest_model.geo[0].decls.push_back(plain);
+
+  core::PartArena arena;
+  const int64_t chest = 0;
+  auto make = [&](const core::Model* model, int64_t decl, int64_t owner, std::vector<core::Vec3> pos) {
+    core::Part* p = arena.New();
+    p->model = model;
+    p->obj_id = 0;
+    p->decl_index = decl;
+    p->owner = owner;
+    for (const auto& v : pos) {
+      core::Vert vv;
+      vv.pos = v;
+      p->verts.push_back(vv);
+    }
+    return p;
+  };
+  const std::vector<core::Vec3> cpos = {{0, 0, 0}, {10, 0, 0}, {20.0, 0, 0}, {30.0, 0, 0}, {0.022, 5.0, 0}};
+  core::Part* morph = make(&chest_model, 0, chest, cpos);
+  core::Part* reversed = make(&chest_model, 1, chest, cpos);
+  core::Part* thin = make(&chest_model, 2, chest, cpos);
+  core::Part* carried = make(nullptr, 0, chest, cpos);
+  core::Part* body = make(&body_model, 0, 5, {{20.0005, 0, 0}, {30.0025, 0, 0}, {0.025, 5.0, 0}});
+  core::Part* strap = make(&strap_model, 0, 7, {{0, 0.02, 0}});
+  std::vector<std::optional<core::Object>> objects(1);
+  objects[0] = core::Object{{morph, reversed, thin, carried}, {1}};
+  core::PyDict<int64_t, int64_t> chan2id;
+  chan2id.Set(0x9000, chest);
+  const std::vector<core::Part*> parts = {morph, reversed, thin, carried, body, strap};
+  const int64_t got = cb::PrepBust(objects, parts, chan2id, 0.25, 0.5, {}, &strap_model, 0.04);
+  CK(got == chest);
+  CK(morph->bust.has_value() && morph->writable && morph->border.has_value());
+  CK(!reversed->bust && !reversed->writable && !reversed->border);  // up and down run backwards: stays still
+  CK(!thin->bust && !thin->writable && !thin->border);              // not a 7-buffer decl
+  CK(!carried->bust && !carried->writable && !carried->border);     // no model
+  if (!morph->bust) return;
+  CKF(morph->border == std::set<int64_t>({2}), "border has %zu entries", morph->border ? morph->border->size() : size_t(0));
+  int checked = 0;
+  for (int j = 0; j < n; ++j) {
+    const auto u = up_off(j), d = dn_off(j);
+    for (int c = 0; c < 3; ++c) {
+      double eu = 0.5 * double(u[c]), ed = 0.25 * double(d[c]);
+      if (j == 0) eu *= 0.5, ed *= 0.5;  // eased by the strap
+      if (j == 2) eu = ed = 0.0;         // held still at the border
+      CKF(morph->bust->second[j][c] == eu, "up[%d][%d] = %g, expected %g", j, c, morph->bust->second[j][c], eu);
+      CKF(morph->bust->first[j][c] == ed, "down[%d][%d] = %g, expected %g", j, c, morph->bust->first[j][c], ed);
+      ++checked;
+    }
+  }
+  std::printf("prep_bust_synthetic: %d components checked, border {2}, eased vertex 0, three parts left still\n", checked);
+  // without a strap fade nothing eases; without the strap model's parts the same
+  morph->bust.reset();
+  morph->border.reset();
+  morph->writable = false;
+  cb::PrepBust(objects, parts, chan2id, 0.25, 0.5, {}, &strap_model, 0.0);
+  CK(morph->bust.has_value() && morph->bust->second[0][0] == 0.5 * double(up_off(0)[0]));
+  // the chest object must exist
+  std::vector<std::optional<core::Object>> none(1);
+  bool threw = false;
+  try {
+    cb::PrepBust(none, parts, chan2id, 0.25, 0.5, {}, &strap_model, 0.0);
+  } catch (const ConvertError& e) {
+    threw = std::string(e.what()).find("no chest object") != std::string::npos;
+  }
+  CK(threw);
+}
+
+// bust_peak: the most forward point (largest z, first one wins a tie, in the chest's frame), skipping parts without a
+// bust and parts with a band set. Offsets are multiples of 1/16 so every subtraction is exact.
+static void TestBustPeakRules() {
+  Group("bust_peak_rules");
+  auto ch = synth::conv::MakeChest();  // own = (0.5, 1.25, -0.125)
+  auto set_verts = [&](doa4::suitconv::core::Part& p, std::vector<std::array<double, 2>> yz) {
+    p.verts.clear();
+    for (const auto& [y, z] : yz) {
+      doa4::suitconv::core::Vert v;
+      v.pos = {ch.own[0], ch.own[1] + y, ch.own[2] + z};
+      p.verts.push_back(v);
+    }
+  };
+  set_verts(*ch.parts[0], {{0.3125, 0.0625}, {0.125, 0.25}, {0.5, 0.0625}});  // z 0.25 first at y 0.125
+  set_verts(*ch.parts[1], {{0.75, 0.25}, {0.375, 0.1875}});                   // z 0.25 again at y 0.75: must lose
+  // a part with a band set, and a part without a bust: both further forward, both skipped
+  doa4::suitconv::core::Part banded, plain;
+  set_verts(banded, {{0.0625, 0.5}});
+  banded.bust = ch.parts[0]->bust;
+  banded.band = std::set<int64_t>{0};
+  set_verts(plain, {{0.0625, 0.5}});
+  ch.objects[3]->ps.push_back(&banded);
+  ch.objects[3]->ps.push_back(&plain);
+  const auto peak = cb::BustPeak(ch.objects, ch.chest, ch.bind4);
+  CK(peak.has_value());
+  if (peak) CKF((*peak)[0] == 0.125 && (*peak)[1] == 0.25, "peak (%g, %g)", (*peak)[0], (*peak)[1]);
+  // part order decides a tie: with the parts swapped the other y comes out
+  std::swap(ch.objects[3]->ps[0], ch.objects[3]->ps[1]);
+  const auto peak2 = cb::BustPeak(ch.objects, ch.chest, ch.bind4);
+  CK(peak2.has_value());
+  if (peak2) CKF((*peak2)[0] == 0.75 && (*peak2)[1] == 0.25, "swapped peak (%g, %g)", (*peak2)[0], (*peak2)[1]);
+  // nothing morphing: None
+  ch.objects[3]->ps = {&plain};
+  CK(!cb::BustPeak(ch.objects, ch.chest, ch.bind4).has_value());
+}
+
+static void TestL1Synthetic() {
+  Group("l1_synthetic");
+  // The synthetic models have no 7-buffer morph decl, so no chest part takes a bust and the Python stops at build_mpv.
+  const auto s = synth::conv::MakeInputs();
+  const SuitInputs in = SynthInputs(s);
+  ConvertFailure f;
+  MemTrace t;
+  const auto r = ConvertSuit(SynthSuit(), SynthGirl(), in, Level::kL1, nullptr, &t, &f);
+  CKF(!r && f.stage == "mpv" && f.what.find("no bust vertex") != std::string::npos, "%s / %s", f.stage.c_str(),
+      f.what.c_str());
+  auto has = [&](const std::string& prefix) {
+    return std::any_of(t.lines.begin(), t.lines.end(), [&](const std::string& l) { return l.rfind(prefix, 0) == 0; });
+  };
+  CK(has("S bust") && has("K chest ") && has("S peak") && has("K peak none") && has("S mpv"));
+  CK(!has("D ") && !has("B mpv"));
+  // and at L0 the same inputs convert, with none of those stages
+  MemTrace t0;
+  CK(ConvertSuit(SynthSuit(), SynthGirl(), in, Level::kL0, nullptr, &t0, &f).has_value());
+  CK(std::none_of(t0.lines.begin(), t0.lines.end(), [](const std::string& l) { return l.rfind("S bust", 0) == 0; }));
+  // a suit without bust strengths skips the channel at L1 (`if a.bust_down` is false)
+  SuitRecipe nob = SynthSuit();
+  nob.bust_down = nob.bust_up = 0.0;
+  MemTrace t1;
+  CK(ConvertSuit(nob, SynthGirl(), in, Level::kL1, nullptr, &t1, &f).has_value());
+  CK(std::none_of(t1.lines.begin(), t1.lines.end(), [](const std::string& l) { return l.rfind("S bust", 0) == 0; }));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -564,8 +940,11 @@ static bool OnlyAllows(const SuitRecipe& s) {
 
 // Converts one suit at L0 and compares both files (and, when compare_trace, the trace). Returns 1 when everything
 // compared is equal. *secs gets the conversion time when not traced.
-static int OracleOne(InputSet& set, const OracleEnv& env, const SuitRecipe& s, bool files, bool compare_trace,
-                     double* secs) {
+static const char* LevelDir(Level l) { return l == Level::kL0 ? "L0" : l == Level::kL1 ? "L1" : "?"; }
+
+static int OracleOne(InputSet& set, const OracleEnv& env, const SuitRecipe& s, Level level, bool files,
+                     bool compare_trace, double* secs) {
+  const char* const lv = LevelDir(level);
   const std::string stem = Stem(s);
   const GirlRecipe* girl = FindGirl(s.girl);
   CKF(girl != nullptr, "%s: no girl %s", stem.c_str(), s.girl);
@@ -579,14 +958,14 @@ static int OracleOne(InputSet& set, const OracleEnv& env, const SuitRecipe& s, b
   }
   std::unique_ptr<CompareTrace> ct;
   if (compare_trace) {
-    const auto tb = ReadFile(fs::path(env.traces) / "L0" / (stem + ".trace"));
+    const auto tb = ReadFile(fs::path(env.traces) / lv / (stem + ".trace"));
     CKF(tb.has_value(), "%s: no oracle trace", stem.c_str());
     if (!tb) return 0;
     ct = std::make_unique<CompareTrace>(SplitLines(*tb));
   }
   ConvertFailure f;
   const auto t0 = std::chrono::steady_clock::now();
-  const auto out = ConvertSuit(s, *girl, in, Level::kL0, nullptr, ct.get(), &f);
+  const auto out = ConvertSuit(s, *girl, in, level, nullptr, ct.get(), &f);
   const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   if (secs) *secs = dt;
   bool ok = true;
@@ -600,8 +979,8 @@ static int OracleOne(InputSet& set, const OracleEnv& env, const SuitRecipe& s, b
   }
   CKF(!ct || ct->Equal(), "%s: trace", stem.c_str());
   if (files && out) {
-    const auto wt = ReadFile(fs::path(env.levels) / "L0" / (stem + ".tpr"));
-    const auto wc = ReadFile(fs::path(env.levels) / "L0" / (stem + ".cat"));
+    const auto wt = ReadFile(fs::path(env.levels) / lv / (stem + ".tpr"));
+    const auto wc = ReadFile(fs::path(env.levels) / lv / (stem + ".cat"));
     CKF(wt.has_value() && wc.has_value(), "%s: no oracle files", stem.c_str());
     if (!wt || !wc) return 0;
     const bool et = CompareFile(stem.c_str(), "tpr", out->tpr, *wt);
@@ -626,15 +1005,16 @@ static void TestOracleVayOnK() {
   CK(s != nullptr);
   if (!s) return;
   double secs = 0;
-  const int eq = OracleOne(*set, env, *s, true, env.traces != nullptr, &secs);
+  const int eq = OracleOne(*set, env, *s, Level::kL0, true, env.traces != nullptr, &secs);
   std::printf("oracle_L0_vay_on_k: %s (%s), %.2f s\n", eq ? "equal" : "DIFFERS",
               env.traces ? "files and trace" : "files", secs);
 }
 
-static void TestOracleAll() {
+static void OracleAll(Level level, const char* group) {
   OracleEnv env;
-  if (!OracleEnvOrSkip("oracle_L0_all", &env, false)) return;
-  Group("oracle_L0_all");
+  if (!OracleEnvOrSkip(group, &env, false)) return;
+  Group(group);
+  const char* lv = LevelDir(level);
   InputSet* set = OpenSet(env);
   if (!set) return;
   int eq = 0, n = 0;
@@ -642,13 +1022,13 @@ static void TestOracleAll() {
   for (const SuitRecipe& s : Suits()) {
     if (!OnlyAllows(s)) continue;
     double secs = 0;
-    const int e = OracleOne(*set, env, s, true, false, &secs);
+    const int e = OracleOne(*set, env, s, level, true, false, &secs);
     eq += e;
     ++n;
     total += secs;
-    std::printf("  L0 %-10s %s %.2f s\n", Stem(s).c_str(), e ? "equal " : "DIFFERS", secs);
+    std::printf("  %s %-10s %s %.2f s\n", lv, Stem(s).c_str(), e ? "equal " : "DIFFERS", secs);
   }
-  std::printf("oracle_L0_all: %d/%d suits equal at L0 (both files), %.1f s converting (one thread)\n", eq, n, total);
+  std::printf("%s: %d/%d suits equal at %s (both files), %.1f s converting (one thread)\n", group, eq, n, lv, total);
   CK(n == 34 || Env("DOA4_SUITCONV_ONLY"));
   // The same suits again in reverse order, in this process: no state may carry from one conversion to the next (the
   // Python ran each suit in a fresh process; plan row 11).
@@ -656,28 +1036,33 @@ static void TestOracleAll() {
   const auto suits = Suits();
   for (size_t i = suits.size(); i-- > 0;) {
     if (!OnlyAllows(suits[i])) continue;
-    const int e = OracleOne(*set, env, suits[i], true, false, nullptr);
-    if (!e) std::printf("  L0 reverse %-10s DIFFERS\n", Stem(suits[i]).c_str());
+    const int e = OracleOne(*set, env, suits[i], level, true, false, nullptr);
+    if (!e) std::printf("  %s reverse %-10s DIFFERS\n", lv, Stem(suits[i]).c_str());
     req += e;
     ++rn;
   }
-  std::printf("oracle_L0_all: %d/%d suits equal at L0 in reverse order (same process)\n", req, rn);
+  std::printf("%s: %d/%d suits equal at %s in reverse order (same process)\n", group, req, rn, lv);
 }
 
-static void TestTraceAll() {
+static void TraceAll(Level level, const char* group) {
   OracleEnv env;
-  if (!OracleEnvOrSkip("trace_L0_all", &env, true)) return;
-  Group("trace_L0_all");
+  if (!OracleEnvOrSkip(group, &env, true)) return;
+  Group(group);
   InputSet* set = OpenSet(env);
   if (!set) return;
   int eq = 0, n = 0;
   for (const SuitRecipe& s : Suits()) {
     if (!OnlyAllows(s)) continue;
-    eq += OracleOne(*set, env, s, false, true, nullptr);
+    eq += OracleOne(*set, env, s, level, false, true, nullptr);
     ++n;
   }
-  std::printf("trace_L0_all: %d/%d traces equal at L0\n", eq, n);
+  std::printf("%s: %d/%d traces equal at %s\n", group, eq, n, LevelDir(level));
 }
+
+static void TestOracleAll() { OracleAll(Level::kL0, "oracle_L0_all"); }
+static void TestTraceAll() { TraceAll(Level::kL0, "trace_L0_all"); }
+static void TestOracleL1All() { OracleAll(Level::kL1, "oracle_L1_all"); }
+static void TestTraceL1All() { TraceAll(Level::kL1, "trace_L1_all"); }
 
 static void RunGroup(void (*fn)(), const char* name) {
   try {
@@ -695,9 +1080,15 @@ int main() {
   RunGroup(TestAttachNanFallback, "attach_nan_fallback");
   RunGroup(TestLevelGates, "level_gates");
   RunGroup(TestAttachFrame, "attach_frame");
+  RunGroup(TestMpvHeaderMarks, "mpv_header_marks");
+  RunGroup(TestPrepBustSynthetic, "prep_bust_synthetic");
+  RunGroup(TestBustPeakRules, "bust_peak_rules");
+  RunGroup(TestL1Synthetic, "l1_synthetic");
   RunGroup(TestOracleVayOnK, "oracle_L0_vay_on_k");
   RunGroup(TestOracleAll, "oracle_L0_all");
   RunGroup(TestTraceAll, "trace_L0_all");
+  RunGroup(TestOracleL1All, "oracle_L1_all");
+  RunGroup(TestTraceL1All, "trace_L1_all");
   std::printf("skipped sections: %d\n", g_skipped);
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);

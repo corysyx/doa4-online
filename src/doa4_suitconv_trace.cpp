@@ -212,7 +212,31 @@ void Tracer::State(const std::vector<std::optional<core::Object>>& objects) {
         }
         B(i + ".h4", h.bytes());
       }
-      // bust, border, band, welded: no part has them before the physics tasks (they are not Part fields yet)
+      if (p->bust) {  // ser((down list, up list)): each a list of per-vertex 3-tuples of floats
+        Ser u;
+        u.L(2);
+        for (const auto* side : {&p->bust->first, &p->bust->second}) {
+          u.L(side->size());
+          for (const core::Vec3& v : *side) {
+            u.L(3);
+            for (double x : v) u.D(x);
+          }
+        }
+        B(i + ".bust", u.bytes());
+      }
+      for (const auto& [name, set] : {std::pair<const char*, const std::optional<std::set<int64_t>>*>{"border", &p->border},
+                                      {"band", &p->band}}) {
+        if (!*set) continue;
+        Ser z;
+        z.Z((*set)->size());  // std::set iterates ascending, as sorted(v)
+        for (int64_t v : **set) z.I(v);
+        B(i + "." + name, z.bytes());
+      }
+      if (p->welded) {
+        Ser w;
+        w.T(true);
+        B(i + ".welded", w.bytes());
+      }
     }
   }
 }

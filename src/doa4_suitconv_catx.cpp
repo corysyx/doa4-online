@@ -19,8 +19,18 @@ std::vector<uint8_t> Attach(std::span<const uint8_t> cat, const std::vector<uint
   std::vector<uint8_t> out(cat.begin(), cat.end());
   if (donor_cat != nullptr) throw ConvertError("not ported yet: attach, the hand donor's request table (_add_apa)");
   if (head_physics && !head_physics->empty()) throw ConvertError("not ported yet: attach, the head physics section");
-  if (mpv && !mpv->empty()) throw ConvertError("not ported yet: attach, the MPV");
-  if (cloth && !cloth->empty()) throw ConvertError("not ported yet: attach, the MULTI_CLOTH");
+  if (mpv && !mpv->empty()) {
+    const size_t at = Al(out, 16);
+    out.insert(out.end(), mpv->begin(), mpv->end());
+    if (out.size() < 0x10) throw ConvertError("struct.error: pack_into requires a buffer of at least 16 bytes");
+    if (at > 0xFFFFFFFFull) throw ConvertError("struct.error: argument out of range");
+    for (int i = 0; i < 4; ++i) out[0xC + i] = static_cast<uint8_t>(at >> (8 * (3 - i)));  // struct.pack_into('>I', out, 0xC, at)
+  }
+  // mpv_at = _u32(out, 0xC) if mpv else 0 is only read by the cloth branch below.
+  if (cloth && !cloth->empty())
+    throw ConvertError(mpv && !mpv->empty()
+                           ? "not ported yet: attach, the MULTI_CLOTH and the relocation of the MPV's pin rows (MPP +0x40)"
+                           : "not ported yet: attach, the MULTI_CLOTH");
   Al(out, 16);
   return out;
 }

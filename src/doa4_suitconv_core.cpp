@@ -914,6 +914,7 @@ Part* DecodePart(const Context& ctx, PartArena& arena, const Model& model, int64
   }
   p->owner = attach ? attach->owner : chan2id.At(GetOr(kOwnerRole, owner_b, RoleAt(owner_b)));
   p->has_model = true;
+  p->model = &model;
   p->model_name = model.name;
   p->obj_id = obj_id;
   p->decl_index = decl_index;

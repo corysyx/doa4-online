@@ -1,8 +1,10 @@
 // Suit converter (Plan 2): the .cat attachments, a port of the recipe's physics_port.attach and _al
 // (physics_spike/recipe_m1/physics_port.py lines 22-24 and 497-523, SHA-1 b8b69003c5ae388868ed8e5fff5f50a91263f98a).
 // Attach's whole frame is here in the Python's order; the branches that need a later task's port (the hand donor's
-// request table, the head physics section, the MPV, the MULTI_CLOTH) throw ConvertError("not ported yet: <branch>")
-// until Tasks 6, 8, 9 and 10 fill them. At level L0 none of them runs: Attach copies the .cat and aligns it to 16.
+// request table, the head physics section, the MULTI_CLOTH with its MPP row relocation) throw
+// ConvertError("not ported yet: <branch>") until Tasks 8, 9 and 10 fill them. The MPV branch (Task 6) appends the block
+// at a 16-byte boundary and points the header's +0xC at it. At level L0 none of them runs: Attach copies the .cat and
+// aligns it to 16.
 // Pure C++.
 
 #pragma once

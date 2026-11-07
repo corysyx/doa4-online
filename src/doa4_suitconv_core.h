@@ -248,6 +248,12 @@ struct Part {
   bool writable = false;
   std::optional<std::vector<std::array<double, 4>>> h4;
   std::optional<NativeDecl> native;
+  const Model* model = nullptr;  // p.model (null for a carried reference decl); the Model outlives every Part
+  // physics spike attributes (prep_bust and later): p.bust = (down, up) offsets per vertex, p.border and p.band sets of
+  // vertex indices, p.welded True or None.
+  std::optional<std::pair<std::vector<Vec3>, std::vector<Vec3>>> bust;
+  std::optional<std::set<int64_t>> border, band;
+  bool welded = false;
   bool has_srcv = false;      // decode_part sets p.srcv; carry_ref_decl does not
   std::vector<SrcV> srcv;
 

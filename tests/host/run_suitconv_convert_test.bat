@@ -23,12 +23,12 @@ set "SRC=%~dp0..\..\src"
 set FPFLAGS=/clang:-march=x86-64-v3 /clang:-mno-fma /clang:-ffp-contract=off /clang:-fno-fast-math /clang:-fno-math-errno
 set CXXFLAGS=/nologo /std:c++latest /EHsc /O2 %FPFLAGS%
 set "LOG=%OUT%\convert_build.log"
-for %%f in (num sort tpr recipe inputs core trace catx) do if exist "%OUT%\obj\doa4_suitconv_%%f.obj" del /q "%OUT%\obj\doa4_suitconv_%%f.obj"
+for %%f in (num sort tpr recipe inputs core trace catx bust) do if exist "%OUT%\obj\doa4_suitconv_%%f.obj" del /q "%OUT%\obj\doa4_suitconv_%%f.obj"
 if exist "%OUT%\obj\doa4_suitconv.obj" del /q "%OUT%\obj\doa4_suitconv.obj"
 if exist "%OUT%\testobj\suitconv_convert_host_test.obj" del /q "%OUT%\testobj\suitconv_convert_host_test.obj"
 if exist "%OUT%\suitconv_convert_host_test.exe" del /q "%OUT%\suitconv_convert_host_test.exe"
 type nul > "%LOG%"
-for %%f in (num sort tpr recipe inputs core trace catx) do (
+for %%f in (num sort tpr recipe inputs core trace catx bust) do (
   clang-cl %CXXFLAGS% /c "%SRC%\doa4_suitconv_%%f.cpp" /Fo"%OUT%\obj\doa4_suitconv_%%f.obj" >> "%LOG%" 2>&1 || goto failed
 )
 clang-cl %CXXFLAGS% /c "%SRC%\doa4_suitconv.cpp" /Fo"%OUT%\obj\doa4_suitconv.obj" >> "%LOG%" 2>&1
@@ -41,7 +41,7 @@ clang-cl %CXXFLAGS% /c "%SRC%\doa4_gamefiles.cpp" /Fo"%OUT%\testobj\doa4_gamefil
 if errorlevel 1 goto failed
 clang-cl %CXXFLAGS% /c "%~dp0suitconv_convert_host_test.cpp" /Fo"%OUT%\testobj\suitconv_convert_host_test.obj" >> "%LOG%" 2>&1
 if errorlevel 1 goto failed
-clang-cl /nologo "%OUT%\testobj\suitconv_convert_host_test.obj" "%OUT%\obj\doa4_suitconv_num.obj" "%OUT%\obj\doa4_suitconv_sort.obj" "%OUT%\obj\doa4_suitconv_tpr.obj" "%OUT%\obj\doa4_suitconv_recipe.obj" "%OUT%\obj\doa4_suitconv_inputs.obj" "%OUT%\obj\doa4_suitconv_core.obj" "%OUT%\obj\doa4_suitconv_trace.obj" "%OUT%\obj\doa4_suitconv_catx.obj" "%OUT%\obj\doa4_suitconv.obj" "%OUT%\testobj\doa4_afs_overlay.obj" "%OUT%\testobj\doa4_xdvdfs.obj" "%OUT%\testobj\doa4_gamefiles.obj" bcrypt.lib /Fe"%OUT%\suitconv_convert_host_test.exe" >> "%LOG%" 2>&1
+clang-cl /nologo "%OUT%\testobj\suitconv_convert_host_test.obj" "%OUT%\obj\doa4_suitconv_num.obj" "%OUT%\obj\doa4_suitconv_sort.obj" "%OUT%\obj\doa4_suitconv_tpr.obj" "%OUT%\obj\doa4_suitconv_recipe.obj" "%OUT%\obj\doa4_suitconv_inputs.obj" "%OUT%\obj\doa4_suitconv_core.obj" "%OUT%\obj\doa4_suitconv_trace.obj" "%OUT%\obj\doa4_suitconv_catx.obj" "%OUT%\obj\doa4_suitconv_bust.obj" "%OUT%\obj\doa4_suitconv.obj" "%OUT%\testobj\doa4_afs_overlay.obj" "%OUT%\testobj\doa4_xdvdfs.obj" "%OUT%\testobj\doa4_gamefiles.obj" bcrypt.lib /Fe"%OUT%\suitconv_convert_host_test.exe" >> "%LOG%" 2>&1
 if errorlevel 1 goto failed
 rem The FP scan of every converter object comes first: any FMA instruction or C runtime math call (or a scan that
 rem cannot run) fails the runner with the default summary shape, as one failed check, and the test does not run.
