@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <cstring>
 #include <new>
 #include <set>
@@ -14,6 +15,7 @@
 #include "doa4_suitconv_bust.h"
 #include "doa4_suitconv_catx.h"
 #include "doa4_suitconv_core.h"
+#include "doa4_suitconv_hands.h"
 #include "doa4_suitconv_inputs.h"
 #include "doa4_suitconv_num.h"
 #include "doa4_suitconv_waist.h"
@@ -56,8 +58,8 @@ struct Job {
 
 // The run of convert.main (lines 1315-1563) with the level's arguments: --neck-weights owner --expand-formats
 // --mesh-passes, --leg-midline (Lei Fang), --carry-head (Tina), --cat 2,4,ref4,6, and at L1 and above --bust-down /
-// --bust-up (the suit's strengths) and --strap-fade (when non-zero), at L2 and above --waist-fit. No other option is
-// ported yet.
+// --bust-up (the suit's strengths) and --strap-fade (when non-zero), at L2 and above --waist-fit, at L3 and above
+// --hands (the girl's hand donor). No other option is ported yet.
 void RunConvert(Job& job) {
   const SuitRecipe& sr = *job.suit;
   const GirlRecipe& gr = *job.girl;
@@ -336,6 +338,22 @@ void RunConvert(Job& job) {
   }
 
   ctx.mesh_passes = true;  // MESH_PASSES = bool(a.mesh_passes) (line 1510)
+  // line 1511: hand_donor = Model(*a.hands) (the girl's donor costume: her reference, Hitomi's kor02, Tina's tin01)
+  std::optional<c::Model> hand_donor;
+  std::vector<std::pair<int64_t, int64_t>> hand_objects;
+  if (job.level >= Level::kL3) {
+    step("hands_model");
+    hand_donor.emplace(c::LoadModel("hand_donor", Need(in.hand_tpr, "hand donor .tpr"),
+                                    cat_of(in.hand_cat, "hand donor .cat")));
+    stage("hands_prep");  // line 1512
+    hand_objects = hands::PrepHands(chan2id, bo.objects, bo.bind4);
+    if (tr.on()) {
+      std::string s;
+      for (const auto& [index, oid] : hand_objects) s += (s.empty() ? "" : ",") + std::to_string(index) + ":" + std::to_string(oid);
+      tr.K("hands", s.empty() ? "-" : s);
+      tr.State(bo.objects);
+    }
+  }
   stage("encode");
   c::Encoded enc = c::EncodeObjects(ctx, bo.objects, bo.bind4);
   if (tr.on()) {
@@ -346,14 +364,25 @@ void RunConvert(Job& job) {
     for (size_t i = 0; i < enc.ibs.size(); ++i) tr.B("ib" + std::to_string(i), enc.ibs[i]);
   }
 
+  std::map<int64_t, std::vector<uint8_t>> hand_channels;  // hand_channels = build_hands(...) if hand_donor else None
+  if (hand_donor) {
+    stage("hands_build");  // line 1514
+    auto built = hands::BuildHands(*hand_donor, hand_objects, bo.objects, enc.geos, bo.bind4);
+    if (tr.on()) {
+      for (const auto& [index, blob] : built) tr.B("hand" + std::to_string(index), blob);
+      tr.Geos(enc.geos, nullptr);
+    }
+    for (auto& [index, blob] : built) hand_channels[index] = std::move(blob);
+  }
+
   std::optional<std::vector<uint8_t>> mpv;
   if (bust_on) {
     stage("peak");  // line 1518
     const auto peak = bust::BustPeak(bo.objects, chest, bo.bind4);
     if (tr.on()) tr.K("peak", peak ? trace::Hx((*peak)[0]) + " " + trace::Hx((*peak)[1]) : "none");
-    stage("mpv");  // line 1532: full_down = 1.0 / a.bust_down, full_up = 1.0 / a.bust_up; no hand channels, no pins at L1
+    stage("mpv");  // line 1532: full_down = 1.0 / a.bust_down, full_up = 1.0 / a.bust_up; extra = the hand channels; no pins yet
     mpv = bust::BuildMpv(bo.objects, enc.geos, bo.bind4, chest, 0.0005, c::PyDiv(1.0, sr.bust_down),
-                         c::PyDiv(1.0, sr.bust_up));
+                         c::PyDiv(1.0, sr.bust_up), hand_donor ? &hand_channels : nullptr);
     tr.B("mpv", *mpv);
   }
 
@@ -377,7 +406,7 @@ void RunConvert(Job& job) {
   stage("cat");
   const c::Bytes base = c::BuildCat(ref, body, {2, 4, 6}, kept_ids, {"ref4"});
   tr.B("cat_base", base);
-  out.cat = catx::Attach(base, mpv ? &*mpv : nullptr, nullptr, nullptr, nullptr);
+  out.cat = catx::Attach(base, mpv ? &*mpv : nullptr, nullptr, hand_donor ? &hand_donor->Cat() : nullptr, nullptr);
   tr.B("cat", out.cat);
   job.out = std::move(out);
 }
@@ -393,7 +422,7 @@ std::optional<SuitOutput> Failed(ConvertFailure* failure, std::string stage, std
 
 std::optional<SuitOutput> ConvertSuit(const SuitRecipe& suit, const GirlRecipe& girl, const SuitInputs& in, Level level,
                                       const CancelToken* cancel, Trace* trace, ConvertFailure* failure) {
-  // B1: the levels whose features are not ported yet. Each later task deletes its own gate.
+  // B1: the features that are not ported yet. Each later task deletes its own gate.
   if (level == Level::kM1) {
     if (suit.port_cloth) return Failed(failure, "level", "not ported yet: port_cloth");
     if (suit.gen_cloth) return Failed(failure, "level", "not ported yet: gen_cloth");
@@ -404,7 +433,6 @@ std::optional<SuitOutput> ConvertSuit(const SuitRecipe& suit, const GirlRecipe& 
     if (girl.hair_spares) return Failed(failure, "level", "not ported yet: hair_spares");
     if (girl.head_physics) return Failed(failure, "level", "not ported yet: head_physics");
   }
-  if (level >= Level::kL3) return Failed(failure, "level", "not ported yet: hands");  // gate: hands (L3)
 
   Job job{&suit, &girl, &in, cancel, trace, level, "start", std::nullopt};
   try {
