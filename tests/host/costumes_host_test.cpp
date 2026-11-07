@@ -1207,7 +1207,8 @@ static void TestMixedSlotKey() {
 
   // Task 7c, fix 1: the game has four rows (kLoadSlotCount). A slot past them is no row: untouched, not swapped, whatever the session says. An
   // empty-slot row is planted where slot 4 (and 5, and 255) would be, so that a missing bound shows as a swap.
-  for (const uint32_t past : {kLoadSlotCount, kLoadSlotCount + 1, 255u}) {
+  CHECK(kLoadSlotCount == 4u);  // sub_823FBE18 ticks slots 0 to 3, and the table has 4 rows: the literals below do not follow the constant
+  for (const uint32_t past : {4u, 5u, 255u}) {
     const uint32_t r = kLoadSlots + past * kLoadSlotBytes;
     g.guest.Write(r, 1);
     g.guest.Write(r + 3, 5);
@@ -1219,13 +1220,13 @@ static void TestMixedSlotKey() {
     EndLoaderTick(t, g.guest, past);
     CHECK(g.Get(r + 4) == 7 && g.Get(r + 6) == 9);
     // the same row asked about as slot 3 would swap: the row is what makes the difference, so the planted row is a real empty-slot row
-    const uint32_t r3 = kLoadSlots + (kLoadSlotCount - 1) * kLoadSlotBytes;
+    const uint32_t r3 = kLoadSlots + 3 * kLoadSlotBytes;
     g.guest.Write(r3, 1);
     g.guest.Write(r3 + 3, 5);
     g.guest.Write(r3 + 4, 7);
-    t = BeginLoaderTick(&s, g.guest, kLoadSlotCount - 1, true);
+    t = BeginLoaderTick(&s, g.guest, 3, true);
     CHECK(t.swapped && g.Get(r3 + 4) == 9);
-    EndLoaderTick(t, g.guest, kLoadSlotCount - 1);
+    EndLoaderTick(t, g.guest, 3);
     CHECK(g.Get(r3 + 4) == 7);
   }
 
