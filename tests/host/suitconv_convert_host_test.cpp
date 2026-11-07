@@ -23,7 +23,13 @@
 //                       request table in the .cat, the hand channels in the MPV)
 //   oracle_m1_without_extras   also DOA4_SUITCONV_ORACLE_DIR (the shipped m1 files, <design>_<colour>.tpr/.cat): the 16 suits
 //                       with no feature after the hands convert at level m1 to the shipped bytes and to the C++ L3 bytes;
-//                       the other 18 stay gated
+//                       the 7 suits with a cloth feature stay gated
+//   oracle_m1_spares_head   the same directory: the 11 suits whose girl has the hair collision spares or Tina's head physics
+//                       convert at level m1 to the shipped bytes (and differ from the C++ L3 bytes)
+//   trace_m1, h4_abs_m1   the trace and waist-weight checks over the 27 suits kM1Ready lists (the 16 and the 11)
+//   attach_cloth_pins, spares_must_end_file, head_physics_synthetic   hand-built references: attach's MULTI_CLOTH branch with
+//                       pin rows, with_spares (both branches, its asserts), prep_head_physics (section, face channels,
+//                       asserts, CPython's set order), the {**hand, **face} merge
 // On a difference the oracle groups print the first differing offset and what is there (WhereInTpr / WhereInCat:
 // object, decl, vertex and field; or the .cat section and record) and, with traces, the first differing trace line,
 // both lines and the last S line before it. No byte of any game file is stored: the real sections read the player's
@@ -53,6 +59,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -486,6 +493,25 @@ static void TestAttachNanFallback() {
   std::printf("attach_nan_fallback: converted; %d attach lines, %d with a NaN shift\n", attach_lines, nan_shift);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Synthetic groups: attach's cloth branch with pin rows, with_spares, prep_head_physics, the channel merge
+// ---------------------------------------------------------------------------------------------------------------
+
+static void PutBe(std::vector<uint8_t>& b, size_t at, uint32_t v) {
+  for (int i = 0; i < 4; ++i) b.at(at + i) = uint8_t(v >> (8 * (3 - i)));
+}
+static uint32_t GetBe(const std::vector<uint8_t>& b, size_t at) {
+  return uint32_t(b.at(at)) << 24 | uint32_t(b.at(at + 1)) << 16 | uint32_t(b.at(at + 2)) << 8 | b.at(at + 3);
+}
+static std::string ErrOf(const std::function<void()>& fn) {
+  try {
+    fn();
+  } catch (const ConvertError& e) {
+    return e.what();
+  }
+  return "";
+}
+
 static void TestLevelGates() {
   Group("level_gates");
   const auto s = synth::conv::MakeInputs();
@@ -499,6 +525,14 @@ static void TestLevelGates() {
     CKF(!r && f.stage == "level" && f.what == "not ported yet: port_cloth", "%s / %s", f.stage.c_str(), f.what.c_str());
   }
   suit.port_cloth = false;
+  {  // the hair spares and head physics are ported: a girl with either flag is no longer refused at M1 by the gate
+    GirlRecipe g2 = girl;
+    g2.hair_spares = true;
+    g2.head_physics = true;
+    ConvertFailure f;
+    const auto r = ConvertSuit(suit, g2, in, Level::kM1, nullptr, nullptr, &f);
+    CKF(r || f.stage != "level", "%s / %s", f.stage.c_str(), f.what.c_str());
+  }
   {
     CancelToken tok;
     tok.Cancel();
@@ -553,10 +587,16 @@ static void TestAttachFrame() {
     const auto w2 = catx::Attach(c32, &one, nullptr, nullptr, nullptr);
     CK(w2.size() == 48 && w2[32] == 1 && w2[0xF] == 32);
   }
-  CK(throws([&] { catx::Attach(cat, nullptr, &one, nullptr, nullptr); }, "MULTI_CLOTH"));
-  CK(throws([&] { catx::Attach(cat, &one, &one, nullptr, nullptr); }, "pin rows"));
+  {  // the cloth branch: appended at the next 16-byte boundary (48), +0x14 points at it (no MPV: no pin rows to move)
+    const auto cl = catx::Attach(cat, nullptr, &one, nullptr, nullptr);
+    CK(cl.size() == 64 && cl[48] == 1 && GetBe(cl, 0x14) == 48);
+    CK(throws([&] { catx::Attach(cat, &one, &one, nullptr, nullptr); }, "read past end"));  // a 1-byte MPV has no MPP
+  }
   CK(throws([&] { catx::Attach(cat, nullptr, nullptr, &empty, nullptr); }, "read past end"));  // a donor with no header
-  CK(throws([&] { catx::Attach(cat, nullptr, nullptr, nullptr, &one); }, "head physics"));
+  {  // the head physics branch: at 48, +8 points at it
+    const auto hp1 = catx::Attach(cat, nullptr, nullptr, nullptr, &one);
+    CK(hp1.size() == 64 && hp1[48] == 1 && GetBe(hp1, 8) == 48);
+  }
   std::vector<uint8_t> b(17, 1);
   CK(catx::Al(b, 16) == 32);
   CK(catx::Al(b, 16) == 32);
@@ -633,6 +673,337 @@ static void TestAttachApa() {
   bad[0x71] = 0;
   CKF(msg(bad) == "AssertionError: ('not an apa block', '0x70')", "%s", msg(bad).c_str());
   std::printf("attach_apa_synthetic: block of %zu bytes relocated by 16, directory rewritten\n", want.size());
+}
+
+// attach's cloth branch. cat 32 bytes (already aligned); MPV 0xE0 bytes whose channel 4 (the offset table entry at
+// mpv + 52) points at the MPP at mpv + 0x40; the MPP says (+0x40, +0x44) pin block at +0x50 and 2 rows, so the rows are
+// at mpv + 0x40 + 0x50 + 40 * i = mpv + 0x90 and mpv + 0xB8. Worked by hand: the MPV lands at 32 (+0xC = 32) and ends at
+// 256, so the cloth lands at 256 (+0x14 = 256) and mpp = 32 + 0x40 = 96. A row holds rel (signed) and becomes
+// at + rel - mpp: row 0 had 256 -> 256 + 256 - 96 = 416; row 1 had -8 -> 256 - 8 - 96 = 152. Row 0 sits at file offset
+// 32 + 0x90 = 176 and row 1 at 32 + 0xB8 = 216. The cloth's 20 bytes end at 276, so the file ends at 288.
+static void TestAttachClothPins() {
+  Group("attach_cloth_pins");
+  const std::vector<uint8_t> cat(32, 3);
+  std::vector<uint8_t> mpv(0xE0, 0x11);
+  PutBe(mpv, 0x34, 0x40);
+  PutBe(mpv, 0x80, 0x50);
+  PutBe(mpv, 0x84, 2);
+  PutBe(mpv, 0x90, 256);
+  PutBe(mpv, 0xB8, 0xFFFFFFF8u);
+  const std::vector<uint8_t> cloth(20, 0xCC);
+  const auto out = catx::Attach(cat, &mpv, &cloth, nullptr, nullptr);
+  CKF(out.size() == 288, "size %zu", out.size());
+  if (out.size() != 288) return;
+  CK(GetBe(out, 0xC) == 32);
+  CK(GetBe(out, 0x14) == 256);
+  CKF(GetBe(out, 176) == 416, "row 0: %u", GetBe(out, 176));
+  CKF(GetBe(out, 216) == 152, "row 1: %u", GetBe(out, 216));
+  // everything else is the inputs: the cat, the MPV with the two rows and +0xC / +0x14 aside, the cloth, zero padding
+  std::vector<uint8_t> want(288, 0);
+  std::copy(cat.begin(), cat.end(), want.begin());
+  std::copy(mpv.begin(), mpv.end(), want.begin() + 32);
+  std::copy(cloth.begin(), cloth.end(), want.begin() + 256);
+  PutBe(want, 0xC, 32);
+  PutBe(want, 0x14, 256);
+  PutBe(want, 176, 416);
+  PutBe(want, 216, 152);
+  CK(out == want);
+  // a pin block with no rows moves nothing
+  std::vector<uint8_t> mpv0 = mpv;
+  PutBe(mpv0, 0x84, 0);
+  const auto out0 = catx::Attach(cat, &mpv0, &cloth, nullptr, nullptr);
+  CK(GetBe(out0, 176) == 256 && GetBe(out0, 216) == 0xFFFFFFF8u);
+  // a cloth with no MPV: +0x14 only, no relocation (cat 40 bytes -> cloth at 48 -> 5 bytes -> 64)
+  const std::vector<uint8_t> cat40(40, 7), five(5, 1);
+  const auto nm = catx::Attach(cat40, nullptr, &five, nullptr, nullptr);
+  CK(nm.size() == 64 && GetBe(nm, 0x14) == 48 && nm[48] == 1 && nm[52] == 1 && nm[53] == 0);
+  // the head physics section lands before the MPV: section at 48 (+8 = 48, 20 bytes), MPV at 80 (+0xC = 80), end 96
+  const std::vector<uint8_t> sec(20, 9), one{1};
+  const auto hp = catx::Attach(cat40, &one, nullptr, nullptr, &sec);
+  CKF(hp.size() == 96 && GetBe(hp, 8) == 48 && GetBe(hp, 0xC) == 80 && hp[48] == 9 && hp[67] == 9 && hp[80] == 1,
+      "hp %zu", hp.size());
+  std::printf("attach_cloth_pins: 2 pin rows relocated (416, 152), cloth at 256, file 288 bytes\n");
+}
+
+// A reference .cat for with_spares, laid out by hand (offsets in hex). Header: +0x14 = 0x20. MULTI_CLOTH at 0x20 (its
+// first 0x50 bytes are 0x20..0x6F): +0x18 (at 0x38) = 0xAABBCCDD, +0x20 (at 0x40) = 0x60, so the SPARE_CHUNK is at
+// s = 0x80. The chunk: count (+0x1C, at 0x9C) = 2, table offset (+0x20, at 0xA0) = 0x30, the two block offsets at
+// s + 0x30 = 0xB0 (0x40 and 0x60). Block 0 at s + 0x40 = 0xC0 has size (+0x10, at 0xD0) 0x20 and extra (+0x24, at 0xE4) 0:
+// it ends at 0xE0. Block 1 at s + 0x60 = 0xE0 has size (+0x10, at 0xF0) `last_size` and extra (+0x24, at 0x104) 0: it ends
+// at 0xE0 + last_size = 0x120 for 0x40, which is the file's length.
+static std::vector<uint8_t> SynthSpareRef(uint32_t last_size = 0x40) {
+  std::vector<uint8_t> d(0x120);
+  for (size_t i = 0; i < d.size(); ++i) d[i] = uint8_t((i * 7 + 3) & 0xFF);
+  PutBe(d, 0x14, 0x20);
+  std::memcpy(&d[0x20], "MULTI_CLOTH", 11);
+  PutBe(d, 0x38, 0xAABBCCDDu);
+  PutBe(d, 0x40, 0x60);
+  std::memcpy(&d[0x80], "SPARE_CHUNK", 11);
+  PutBe(d, 0x9C, 2);
+  PutBe(d, 0xA0, 0x30);
+  PutBe(d, 0xB0, 0x40);
+  PutBe(d, 0xB4, 0x60);
+  PutBe(d, 0xD0, 0x20);
+  PutBe(d, 0xE4, 0);
+  PutBe(d, 0xF0, last_size);
+  PutBe(d, 0x104, 0);
+  d[0x11F] = 0x77;
+  return d;
+}
+
+static void TestSparesMustEndFile() {
+  Group("spares_must_end_file");
+  const auto d = SynthSpareRef();
+  // onto no cloth: a new MULTI_CLOTH = d[0x20:0x70] with +0x18 = 0; the chunk is appended at the next 16 boundary
+  // (0x50 already is one) and +0x20 points at it; then d[0x80:] (160 bytes). 80 + 160 = 240 bytes.
+  {
+    const auto r = catx::WithSpares(nullptr, Sp(d));
+    CK(r.has_value());
+    if (r) {
+      std::vector<uint8_t> want(d.begin() + 0x20, d.begin() + 0x70);
+      PutBe(want, 0x18, 0);
+      PutBe(want, 0x20, 0x50);  // was 0x60 in the reference: the spares moved
+      want.insert(want.end(), d.begin() + 0x80, d.end());
+      CKF(r->size() == 240 && *r == want, "no cloth: %zu bytes", r->size());
+    }
+  }
+  // onto the suit's cloth: 0x26 bytes, so the chunk starts at 0x30 and +0x20 = 0x30 (not 0x26: the alignment comes first)
+  {
+    const std::vector<uint8_t> cloth(0x26, 0x55);
+    const auto r = catx::WithSpares(&cloth, Sp(d));
+    CK(r.has_value());
+    if (r) {
+      std::vector<uint8_t> want = cloth;
+      want.resize(0x30, 0);
+      PutBe(want, 0x20, 0x30);
+      want.insert(want.end(), d.begin() + 0x80, d.end());
+      CKF(r->size() == 0xD0 && *r == want, "onto cloth: %zu bytes", r->size());
+    }
+  }
+  // no spares in the reference: the cloth comes back unchanged (None stays None)
+  {
+    auto none = d;
+    PutBe(none, 0x14, 0);  // no MULTI_CLOTH at all
+    CK(!catx::WithSpares(nullptr, Sp(none)).has_value());
+    const std::vector<uint8_t> cloth(0x26, 0x55);
+    const auto same = catx::WithSpares(&cloth, Sp(none));
+    CK(same.has_value() && *same == cloth);
+    auto nosp = d;
+    PutBe(nosp, 0x40, 0);  // a MULTI_CLOTH with no spare offset
+    CK(!catx::WithSpares(nullptr, Sp(nosp)).has_value());
+  }
+  // the asserts: the blocks must end the file; the tags must be there
+  {
+    const auto bad = SynthSpareRef(0x30);  // block 1 ends at 0xE0 + 0x30 = 0x110, the file is 0x120 long
+    const std::string t = ErrOf([&] { catx::WithSpares(nullptr, Sp(bad)); });
+    CKF(t == "AssertionError: ('the spare blocks do not end the file', '0x110', '0x120')", "%s", t.c_str());
+    auto notag = d;
+    notag[0x80] = 'X';
+    const std::string t2 = ErrOf([&] { catx::WithSpares(nullptr, Sp(notag)); });
+    CKF(t2 == "AssertionError: ('no SPARE_CHUNK at the offset', '0x80')", "%s", t2.c_str());
+    auto nomc = d;
+    nomc[0x20] = 'X';
+    CK(ErrOf([&] { catx::WithSpares(nullptr, Sp(nomc)); }).rfind("AssertionError", 0) == 0);
+    // a cloth shorter than the +0x20 field cannot take the offset: struct.error, not a silent skip
+    const std::vector<uint8_t> tiny(0x10, 1);
+    CK(!ErrOf([&] { catx::WithSpares(&tiny, Sp(d)); }).empty());
+  }
+  std::printf("spares_must_end_file: no-cloth 240 bytes, onto-cloth 208 bytes, none-in-reference, 3 assert texts\n");
+}
+
+// prep_head_physics on a hand-built reference. Header: +8 = base 0x20, +0xC = mpv 0x100. Head objects {3, 5}.
+// The directory at base (8 bytes per entry; byte 0 the kind, +4 the record offset from base), 7 entries, the 0xFF
+// terminator at 0x50, so the table region is 0x38 bytes:
+//   e0 (0x20) kind 1, record at base + 0x40 = 0x60: its +0x4C (0xAC) holds 0x78, and the word at base + 0x78 = 0x98 is
+//      0xFFFF0003: top half 0xFFFF, low 12 bits 3, in head -> kept.
+//   e1 (0x28) kind 1, record 0x64: +0x4C (0xB0) holds 0x7C, the word at 0x9C is 0xFFFE0007: 7 is not a head object -> dropped.
+//   e2 (0x30) kind 0xFA, record 0x70: the halfwords at 0x72 and 0x74 are 3 and 5 -> kept.
+//   e3 (0x38) kind 0xFA, record 0x78: 3 and 9 -> dropped. e4 (0x40) kind 0xFA, record 0x80: 9 first -> dropped.
+//   e5 (0x48) kind 2: not a kind that is ever kept. e6 (0x50) 0xFF.
+// So the new table is e0, e2, 0xFF, 7 zero bytes = 24 bytes, padded with 32 zeros to the old 0x38; the rest of the
+// section (0x58..0xFF) is copied. Face channels: MPV offset table at mpv + 36 + 4 * index: index 2 -> 0x40 (block at
+// 0x140), index 3 -> 0x100 (block at 0x200). Block 2: obj 3, kind 0, nposes 2, word list at +0x40 = 0x180 with three
+// words (0x80000001, 2, 0x80000003) and the terminator: records = 1 + 2 = 3; pose offsets at +28 (0x15C): 0x50, 0x70, so
+// end = 0x140 + 0x70 + 3 * 12 = 0x1D4 (148 bytes). Block 3: obj 5, kind 0, nposes 1, words at +0x30 = 0x230: (1),
+// terminator: records = 1; pose offset at 0x21C: 0x40; end = 0x200 + 0x40 + 12 = 0x24C (76 bytes).
+static std::vector<uint8_t> SynthHeadRef() {
+  std::vector<uint8_t> d(0x300);
+  for (size_t i = 0; i < d.size(); ++i) d[i] = uint8_t((i * 7 + 3) & 0xFF);
+  PutBe(d, 8, 0x20);
+  PutBe(d, 0xC, 0x100);
+  auto entry = [&](size_t at, uint8_t kind, uint32_t off) {
+    std::fill(d.begin() + at, d.begin() + at + 8, uint8_t(0));
+    d[at] = kind;
+    PutBe(d, at + 4, off);
+  };
+  entry(0x20, 1, 0x40);
+  entry(0x28, 1, 0x44);
+  entry(0x30, 0xFA, 0x50);
+  entry(0x38, 0xFA, 0x58);
+  entry(0x40, 0xFA, 0x60);
+  entry(0x48, 2, 0);
+  entry(0x50, 0xFF, 0);
+  PutBe(d, 0xAC, 0x78);
+  PutBe(d, 0x98, 0xFFFF0003u);
+  PutBe(d, 0xB0, 0x7C);
+  PutBe(d, 0x9C, 0xFFFE0007u);
+  auto half = [&](size_t at, uint16_t v) { d[at] = uint8_t(v >> 8), d[at + 1] = uint8_t(v); };
+  half(0x72, 3), half(0x74, 5);
+  half(0x7A, 3), half(0x7C, 9);
+  half(0x82, 9), half(0x84, 5);
+  PutBe(d, 0x12C, 0x40);
+  PutBe(d, 0x130, 0x100);
+  PutBe(d, 0x140 + 12, 3), PutBe(d, 0x140 + 16, 0), PutBe(d, 0x140 + 20, 2), PutBe(d, 0x140 + 24, 0x40);
+  PutBe(d, 0x180, 0x80000001u), PutBe(d, 0x184, 2), PutBe(d, 0x188, 0x80000003u), PutBe(d, 0x18C, 0xFFFFFFFFu);
+  PutBe(d, 0x15C, 0x50), PutBe(d, 0x160, 0x70);
+  PutBe(d, 0x200 + 12, 5), PutBe(d, 0x200 + 16, 0), PutBe(d, 0x200 + 20, 1), PutBe(d, 0x200 + 24, 0x30);
+  PutBe(d, 0x230, 1), PutBe(d, 0x234, 0xFFFFFFFFu);
+  PutBe(d, 0x21C, 0x40);
+  return d;
+}
+
+static void TestHeadPhysicsSynthetic() {
+  Group("head_physics_synthetic");
+  const auto d = SynthHeadRef();
+  core::PartArena arena;
+  auto make_objects = [&](bool native3, std::vector<core::Part*>* keep_parts) {
+    std::vector<std::optional<core::Object>> objects(6);
+    for (int oid : {1, 3, 5}) {
+      objects[oid].emplace();
+      const int nparts = oid == 3 ? 2 : 1;
+      for (int k = 0; k < nparts; ++k) {
+        core::Part* p = arena.New();
+        if (oid != 1 && (native3 || oid != 3)) p->native.emplace();
+        objects[oid]->ps.push_back(p);
+        keep_parts->push_back(p);
+      }
+    }
+    return objects;
+  };
+  std::vector<core::Part*> parts;
+  auto objects = make_objects(true, &parts);
+  const auto hp = catx::PrepHeadPhysics(Sp(d), {3, 5}, objects);
+  std::vector<uint8_t> want(d.begin() + 0x20, d.begin() + 0x100);
+  std::vector<uint8_t> table(d.begin() + 0x20, d.begin() + 0x28);  // e0
+  table.insert(table.end(), d.begin() + 0x30, d.begin() + 0x38);   // e2
+  table.push_back(0xFF);
+  table.insert(table.end(), 7, 0);
+  table.insert(table.end(), 0x38 - table.size(), 0);
+  std::copy(table.begin(), table.end(), want.begin());
+  CKF(hp.section == want && hp.section.size() == 0xE0, "section %zu bytes", hp.section.size());
+  CK(hp.channels.size() == 2 && hp.channels.count(2) && hp.channels.count(3));
+  if (hp.channels.size() == 2) {
+    CKF(hp.channels.at(2) == std::vector<uint8_t>(d.begin() + 0x140, d.begin() + 0x1D4), "channel 2: %zu bytes",
+        hp.channels.at(2).size());
+    CKF(hp.channels.at(3) == std::vector<uint8_t>(d.begin() + 0x200, d.begin() + 0x24C), "channel 3: %zu bytes",
+        hp.channels.at(3).size());
+  }
+  // every part of the head objects 3 and 5 is writable now; object 1 is not a head object
+  int writable = 0, untouched = 0;
+  for (const core::Part* p : objects[3]->ps) writable += p->writable;
+  for (const core::Part* p : objects[5]->ps) writable += p->writable;
+  for (const core::Part* p : objects[1]->ps) untouched += !p->writable;
+  CKF(writable == 3 && untouched == 1, "%d writable, %d untouched", writable, untouched);
+  // the asserts, with their texts
+  {
+    std::vector<core::Part*> p2;
+    auto ob2 = make_objects(false, &p2);  // object 3 has parts without a carried decl
+    const std::string t = ErrOf([&] { catx::PrepHeadPhysics(Sp(d), {3, 5}, ob2); });
+    CKF(t == "AssertionError: ('head decl was not carried', 3)", "%s", t.c_str());
+    auto nobase = d;
+    PutBe(nobase, 8, 0);
+    const std::string t2 = ErrOf([&] { catx::PrepHeadPhysics(Sp(nobase), {3, 5}, ob2); });
+    CKF(t2 == "AssertionError: ('physics section must sit before MPV', '0x0', '0x100')", "%s", t2.c_str());
+    auto noface = d;
+    PutBe(noface, 0x12C, 0);
+    const std::string t3 = ErrOf([&] { catx::PrepHeadPhysics(Sp(noface), {3, 5}, ob2); });
+    CKF(t3 == "AssertionError: ('reference has no face channel', 2)", "%s", t3.c_str());
+    const std::string t4 = ErrOf([&] { catx::PrepHeadPhysics(Sp(d), {3}, ob2); });  // channel 3's object (5) is not a head object
+    CKF(t4 == "AssertionError: ('face channel', 3, 5, 0)", "%s", t4.c_str());
+    auto noposes = d;
+    PutBe(noposes, 0x140 + 20, 0);
+    const std::string t5 = ErrOf([&] { catx::PrepHeadPhysics(Sp(noposes), {3, 5}, ob2); });
+    CKF(t5 == "ValueError: max() arg is an empty sequence", "%s", t5.c_str());
+  }
+  // set(head_ids) iterates in CPython's table order: with two objects lacking a carried decl, the one the set yields
+  // first names the assert. {8, 1} iterates 8 then 1 (slot 0 before slot 1), so object 8 is named, not the lower id.
+  {
+    std::vector<std::optional<core::Object>> ob(9);
+    for (int oid : {1, 8}) {
+      ob[oid].emplace();
+      ob[oid]->ps.push_back(arena.New());
+    }
+    auto d2 = d;
+    PutBe(d2, 0x140 + 12, 8);  // channel 2's object, and channel 3's, must be head objects: use 8 and 1
+    PutBe(d2, 0x200 + 12, 1);
+    for (const auto& ids : {std::vector<int64_t>{1, 8}, std::vector<int64_t>{8, 1}}) {
+      const std::string t = ErrOf([&] { catx::PrepHeadPhysics(Sp(d2), ids, ob); });
+      CKF(t == "AssertionError: ('head decl was not carried', 8)", "%s", t.c_str());
+    }
+  }
+  // the {**hand, **face} merge: a face key replaces an equal hand key
+  {
+    std::map<int64_t, std::vector<uint8_t>> hand{{0, {1}}, {1, {2}}, {2, {3}}};
+    const std::map<int64_t, std::vector<uint8_t>> face{{2, {9, 9}}, {3, {8}}};
+    catx::MergeChannels(hand, face);
+    CK(hand.size() == 4 && hand.at(0) == std::vector<uint8_t>{1} && hand.at(1) == std::vector<uint8_t>{2});
+    CK(hand.at(2) == std::vector<uint8_t>({9, 9}) && hand.at(3) == std::vector<uint8_t>{8});
+  }
+  // the set order emulation against CPython 3.12 (list(set(l)) for each input, taken from the recipe's interpreter)
+  {
+    static const std::pair<std::vector<int64_t>, std::vector<int64_t>> kPins[] = {
+      {{3, 5}, {3, 5}},
+      {{8, 1}, {8, 1}},
+      {{1, 8}, {8, 1}},
+      {{17, 1}, {17, 1}},
+      {{1, 17}, {1, 17}},
+      {{9, 1, 17}, {9, 1, 17}},
+      {{17, 9, 1}, {17, 9, 1}},
+      {{2, 10, 18}, {18, 2, 10}},
+      {{18, 10, 2}, {2, 18, 10}},
+      {{4, 12, 20, 28}, {20, 28, 4, 12}},
+      {{28, 20, 12, 4}, {12, 4, 28, 20}},
+      {{7, 15, 23}, {15, 23, 7}},
+      {{23, 15, 7}, {15, 7, 23}},
+      {{5, 5, 13}, {13, 5}},
+      {{0}, {0}},
+      {{0, 8}, {0, 8}},
+      {{8, 0}, {8, 0}},
+      {{16, 8, 0}, {16, 8, 0}},
+      {{39, 23, 17}, {17, 23, 39}},
+      {{11, 0}, {0, 11}},
+      {{32, 29, 38}, {32, 29, 38}},
+      {{21, 35}, {35, 21}},
+      {{2, 24, 10, 28}, {24, 2, 10, 28}},
+      {{27, 10, 10, 15}, {10, 27, 15}},
+      {{7, 8}, {8, 7}},
+      {{37, 4, 24, 6}, {24, 4, 37, 6}},
+      {{13, 14, 26}, {26, 13, 14}},
+      {{17, 13}, {17, 13}},
+      {{17, 21, 2}, {17, 2, 21}},
+      {{0, 26}, {0, 26}},
+      {{24, 31}, {24, 31}},
+      {{1, 15}, {1, 15}},
+      {{7, 38, 0}, {0, 38, 7}},
+      {{37, 12}, {12, 37}},
+      {{21, 0}, {0, 21}},
+      {{8, 34}, {8, 34}},
+      {{32, 5}, {32, 5}},
+      {{31, 34, 12, 26}, {34, 26, 12, 31}},
+      {{25, 12}, {25, 12}},
+      {{5, 37, 9, 11}, {11, 9, 37, 5}},
+      {{2, 3, 17, 35}, {17, 2, 3, 35}},
+      {{38, 9, 17, 36}, {9, 36, 38, 17}},
+      {{7, 25}, {25, 7}},
+      {{10, 39}, {10, 39}},
+    };
+    int bad = 0;
+    for (const auto& [in, want_order] : kPins)
+      if (catx::SmallSetOrder(in) != want_order) ++bad;
+    CKF(bad == 0, "%d of %zu set orders differ", bad, std::size(kPins));
+  }
+  std::printf("head_physics_synthetic: section %zu bytes, channels %zu and %zu bytes\n", hp.section.size(),
+              hp.channels.at(2).size(), hp.channels.at(3).size());
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1099,6 +1470,23 @@ static InputSet* OpenSet(const OracleEnv& env) {
 
 static std::string Stem(const SuitRecipe& s) { return std::string(s.design) + "_" + std::to_string(s.colour); }
 
+// The suits that convert at level m1 so far, written once: the cloth features extend this one list. The first 16 need no
+// feature after the hands; the next 11 add the hair collision spares (Kasumi, Kokoro and Lei Fang as the wearer) or Tina's
+// carried head physics. The group tests derive the same set from the recipe flags and assert it equals this list.
+static const char* const kM1Ready[] = {"vay_cs_b", "vay_on_k", "vay_sk_d", "vht_cs_f", "vht_sp_h", "vht_on_e", "vks_wi_b",
+                                       "vhe_cm_a", "vhe_on_d", "vhe_dl_l", "vls_cs_h", "vls_on_j", "vls_sp_a", "vcr_cs_g",
+                                       "vcr_on_n", "vcr_ch_e",  // 16
+                                       "vks_ch_d", "vks_cs_a", "vks_hn_i", "vco_cs_i", "vhe_on_c", "vco_ch_f", "vle_cs_c",
+                                       "vle_dl_a", "vtn_cs_e", "vtn_ch_i", "vls_on_b"};  // + 11
+static bool InM1Ready(const SuitRecipe& s) {
+  for (const char* n : kM1Ready)
+    if (std::string(n) == s.design) return true;
+  return false;
+}
+// The suits a level covers: all 34 up to L3, the kM1Ready list at m1.
+static bool InLevel(Level level, const SuitRecipe& s) { return level != Level::kM1 || InM1Ready(s); }
+static size_t LevelCount(Level level) { return level == Level::kM1 ? std::size(kM1Ready) : size_t(34); }
+
 static bool OnlyAllows(const SuitRecipe& s) {
   const char* only = Env("DOA4_SUITCONV_ONLY");
   if (!only) return true;
@@ -1227,11 +1615,12 @@ static void TraceAll(Level level, const char* group) {
   int eq = 0, n = 0;
   const size_t ex0 = g_h4_exempt, eqh0 = g_h4_equal;
   for (const SuitRecipe& s : Suits()) {
-    if (!OnlyAllows(s)) continue;
+    if (!OnlyAllows(s) || !InLevel(level, s)) continue;
     eq += OracleOne(*set, env, s, level, false, true, nullptr);
     ++n;
   }
   std::printf("%s: %d/%d traces equal at %s\n", group, eq, n, LevelDir(level));
+  CK(size_t(n) == LevelCount(level) || Env("DOA4_SUITCONV_ONLY"));
   // The exempt `B p<i>.h4` lines (hash of the waist weights differs, part and byte count agree) are checked by absolute difference in
   // h4_abs_L2; without DOA4_SUITCONV_H4_DIR they are not checked at all, so the section counts as skipped.
   const size_t ex = g_h4_exempt - ex0, eqh = g_h4_equal - eqh0;
@@ -1296,7 +1685,7 @@ static void H4Abs(Level level, const char* group) {
   uint64_t hist[12] = {};  // ulp distance: 0, 1, 2, 3-4, 5-8, 9-16, 17-32, 33-64, 65-128, 129-256, 257-512, more
   double max_abs = 0;
   for (const SuitRecipe& s : Suits()) {
-    if (!OnlyAllows(s)) continue;
+    if (!OnlyAllows(s) || !InLevel(level, s)) continue;
     const std::string stem = Stem(s);
     const GirlRecipe* girl = FindGirl(s.girl);
     CKF(girl != nullptr, "%s: no girl", stem.c_str());
@@ -1381,17 +1770,31 @@ static void H4Abs(Level level, const char* group) {
               (unsigned long long)max_ulp, max_at.empty() ? "-" : max_at.c_str());
   std::printf("%s: ulp histogram (information) 0:%llu 1:%llu 2:%llu 3-4:%llu 5-8:%llu 9-16:%llu 17-32:%llu 33-64:%llu 65-128:%llu 129-256:%llu 257-512:%llu more:%llu\n", group,
               (unsigned long long)hist[0], (unsigned long long)hist[1], (unsigned long long)hist[2], (unsigned long long)hist[3], (unsigned long long)hist[4], (unsigned long long)hist[5], (unsigned long long)hist[6], (unsigned long long)hist[7], (unsigned long long)hist[8], (unsigned long long)hist[9], (unsigned long long)hist[10], (unsigned long long)hist[11]);
-  CK(suits == 34 || Env("DOA4_SUITCONV_ONLY"));
+  CK(size_t(suits) == LevelCount(level) || Env("DOA4_SUITCONV_ONLY"));
   CK(values > 0);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// oracle_m1_without_extras: at level m1 the 16 suits that need no feature after the hands equal the shipped m1 files
+// oracle_m1_without_extras, oracle_m1_spares_head: at level m1 the suits kM1Ready lists equal the shipped m1 files
 // ---------------------------------------------------------------------------------------------------------------
-// DOA4_SUITCONV_ORACLE_DIR is the folder of the shipped m1 outputs (<design>_<colour>.tpr / .cat). A suit is in the group
-// when none of port_cloth, gen_cloth, fit_leg_colliders, unstick_cloth, back_margin, sink_hamstrings, and its girl's
-// hair_spares and head_physics, applies: for those the recipe's m1 output is its L3 output (the later features do not
-// run), so the C++ m1 must equal both the shipped file and the C++ L3. The other 18 stay gated at m1.
+// DOA4_SUITCONV_ORACLE_DIR is the folder of the shipped m1 outputs (<design>_<colour>.tpr / .cat). A suit is ready at m1
+// when none of port_cloth, gen_cloth, fit_leg_colliders, unstick_cloth, back_margin, sink_hamstrings applies (the cloth
+// features, still gated). Of those, the 16 whose girl has neither hair_spares nor head_physics need nothing after the
+// hands: the recipe's m1 output is its L3 output, so the C++ m1 must equal both the shipped file and the C++ L3
+// (oracle_m1_without_extras). The other 11 add the hair collision spares (the girls vks, vco, vle) or Tina's head physics
+// and must equal the shipped file while differing from the C++ L3 (oracle_m1_spares_head). The other 7 stay gated.
+
+static bool ClothGatesFree(const SuitRecipe& s) {
+  return !s.port_cloth && !s.gen_cloth && !s.fit_leg_colliders && !s.unstick_cloth && s.back_margin == 0.0 &&
+         s.sink_hamstrings == 0.0;
+}
+
+static std::string Names(const std::set<std::string>& v) {
+  std::string names;
+  for (const std::string& d : v) names += (names.empty() ? "" : " ") + d;
+  return names;
+}
+
 static void TestOracleM1WithoutExtras() {
   const char* group = "oracle_m1_without_extras";
   OracleEnv env;
@@ -1401,11 +1804,8 @@ static void TestOracleM1WithoutExtras() {
   Group(group);
   InputSet* set = OpenSet(env);
   if (!set) return;
-  static const char* const kSixteen[] = {"vay_cs_b", "vay_on_k", "vay_sk_d", "vht_cs_f", "vht_sp_h", "vht_on_e",
-                                         "vks_wi_b", "vhe_cm_a", "vhe_on_d", "vhe_dl_l", "vls_cs_h", "vls_on_j",
-                                         "vls_sp_a", "vcr_cs_g", "vcr_on_n", "vcr_ch_e"};
-  std::set<std::string> want16(std::begin(kSixteen), std::end(kSixteen)), derived;
-  int equal = 0, same_as_l3 = 0, gated = 0, n = 0;
+  std::set<std::string> want_ready(std::begin(kM1Ready), std::end(kM1Ready)), derived;
+  int equal = 0, same_as_l3 = 0, gated = 0, elsewhere = 0, n = 0;
   for (const SuitRecipe& s : Suits()) {
     if (!OnlyAllows(s)) continue;
     ++n;
@@ -1413,9 +1813,9 @@ static void TestOracleM1WithoutExtras() {
     const GirlRecipe* girl = FindGirl(s.girl);
     CKF(girl != nullptr, "%s: no girl", stem.c_str());
     if (!girl) continue;
-    const bool free = !s.port_cloth && !s.gen_cloth && !s.fit_leg_colliders && !s.unstick_cloth && s.back_margin == 0.0 &&
-                      s.sink_hamstrings == 0.0 && !girl->hair_spares && !girl->head_physics;
-    if (free) derived.insert(s.design);
+    const bool ready = ClothGatesFree(s);
+    const bool free = ready && !girl->hair_spares && !girl->head_physics;
+    if (ready) derived.insert(s.design);
     SuitInputs in;
     try {
       in = ReadSuitInputs(*set, s, *girl);
@@ -1424,13 +1824,18 @@ static void TestOracleM1WithoutExtras() {
       continue;
     }
     ConvertFailure f;
-    const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, nullptr, &f);
-    if (!free) {  // vacuity control: a suit with a later feature is still refused at m1
+    if (!ready) {  // vacuity control: a suit with a cloth feature is still refused at m1
+      const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, nullptr, &f);
       CKF(!m1 && f.stage == "level" && f.what.rfind("not ported yet: ", 0) == 0, "%s: m1 gate: %s / %s", stem.c_str(),
           f.stage.c_str(), f.what.c_str());
       if (!m1) ++gated;
       continue;
     }
+    if (!free) {  // the spares and head physics suits: oracle_m1_spares_head
+      ++elsewhere;
+      continue;
+    }
+    const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, nullptr, &f);
     CKF(m1.has_value(), "%s: m1 converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
     if (!m1) continue;
     const auto wt = ReadFile(fs::path(odir) / (stem + ".tpr"));
@@ -1450,20 +1855,91 @@ static void TestOracleM1WithoutExtras() {
       if (same) ++same_as_l3;
     }
   }
-  std::string names;
-  for (const std::string& d : derived) names += (names.empty() ? "" : " ") + d;
-  std::printf("%s: derived list (%zu): %s\n", group, derived.size(), names.c_str());
-  std::printf("%s: %d/%zu equal to the shipped m1 files, %d equal to C++ L3, %d suits with a later feature still gated\n",
-              group, equal, want16.size(), same_as_l3, gated);
+  std::printf("%s: derived list (%zu): %s\n", group, derived.size(), Names(derived).c_str());
+  std::printf("%s: %d/16 equal to the shipped m1 files, %d equal to C++ L3, %d suits with a cloth feature still gated, %d in "
+              "oracle_m1_spares_head\n",
+              group, equal, same_as_l3, gated, elsewhere);
   if (!Env("DOA4_SUITCONV_ONLY")) {
-    CKF(derived == want16, "the derived list is the brief's 16 (%zu derived)", derived.size());
-    CK(n == 34 && gated == 18);
+    CKF(derived == want_ready, "the derived list is kM1Ready's %zu (%zu derived)", want_ready.size(), derived.size());
+    CK(n == 34 && gated == 7 && elsewhere == 11);
     CK(equal == 16 && same_as_l3 == 16);
+  }
+}
+
+static void TestOracleM1SparesHead() {
+  const char* group = "oracle_m1_spares_head";
+  OracleEnv env;
+  if (!OracleEnvOrSkip(group, &env, false)) return;
+  const char* odir = Env("DOA4_SUITCONV_ORACLE_DIR");
+  if (!odir) return SkipGroup(group, "DOA4_SUITCONV_ORACLE_DIR");
+  Group(group);
+  InputSet* set = OpenSet(env);
+  if (!set) return;
+  std::set<std::string> want_eleven(std::begin(kM1Ready) + 16, std::end(kM1Ready)), derived;
+  int equal = 0, changed = 0, n = 0, spares_suits = 0, head_suits = 0;
+  uint64_t pin_rows = 0;
+  for (const SuitRecipe& s : Suits()) {
+    if (!OnlyAllows(s)) continue;
+    const std::string stem = Stem(s);
+    const GirlRecipe* girl = FindGirl(s.girl);
+    CKF(girl != nullptr, "%s: no girl", stem.c_str());
+    if (!girl) continue;
+    if (!ClothGatesFree(s) || !(girl->hair_spares || girl->head_physics)) continue;
+    ++n;
+    derived.insert(s.design);
+    SuitInputs in;
+    try {
+      in = ReadSuitInputs(*set, s, *girl);
+    } catch (const std::exception& e) {
+      CKF(false, "%s: ReadSuitInputs: %s", stem.c_str(), e.what());
+      continue;
+    }
+    ConvertFailure f;
+    const auto m1 = ConvertSuit(s, *girl, in, Level::kM1, nullptr, nullptr, &f);
+    CKF(m1.has_value(), "%s: m1 converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
+    if (!m1) continue;
+    const auto wt = ReadFile(fs::path(odir) / (stem + ".tpr"));
+    const auto wc = ReadFile(fs::path(odir) / (stem + ".cat"));
+    CKF(wt.has_value() && wc.has_value(), "%s: no shipped m1 files", stem.c_str());
+    if (!wt || !wc) continue;
+    const bool et = CompareFile(stem.c_str(), "tpr", m1->tpr, *wt);
+    const bool ec = CompareFile(stem.c_str(), "cat", m1->cat, *wc);
+    CKF(et, "%s m1 .tpr equals the shipped file", stem.c_str());
+    CKF(ec, "%s m1 .cat equals the shipped file", stem.c_str());
+    if (et && ec) ++equal;
+    // vacuity control: the feature wrote something, so the m1 .cat is not the L3 .cat
+    const auto l3 = ConvertSuit(s, *girl, in, Level::kL3, nullptr, nullptr, &f);
+    CKF(l3.has_value(), "%s: L3 converted (%s: %s)", stem.c_str(), f.stage.c_str(), f.what.c_str());
+    if (l3 && l3->cat != m1->cat) ++changed;
+    CKF(l3 && l3->cat != m1->cat, "%s: m1 .cat differs from L3", stem.c_str());
+    const auto& cat = m1->cat;
+    if (girl->hair_spares) {  // a MULTI_CLOTH at +0x14, and the MPV's pin rows (MPP +0x44) it relocates
+      ++spares_suits;
+      CKF(GetBe(cat, 0x14) != 0, "%s: no MULTI_CLOTH", stem.c_str());
+      const uint32_t mpv_at = GetBe(cat, 0xC);
+      const uint32_t mpp = mpv_at + GetBe(cat, mpv_at + 36 + 16);
+      pin_rows += GetBe(cat, mpp + 0x44);
+    }
+    if (girl->head_physics) {  // the carried physics section at +8
+      ++head_suits;
+      CKF(GetBe(cat, 8) != 0, "%s: no head physics section", stem.c_str());
+    }
+  }
+  std::printf("%s: derived list (%zu): %s\n", group, derived.size(), Names(derived).c_str());
+  std::printf("%s: %d/%d equal to the shipped m1 files, %d differ from C++ L3; %d spares suits, %d head physics suits, "
+              "MPP pin rows relocated: %llu\n",
+              group, equal, n, changed, spares_suits, head_suits, (unsigned long long)pin_rows);
+  if (!Env("DOA4_SUITCONV_ONLY")) {
+    CKF(derived == want_eleven, "the derived list is the 11 spares and head-physics suits (%zu derived)", derived.size());
+    CK(n == 11 && equal == 11 && changed == 11);
+    CK(spares_suits + head_suits == 11);
   }
 }
 
 static void TestH4AbsL2() { H4Abs(Level::kL2, "h4_abs_L2"); }
 static void TestH4AbsL3() { H4Abs(Level::kL3, "h4_abs_L3"); }
+static void TestTraceM1() { TraceAll(Level::kM1, "trace_m1"); }
+static void TestH4AbsM1() { H4Abs(Level::kM1, "h4_abs_m1"); }
 
 static void RunGroup(void (*fn)(), const char* name) {
   try {
@@ -1482,6 +1958,9 @@ int main() {
   RunGroup(TestLevelGates, "level_gates");
   RunGroup(TestAttachFrame, "attach_frame");
   RunGroup(TestAttachApa, "attach_apa_synthetic");
+  RunGroup(TestAttachClothPins, "attach_cloth_pins");
+  RunGroup(TestSparesMustEndFile, "spares_must_end_file");
+  RunGroup(TestHeadPhysicsSynthetic, "head_physics_synthetic");
   RunGroup(TestHandsNumeric, "hands_numeric");
   RunGroup(TestMpvHeaderMarks, "mpv_header_marks");
   RunGroup(TestPrepBustSynthetic, "prep_bust_synthetic");
@@ -1499,6 +1978,9 @@ int main() {
   RunGroup(TestTraceL3All, "trace_L3_all");
   RunGroup(TestH4AbsL3, "h4_abs_L3");
   RunGroup(TestOracleM1WithoutExtras, "oracle_m1_without_extras");
+  RunGroup(TestOracleM1SparesHead, "oracle_m1_spares_head");
+  RunGroup(TestTraceM1, "trace_m1");
+  RunGroup(TestH4AbsM1, "h4_abs_m1");
   RunGroup(TestWaistBandShortFails, "waist_band_short_fails");
   RunGroup(TestWaistSynthetic, "waist_synthetic");
   std::printf("skipped sections: %d\n", g_skipped);

@@ -59,7 +59,8 @@ struct Job {
 // The run of convert.main (lines 1315-1563) with the level's arguments: --neck-weights owner --expand-formats
 // --mesh-passes, --leg-midline (Lei Fang), --carry-head (Tina), --cat 2,4,ref4,6, and at L1 and above --bust-down /
 // --bust-up (the suit's strengths) and --strap-fade (when non-zero), at L2 and above --waist-fit, at L3 and above
-// --hands (the girl's hand donor). No other option is ported yet.
+// --hands (the girl's hand donor), and at M1 the girl's --hair-spares and --head-physics (Tina). The cloth options are not
+// ported yet (ConvertSuit refuses them at M1).
 void RunConvert(Job& job) {
   const SuitRecipe& sr = *job.suit;
   const GirlRecipe& gr = *job.girl;
@@ -337,6 +338,21 @@ void RunConvert(Job& job) {
     }
   }
 
+  // line 1527: face_channels, head_physics = prep_head_physics(...) when `a.carry_head and a.head_physics` (Tina, at m1)
+  std::optional<catx::HeadPhysics> head_physics;
+  if (job.level == Level::kM1 && gr.carry_head && gr.head_physics) {
+    std::vector<int64_t> head_ids;
+    for (int64_t code : {0x9001, 0x9011, 0x9015})
+      if (const int64_t* id = chan2id.Find(code)) head_ids.push_back(*id);
+    stage("head_physics");
+    head_physics = catx::PrepHeadPhysics(Need(in.ref_cat, "reference .cat"), head_ids, bo.objects);
+    if (tr.on()) {
+      for (const auto& [index, blob] : head_physics->channels) tr.B("chan" + std::to_string(index), blob);
+      tr.B("section", head_physics->section);
+      tr.State(bo.objects);
+    }
+  }
+
   ctx.mesh_passes = true;  // MESH_PASSES = bool(a.mesh_passes) (line 1510)
   // line 1511: hand_donor = Model(*a.hands) (the girl's donor costume: her reference, Hitomi's kor02, Tina's tin01)
   std::optional<c::Model> hand_donor;
@@ -374,6 +390,8 @@ void RunConvert(Job& job) {
     }
     for (auto& [index, blob] : built) hand_channels[index] = std::move(blob);
   }
+  if (head_physics && !head_physics->channels.empty())  // line 1515: hand_channels = {**(hand_channels or {}), **face_channels}
+    catx::MergeChannels(hand_channels, head_physics->channels);
 
   std::optional<std::vector<uint8_t>> mpv;
   if (bust_on) {
@@ -382,8 +400,20 @@ void RunConvert(Job& job) {
     if (tr.on()) tr.K("peak", peak ? trace::Hx((*peak)[0]) + " " + trace::Hx((*peak)[1]) : "none");
     stage("mpv");  // line 1532: full_down = 1.0 / a.bust_down, full_up = 1.0 / a.bust_up; extra = the hand channels; no pins yet
     mpv = bust::BuildMpv(bo.objects, enc.geos, bo.bind4, chest, 0.0005, c::PyDiv(1.0, sr.bust_down),
-                         c::PyDiv(1.0, sr.bust_up), hand_donor ? &hand_channels : nullptr);
+                         c::PyDiv(1.0, sr.bust_up), &hand_channels);
     tr.B("mpv", *mpv);
+  }
+  std::optional<std::vector<uint8_t>> cloth;  // cloth_blob (None until the cloth is ported); with_spares may make one
+  if (job.level == Level::kM1 && gr.hair_spares) {
+    stage("spares");  // line 1535: cloth_blob = with_spares(cloth_blob, ref.cat, report)
+    cloth = catx::WithSpares(cloth ? &*cloth : nullptr, Need(in.ref_cat, "reference .cat"));
+    if (tr.on()) {
+      if (!cloth) {
+        tr.K("spares", "none");
+      } else {
+        tr.B("spares", *cloth);
+      }
+    }
   }
 
   stage("tpr");
@@ -406,7 +436,8 @@ void RunConvert(Job& job) {
   stage("cat");
   const c::Bytes base = c::BuildCat(ref, body, {2, 4, 6}, kept_ids, {"ref4"});
   tr.B("cat_base", base);
-  out.cat = catx::Attach(base, mpv ? &*mpv : nullptr, nullptr, hand_donor ? &hand_donor->Cat() : nullptr, nullptr);
+  out.cat = catx::Attach(base, mpv ? &*mpv : nullptr, cloth ? &*cloth : nullptr, hand_donor ? &hand_donor->Cat() : nullptr,
+                          head_physics ? &head_physics->section : nullptr);
   tr.B("cat", out.cat);
   job.out = std::move(out);
 }
@@ -430,8 +461,6 @@ std::optional<SuitOutput> ConvertSuit(const SuitRecipe& suit, const GirlRecipe& 
     if (suit.unstick_cloth) return Failed(failure, "level", "not ported yet: unstick_cloth");
     if (suit.back_margin != 0.0) return Failed(failure, "level", "not ported yet: back_margin");
     if (suit.sink_hamstrings != 0.0) return Failed(failure, "level", "not ported yet: sink_hamstrings");
-    if (girl.hair_spares) return Failed(failure, "level", "not ported yet: hair_spares");
-    if (girl.head_physics) return Failed(failure, "level", "not ported yet: head_physics");
   }
 
   Job job{&suit, &girl, &in, cancel, trace, level, "start", std::nullopt};
