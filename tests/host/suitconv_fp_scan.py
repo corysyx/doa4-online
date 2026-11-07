@@ -2,7 +2,8 @@
 
   py -3 tests/host/suitconv_fp_scan.py FOLDER_OR_OBJECT [...]
 
-A folder is searched, with its subfolders, for doa4_suitconv_*.obj and doa4_suitconv_*.o (the converter objects:
+A folder is searched, with its subfolders, for doa4_suitconv_*.obj and doa4_suitconv_*.o, and for doa4_suitconv.obj /
+.o (ConvertSuit's own source, doa4_suitconv.cpp) (the converter objects:
 the host runners write them to %TEMP%\\doa4_suitconv_test\\obj, a CMake build under
 CMakeFiles/dead_or_alive_4.dir/src as doa4_suitconv_*.cpp.obj); a file is scanned as given (the positive control).
 For each object it prints
@@ -68,7 +69,8 @@ def main(argv):
     objects = []
     for arg in argv:
         if os.path.isdir(arg):
-            found = sorted(f for pattern in ('doa4_suitconv_*.obj', 'doa4_suitconv_*.o')
+            found = sorted(f for pattern in ('doa4_suitconv_*.obj', 'doa4_suitconv_*.o', 'doa4_suitconv.obj',
+                                             'doa4_suitconv.cpp.obj', 'doa4_suitconv.o', 'doa4_suitconv.cpp.o')
                            for f in glob.glob(os.path.join(arg, '**', pattern), recursive=True))
             if not found:
                 print(f'{arg}: no doa4_suitconv_*.obj or doa4_suitconv_*.o in it or its subfolders')
