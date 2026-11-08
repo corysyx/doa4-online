@@ -12,9 +12,15 @@
 // no_write_access, wrong_disc, game_files_differ, read_fails_mid_import, swap_blocked_then_completed,
 // swap_second_rename_fails_undone, each_swap_state, new_without_marker_refused, python_import_kept,
 // second_import_over_kept_python_old, writes_only_under_user_data, manifest_order_independent_of_finish, workers,
-// verify_import_folder; and one group gated by DOA4_SUITCONV_DISC and DOA4_SUITCONV_GAME_DIR (real_import: one full import with
-// the production defaults, "real_import: SKIPPED (...)" when unset). Last lines: "skipped sections: K", "slowest cancel ...",
-// then "PASSED: N checks, 0 failures" or "FAILED: N checks, M failures".
+// verify_import_folder; and the real sections, gated by DOA4_SUITCONV_DISC, DOA4_SUITCONV_GAME_DIR and DOA4_SUITCONV_ORACLE_DIR
+// ("<group>: SKIPPED (...)" when unset), which use the player's disc and game files and the reference converter's folder
+// (68 suit files and manifest.txt): real_import_equals_oracle (one production import, 69 files plus the marker equal the
+// reference by size and SHA-1), real_import_worker_counts (1, 4 and 8 workers, equal folders), real_reverse_order_one_process
+// (ConvertSuit over the 34 in reverse order), real_fma3_toggle (the C runtime's FMA3 switch off and on, on the converting
+// threads), real_dirty_mxcsr (FTZ, DAZ and round-up on the calling thread and on direct ConvertSuit threads),
+// real_time_and_memory (wall time, phases, each suit's conversion time against the Python converter's, the working set).
+// DOA4_SUITCONV_ONLY=real runs only the real sections, =fake only the others, =<section name> only that section. Last lines: "skipped sections: K", "slowest
+// cancel ...", then "PASSED: N checks, 0 failures" or "FAILED: N checks, M failures".
 
 #define _CRT_SECURE_NO_WARNINGS
 #define NOMINMAX
@@ -30,7 +36,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
+#include <fstream>
+#include <functional>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <random>
@@ -38,6 +48,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <immintrin.h>
+#include <math.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
 
 using namespace doa4::suitconv;
 namespace fs = std::filesystem;
@@ -1770,74 +1785,526 @@ static void TestVerifyImportFolder() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// real_import (gated)
+// The real sections (gated by DOA4_SUITCONV_DISC, DOA4_SUITCONV_GAME_DIR and DOA4_SUITCONV_ORACLE_DIR)
 // ---------------------------------------------------------------------------------------------------------------
+// They run the production job and the converter on the player's own disc and DOA4 game files and compare the files with the
+// folder the Python converter wrote (ORACLE_DIR: the 68 suit files and manifest.txt), by size and SHA-1. Every import goes to
+// %TEMP%\doa4_suitconv_real\<case>\ud, deleted when its case starts. Nothing under the disc, the game folder or the oracle
+// folder is written. A section whose variables are unset prints "<group>: SKIPPED (...)" and counts as skipped.
+// DOA4_SUITCONV_ONLY=real runs only these sections (a measurement that must not share the process with the fake-world groups),
+// =fake only the fake-world groups, =<section name> only that section.
 
-static void TestRealImport() {
-  const char* disc = std::getenv("DOA4_SUITCONV_DISC");
-  const char* game = std::getenv("DOA4_SUITCONV_GAME_DIR");
-  if (!disc || !*disc || !game || !*game) {
-    std::printf("real_import: SKIPPED (DOA4_SUITCONV_DISC or DOA4_SUITCONV_GAME_DIR unset)\n");
+struct FileInfo {
+  uint64_t size = 0;
+  std::string sha1;
+  bool operator==(const FileInfo& o) const { return size == o.size && sha1 == o.sha1; }
+};
+using Files = std::map<std::string, FileInfo>;
+
+struct RealEnv {
+  std::string disc, game, oracle;
+};
+
+// DOA4_SUITCONV_ONLY: unset runs everything; otherwise a comma separated list of "real" (every real section), "fake" (every
+// fake-world group) and real section names (real_time_and_memory alone, for a clean memory figure).
+static bool OnlyHas(const char* token) {
+  const char* only = std::getenv("DOA4_SUITCONV_ONLY");
+  if (!only || !*only) return true;
+  const std::string list = std::string(",") + only + ",", want = std::string(",") + token + ",";
+  return list.find(want) != std::string::npos;
+}
+
+static bool GetRealEnv(const char* group, RealEnv* e) {
+  if (!OnlyHas("real") && !OnlyHas(group)) return false;
+  const char* d = std::getenv("DOA4_SUITCONV_DISC");
+  const char* g = std::getenv("DOA4_SUITCONV_GAME_DIR");
+  const char* o = std::getenv("DOA4_SUITCONV_ORACLE_DIR");
+  if (!d || !*d || !g || !*g || !o || !*o) {
+    std::printf("%s: SKIPPED (DOA4_SUITCONV_DISC, DOA4_SUITCONV_GAME_DIR or DOA4_SUITCONV_ORACLE_DIR unset)\n", group);
     ++g_skipped;
-    return;
+    return false;
   }
-  Group("real_import");
-  World w("real_import");
+  e->disc = d;
+  e->game = g;
+  e->oracle = o;
+  Group(group);
+  std::printf("%s: disc %s\n", group, e->disc.c_str());
+  return true;
+}
+
+static bool ReadAll(const fs::path& p, std::vector<uint8_t>* out) {
+  std::ifstream f(p, std::ios::binary);
+  if (!f) return false;
+  out->assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  return true;
+}
+
+// Every file directly inside `dir` with its size and SHA-1; a sub-folder or an unreadable file is named in *problem.
+static Files ListFiles(const fs::path& dir, std::string* problem) {
+  Files m;
+  std::error_code ec;
+  for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+    const std::string name = it->path().filename().string();
+    std::error_code e2;
+    std::vector<uint8_t> bytes;
+    if (!it->is_regular_file(e2) || !ReadAll(it->path(), &bytes)) {
+      *problem += " unreadable-or-not-a-file:" + name;
+      continue;
+    }
+    m[name] = FileInfo{uint64_t(bytes.size()), doa4::gamefiles::Sha1Hex(bytes.data(), bytes.size())};
+  }
+  if (ec) *problem += " cannot-list:" + dir.string();
+  return m;
+}
+
+static Files LoadOracle(const RealEnv& env) {
+  std::string problem;
+  Files f = ListFiles(fs::path(env.oracle), &problem);
+  CKF(problem.empty(), "oracle folder:%s", problem.c_str());
+  CKF(f.size() == 69 && f.count("manifest.txt") == 1, "oracle folder holds %zu files (69 expected: 68 suit files and manifest.txt)",
+      f.size());
+  return f;
+}
+
+// `got` equals `want` file by file (size and SHA-1), plus `extra` names in got only, and nothing else: the first differences
+// are named.
+static void CompareFiles(const std::string& what, const Files& got, const Files& want, const std::set<std::string>& extra) {
+  std::string diff;
+  int n = 0;
+  for (const auto& [name, w] : want) {
+    const auto it = got.find(name);
+    std::string d;
+    if (it == got.end()) d = " missing:" + name;
+    else if (it->second.size != w.size) d = " size:" + name + "(" + std::to_string(it->second.size) + " vs " + std::to_string(w.size) + ")";
+    else if (it->second.sha1 != w.sha1) d = " sha1:" + name;
+    if (!d.empty() && n++ < 6) diff += d;
+  }
+  for (const auto& [name, g] : got)
+    if (!want.count(name) && !extra.count(name) && n++ < 6) diff += " extra:" + name;
+  CKF(diff.empty(), "%s differs from the reference:%s (%d file(s))", what.c_str(), diff.c_str(), n);
+  CKF(got.size() == want.size() + extra.size(), "%s: %zu files, expected %zu", what.c_str(), got.size(), want.size() + extra.size());
+}
+
+static fs::path RealUserData(const std::string& case_name) {
+  const fs::path base = fs::temp_directory_path() / "doa4_suitconv_real" / case_name;
+  std::error_code ec;
+  fs::remove_all(base, ec);
+  fs::create_directories(base / "ud");
+  return base / "ud";
+}
+
+struct RealRun {
+  ImportResult result;
+  bool finished = false;
+  Files files;  // what doax2_suits holds afterwards
+  double wall_s = 0;
+  fs::path ud;
+  std::string verify;                                  // VerifyImportFolder of the new import
+  std::vector<double> suit_ms;                          // per suit, picks order, when timed
+  std::map<int, Clock::time_point> phase_at;            // when each phase began (Phase as int)
+  Clock::time_point start, end;
+  uint64_t ws_before = 0, ws_peak_sampled = 0, peak_before = 0, peak_after = 0;
+};
+
+static uint64_t WorkingSet(bool peak) {
+  PROCESS_MEMORY_COUNTERS pmc{};
+  pmc.cb = sizeof pmc;
+  if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return 0;
+  return peak ? uint64_t(pmc.PeakWorkingSetSize) : uint64_t(pmc.WorkingSetSize);
+}
+
+// What a real import needs besides the request: a converter wrapper (timing, FMA3 switch), recorded phases, memory samples.
+struct RealOptions {
+  int workers = 0;
+  bool timed = false;                // record per-suit conversion times, phase times and the working set
+  int fma3 = -1;                     // when 0 or 1: _set_FMA3_enable(fma3) on the converting thread before each conversion
+};
+
+// One production import (the job's own hooks, a wrapper around ConvertSuit when timing or switching FMA3) into
+// %TEMP%\doa4_suitconv_real\<case>\ud.
+static RealRun RunRealImport(const RealEnv& env, const std::string& case_name, const RealOptions& opt) {
+  RealRun run;
+  run.ud = RealUserData(case_name);
   ImportRequest req;
-  req.doax2 = fs::path(disc);
-  req.game_root = fs::path(game);
-  req.user_data = w.ud;
-  auto job = ImportJob::Start(req);
-  CK(WaitDone(*job, 20 * 60 * 1000));
-  const ImportResult r = job->result();
-  CKF(Is(r, Outcome::kImported), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
-  CK(r.differs_from_reference.empty() && r.skipped.empty());
-  CK(VerifyImportFolder(w.Cur()).empty());
-  CK(SuitLines(ReadText(w.Cur() / "manifest.txt")) == 34);
+  req.doax2 = fs::path(env.disc);
+  req.game_root = fs::path(env.game);
+  req.user_data = run.ud;
+  req.workers = opt.workers;
+  run.suit_ms.assign(Suits().size(), 0.0);
+  std::mutex mu;
+  Hooks h;
+  const bool wrap = opt.timed || opt.fma3 >= 0;
+  if (wrap) {
+    h.convert = [&](const SuitRecipe& s, const GirlRecipe& g, const SuitInputs& in, const CancelToken& tok,
+                    ConvertFailure* f) -> std::optional<SuitOutput> {
+      if (opt.fma3 >= 0) _set_FMA3_enable(opt.fma3);
+      const auto t0 = Clock::now();
+      auto r = ConvertSuit(s, g, in, Level::kM1, &tok, nullptr, f);
+      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      run.suit_ms[size_t(&s - Suits().data())] = ms;
+      return r;
+    };
+  }
+  if (opt.timed) {
+    h.on_phase = [&](Phase p) {
+      std::lock_guard<std::mutex> lk(mu);
+      run.phase_at[int(p)] = Clock::now();
+    };
+  }
+  std::atomic<bool> sampling{true};
+  std::thread sampler;
+  if (opt.timed) {
+    run.ws_before = WorkingSet(false);
+    run.peak_before = WorkingSet(true);
+    run.ws_peak_sampled = run.ws_before;
+    sampler = std::thread([&] {
+      while (sampling.load()) {
+        run.ws_peak_sampled = (std::max)(run.ws_peak_sampled, WorkingSet(false));
+        SleepMs(5);
+      }
+    });
+  }
+  run.start = Clock::now();
+  auto job = wrap ? ImportJob::StartForTest(req, std::move(h)) : ImportJob::Start(req);
+  run.finished = WaitDone(*job, 20 * 60 * 1000);
+  run.end = Clock::now();
+  if (!run.finished) job->Cancel();
+  WaitDone(*job, 30000);
+  sampling = false;
+  if (sampler.joinable()) sampler.join();
+  if (opt.timed) {
+    run.ws_peak_sampled = (std::max)(run.ws_peak_sampled, WorkingSet(false));
+    run.peak_after = WorkingSet(true);
+  }
+  run.wall_s = std::chrono::duration<double>(run.end - run.start).count();
+  run.result = job->result();
+  job.reset();
+  const fs::path cur = run.ud / "doax2_suits";
+  std::string problem;
+  run.files = ListFiles(cur, &problem);
+  CKF(problem.empty(), "%s: import folder:%s", case_name.c_str(), problem.c_str());
+  run.verify = VerifyImportFolder(cur);
+  return run;
+}
+
+// An import ended well and its folder holds the 69 files of the reference and the marker, every one equal.
+static void CheckRealImport(const char* what, const RealRun& run, const Files& oracle) {
+  const ImportResult& r = run.result;
+  CKF(run.finished, "%s: the import did not finish in 20 minutes", what);
+  CKF(Is(r, Outcome::kImported), "%s: outcome %d (%s)", what, int(r.outcome), r.detail.c_str());
+  CKF(r.differs_from_reference.empty() && r.skipped.empty(), "%s: %zu differ from the reference build, %zu skipped", what,
+      r.differs_from_reference.size(), r.skipped.size());
+  CKF(run.verify.empty(), "%s: VerifyImportFolder: %s", what, run.verify.c_str());
+  CompareFiles(what, run.files, oracle, {kMarker});
+  CKF(run.files.count(kMarker) == 1, "%s: no marker file", what);
+}
+
+// real_import_equals_oracle: one production import, the folder equals the reference byte for byte.
+static void TestRealImportEqualsOracle() {
+  RealEnv env;
+  if (!GetRealEnv("real_import_equals_oracle", &env)) return;
+  const Files oracle = LoadOracle(env);
+  const RealRun run = RunRealImport(env, "equals_oracle", {});
+  CheckRealImport("real import", run, oracle);
+  CK(run.files.size() == 70);  // the 68 suit files, manifest.txt and the marker
+  std::printf("real_import_equals_oracle: outcome %d, %zu files compared with %zu of the reference, %.1f s\n",
+              int(run.result.outcome), run.files.size(), oracle.size(), run.wall_s);
+}
+
+// real_import_worker_counts: 1, 4 and 8 workers give the same folder, file by file, and each equals the reference.
+static void TestRealImportWorkerCounts() {
+  RealEnv env;
+  if (!GetRealEnv("real_import_worker_counts", &env)) return;
+  const Files oracle = LoadOracle(env);
+  std::vector<RealRun> runs;
+  for (int w : {1, 4, 8}) {
+    runs.push_back(RunRealImport(env, "workers_" + std::to_string(w), {w}));
+    CheckRealImport(("import with " + std::to_string(w) + " worker(s)").c_str(), runs.back(), oracle);
+    std::printf("real_import_worker_counts: %d worker(s): %.1f s\n", w, runs.back().wall_s);
+  }
+  CompareFiles("4 workers against 1", runs[1].files, runs[0].files, {});
+  CompareFiles("8 workers against 1", runs[2].files, runs[0].files, {});
+}
+
+// Every suit read and converted straight through ConvertSuit (no job), in the given picks order, on the calling thread unless
+// `threads` > 1 (then suit i goes to thread i % threads); each thread first runs `setup`. Compared with the reference by size and
+// SHA-1; returns how many of the 68 files differ.
+static int ConvertAllDirect(const RealEnv& env, const Files& oracle, const std::vector<int>& order, int threads,
+                            const std::function<void()>& setup, const std::function<void()>& after_each, const char* what) {
+  std::string err;
+  auto set = InputSet::Open(fs::path(env.disc), fs::path(env.game), DiscEntries(), GameEntries(), &err);
+  CKF(set != nullptr, "%s: cannot open the inputs: %s", what, err.c_str());
+  if (!set) return 68;
+  const std::vector<dsuits::Suit> picks = dsuits::PickSuits();
+  std::atomic<int> bad{0};
+  std::mutex mu;
+  std::string diff;
+  auto work = [&](int tid) {
+    setup();
+    for (size_t k = size_t(tid); k < order.size(); k += size_t(threads)) {
+      const size_t i = size_t(order[k]);
+      const SuitRecipe& s = Suits()[i];
+      const GirlRecipe* girl = FindGirl(s.girl);
+      std::optional<SuitOutput> out;
+      ConvertFailure f;
+      try {
+        out = ConvertSuit(s, *girl, ReadSuitInputs(*set, s, *girl), Level::kM1, nullptr, nullptr, &f);
+      } catch (const std::exception& e) {
+        f.what = e.what();
+      }
+      after_each();
+      std::lock_guard<std::mutex> lk(mu);
+      if (!out) {
+        bad += 2;
+        diff += " failed:" + std::string(s.design) + "(" + f.stage + ": " + f.what + ")";
+        continue;
+      }
+      const auto check = [&](const std::string& name, const std::vector<uint8_t>& b) {
+        const auto it = oracle.find(name);
+        if (it == oracle.end() || it->second.size != b.size() ||
+            it->second.sha1 != doa4::gamefiles::Sha1Hex(b.data(), b.size())) {
+          ++bad;
+          if (diff.size() < 300) diff += " " + name;
+        }
+      };
+      check(picks[i].tpr.name, out->tpr);
+      check(picks[i].cat.name, out->cat);
+    }
+  };
+  if (threads <= 1) {
+    work(0);
+  } else {
+    std::vector<std::thread> ts;
+    for (int t = 0; t < threads; ++t) ts.emplace_back(work, t);
+    for (std::thread& t : ts) t.join();
+  }
+  CKF(bad == 0, "%s: differs from the reference:%s", what, diff.c_str());
+  return bad;
+}
+
+// real_reverse_order_one_process: ConvertSuit over the 34 in reverse picks order, in one process, one thread: equal files.
+static void TestRealReverseOrder() {
+  RealEnv env;
+  if (!GetRealEnv("real_reverse_order_one_process", &env)) return;
+  const Files oracle = LoadOracle(env);
+  std::vector<int> order;
+  for (int i = int(Suits().size()) - 1; i >= 0; --i) order.push_back(i);
+  CK(order.size() == 34 && order.front() == 33 && order.back() == 0);
+  const auto t0 = Clock::now();
+  const int bad = ConvertAllDirect(env, oracle, order, 1, [] {}, [] {}, "reverse order");
+  std::printf("real_reverse_order_one_process: 34 suits, %d of 68 files differ, %.1f s\n", bad,
+              std::chrono::duration<double>(Clock::now() - t0).count());
+}
+
+// real_fma3_toggle: the C runtime's FMA3 switch off and on, set on each converting thread before each conversion, through the
+// production job; equal to the reference both times.
+static void TestRealFma3Toggle() {
+  RealEnv env;
+  if (!GetRealEnv("real_fma3_toggle", &env)) return;
+  const Files oracle = LoadOracle(env);
+  for (int mode : {0, 1}) {
+    const int back = _set_FMA3_enable(mode);
+    std::printf("real_fma3_toggle: _set_FMA3_enable(%d) returned %d\n", mode, back);
+    const RealRun run = RunRealImport(env, "fma3_" + std::to_string(mode), {0, false, mode});
+    CheckRealImport(mode ? "FMA3 on" : "FMA3 off", run, oracle);
+    std::printf("real_fma3_toggle: FMA3 %s: outcome %d, %.1f s\n", mode ? "on" : "off", int(run.result.outcome), run.wall_s);
+  }
+  _set_FMA3_enable(1);
+}
+
+// real_dirty_mxcsr: FTZ, DAZ and round-up set on the calling thread before the job starts, and on four threads that call
+// ConvertSuit directly (each must find its own control word as it left it afterwards); equal to the reference.
+static constexpr unsigned kDirtyBits = 0x8000u | 0x0040u | 0x4000u;  // FTZ, DAZ, rounding control 01 = up (bit 13)
+static void TestRealDirtyMxcsr() {
+  RealEnv env;
+  if (!GetRealEnv("real_dirty_mxcsr", &env)) return;
+  const Files oracle = LoadOracle(env);
+  const unsigned saved = _mm_getcsr();
+  _mm_setcsr(saved | kDirtyBits);
+  CKF((_mm_getcsr() & kDirtyBits) == kDirtyBits, "the dirty control word did not stick: %08x", _mm_getcsr());
+  const RealRun run = RunRealImport(env, "dirty_mxcsr", {});
+  CKF((_mm_getcsr() & kDirtyBits) == kDirtyBits, "the job changed the calling thread's control word: %08x", _mm_getcsr());
+  _mm_setcsr(saved);
+  CheckRealImport("import started from a thread with FTZ, DAZ and round-up", run, oracle);
+  std::atomic<int> clobbered{0};
+  std::vector<int> order;
+  for (int i = 0; i < int(Suits().size()); ++i) order.push_back(i);
+  ConvertAllDirect(
+      env, oracle, order, 4, [] { _mm_setcsr(_mm_getcsr() | kDirtyBits); },
+      [&] {
+        if ((_mm_getcsr() & kDirtyBits) != kDirtyBits) ++clobbered;
+      },
+      "dirty control word on the converting threads");
+  CKF(clobbered == 0, "ConvertSuit left %d thread(s) with a changed control word", clobbered.load());
+  std::printf("real_dirty_mxcsr: job and 4 direct threads under FTZ, DAZ and round-up, %d control word change(s)\n", clobbered.load());
+}
+
+// ---- timing and memory ----
+// The Python converter's time per suit at m1 (convert.main only, seconds, one suit at a time, below-normal priority, no trace)
+// on the author's PC, in picks order: the C++ must not be slower on any suit.
+struct PyTime {
+  const char* design;
+  double seconds;
+};
+static const PyTime kPythonSeconds[] = {
+    {"vks_ch_d", 0.821}, {"vks_cs_a", 1.74},  {"vks_on_o", 0.844}, {"vks_hn_i", 1.453}, {"vay_cs_b", 1.086},
+    {"vay_on_k", 0.838}, {"vay_sk_d", 0.827}, {"vht_cs_f", 1.004}, {"vht_sp_h", 0.793}, {"vht_on_e", 0.83},
+    {"vks_wi_b", 0.826}, {"vco_cs_i", 1.295}, {"vco_sk_c", 2.001}, {"vhe_on_c", 0.877}, {"vco_ch_f", 0.77},
+    {"vle_cs_c", 0.82},  {"vle_on_i", 0.996}, {"vle_sk_h", 0.878}, {"vle_dl_a", 0.767}, {"vhe_cm_a", 0.805},
+    {"vhe_on_d", 0.775}, {"vhe_sk_a", 1.824}, {"vhe_dl_l", 0.848}, {"vls_cs_h", 1.256}, {"vls_on_j", 0.726},
+    {"vls_sp_a", 0.803}, {"vcr_cs_g", 1.077}, {"vcr_on_n", 0.751}, {"vcr_ch_e", 0.796}, {"vcr_cm_c", 2.067},
+    {"vtn_cs_e", 2.974}, {"vtn_ch_i", 0.83},  {"vtn_sh_c", 2.048}, {"vls_on_b", 0.889},
+};
+static constexpr double kTotalGateSeconds = 60.0;  // an import (default workers) over this fails
+static constexpr double kPhaseReportSeconds = 30.0;  // over this the report names the phase that holds the time
+static constexpr double kMemoryTargetMiB = 1024.0;   // reported against, not gated
+
+static const char* PhaseName(int p) {
+  switch (Phase(p)) {
+    case Phase::kCheckingSpace: return "space";
+    case Phase::kCheckingDisc: return "check disc";
+    case Phase::kCheckingGame: return "check game";
+    case Phase::kConverting: return "convert";
+    case Phase::kWriting: return "write";
+    case Phase::kSwapping: return "swap";
+    case Phase::kDone: return "done";
+  }
+  return "?";
+}
+
+// Prints each phase's duration (from its start to the next phase's, the last to the end); returns the longest phase's name
+// and seconds.
+static std::pair<std::string, double> PrintPhases(const char* label, const RealRun& run) {
+  std::string longest;
+  double longest_s = 0;
+  std::string line;
+  for (auto it = run.phase_at.begin(); it != run.phase_at.end(); ++it) {
+    if (it->first == int(Phase::kDone)) continue;
+    const auto next = std::next(it);
+    const Clock::time_point to = next == run.phase_at.end() ? run.end : next->second;
+    const double s = std::chrono::duration<double>(to - it->second).count();
+    char buf[96];
+    std::snprintf(buf, sizeof buf, " %s %.2f s;", PhaseName(it->first), s);
+    line += buf;
+    if (s > longest_s) {
+      longest_s = s;
+      longest = PhaseName(it->first);
+    }
+  }
+  std::printf("  %s phases:%s\n", label, line.c_str());
+  return {longest, longest_s};
+}
+
+static void PrintMemory(const char* label, const RealRun& run) {
+  const double mib = 1024.0 * 1024.0;
+  const double rise_sampled = (double(run.ws_peak_sampled) - double(run.ws_before)) / mib;
+  std::printf("  %s memory: working set %.0f MiB before, sampled maximum %.0f MiB (rise %.0f MiB, sampled every 5 ms)", label,
+              double(run.ws_before) / mib, double(run.ws_peak_sampled) / mib, rise_sampled);
+  if (run.peak_after > run.peak_before)  // the process peak moved during this import: it is the import's own peak
+    std::printf(", process peak %.0f MiB (rise %.0f MiB)", double(run.peak_after) / mib,
+                (double(run.peak_after) - double(run.ws_before)) / mib);
+  else
+    std::printf(", process peak %.0f MiB was reached earlier in the process", double(run.peak_after) / mib);
+  std::printf("; target %.0f MiB\n", kMemoryTargetMiB);
+}
+
+static void TestRealTimeAndMemory() {
+  RealEnv env;
+  if (!GetRealEnv("real_time_and_memory", &env)) return;
+  const Files oracle = LoadOracle(env);
+  // one worker: each suit's conversion time
+  const RealRun one = RunRealImport(env, "time_1_worker", {1, true});
+  CheckRealImport("timed import, 1 worker", one, oracle);
+  // the default worker count: the wall time
+  const RealRun def = RunRealImport(env, "time_default_workers", {0, true});
+  CheckRealImport("timed import, default workers", def, oracle);
+
+  std::printf("real_time_and_memory: wall time, 1 worker %.2f s, default workers %.2f s\n", one.wall_s, def.wall_s);
+  const auto longest1 = PrintPhases("1 worker", one);
+  const auto longest_def = PrintPhases("default workers", def);
+  PrintMemory("1 worker", one);
+  PrintMemory("default workers", def);
+  std::printf("  %-10s %9s %9s %7s\n", "suit", "C++ (s)", "Python (s)", "ratio");
+  double cpp_total = 0, py_total = 0;
+  int slower = 0, found = 0;
+  for (size_t i = 0; i < Suits().size(); ++i) {
+    const double cpp = one.suit_ms[i] / 1000.0;
+    double py = -1;
+    for (const PyTime& t : kPythonSeconds)
+      if (std::string(t.design) == Suits()[i].design) py = t.seconds;
+    found += py > 0;
+    cpp_total += cpp;
+    py_total += py > 0 ? py : 0;
+    const bool bad = py > 0 && cpp > py;
+    slower += bad;
+    std::printf("  %-10s %9.3f %9.3f %7.2f%s\n", Suits()[i].design, cpp, py, py > 0 ? cpp / py : 0.0, bad ? "  SLOWER" : "");
+    CKF(py > 0 && cpp > 0 && !bad, "%s: C++ %.3f s against Python %.3f s", Suits()[i].design, cpp, py);
+  }
+  CKF(found == 34, "%d of 34 suits have a Python time", found);
+  std::printf("  total conversion: C++ %.2f s, Python %.2f s; %d suit(s) slower than Python\n", cpp_total, py_total, slower);
+  if (def.wall_s > kPhaseReportSeconds)
+    std::printf("  the import takes %.1f s (over %.0f s): the longest phase is '%s' with %.1f s\n", def.wall_s, kPhaseReportSeconds,
+                longest_def.first.c_str(), longest_def.second);
+  if (one.wall_s > kPhaseReportSeconds)
+    std::printf("  the 1-worker import takes %.1f s (over %.0f s): the longest phase is '%s' with %.1f s\n", one.wall_s,
+                kPhaseReportSeconds, longest1.first.c_str(), longest1.second);
+  CKF(def.wall_s <= kTotalGateSeconds, "the import takes %.1f s, over the %.0f s gate (longest phase '%s' %.1f s)", def.wall_s,
+      kTotalGateSeconds, longest_def.first.c_str(), longest_def.second);
 }
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash must still show how far the run got
   SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);  // a crash under test ends the process without a dialog
+  const bool run_fake = OnlyHas("fake");
+  const bool run_real = true;  // each real section decides for itself (GetRealEnv)
   try {
-    TestBytesNeeded();
-    TestDefaultsAreProduction();
-    TestFullImport();
-    TestProgressMonotonic();
-    TestCancelInEachPhase();
-    TestCancelDuringStalledRead();
-    TestOneSuitFails();
-    TestConverterThrows();
-    TestAllFail();
-    TestOverBudgetSkipped();
-    TestReferenceMismatchKept();
-    TestWriteFaultMidWay();
-    TestCrashLeavesNoPartialFile();
-    TestNoSpaceRefusedBeforeReads();
-    TestNoWriteAccess();
-    TestWrongDisc();
-    TestGameFilesDiffer();
-    TestReadFailsMidImport();
-    TestSwapBlockedThenCompleted();
-    TestSwapSecondRenameFailsUndone();
-    TestEachSwapState();
-    TestVerificationCatchesDamage();
-    TestNewWithoutMarkerRefused();
-    TestPythonImportKept();
-    TestSecondImportOverKeptPythonOld();
-    TestWritesOnlyUnderUserData();
-    TestManifestOrderIndependentOfFinish();
-    TestWorkers();
-    TestVerifyImportFolder();
-    TestHookThrowsLeavesForeignNew();
-    TestBlockedCleanupKeepsMarker();
-    TestRecoveryVerificationCancellable();
-    TestCancelFromInsideTheWork();
-    TestThreadAndRegistrationFailures();
-    TestThrowBetweenSwapRenames();
-    TestRealImport();
-    TestHookThrowsNonStdException();
+    if (run_fake) {
+      TestBytesNeeded();
+      TestDefaultsAreProduction();
+      TestFullImport();
+      TestProgressMonotonic();
+      TestCancelInEachPhase();
+      TestCancelDuringStalledRead();
+      TestOneSuitFails();
+      TestConverterThrows();
+      TestAllFail();
+      TestOverBudgetSkipped();
+      TestReferenceMismatchKept();
+      TestWriteFaultMidWay();
+      TestCrashLeavesNoPartialFile();
+      TestNoSpaceRefusedBeforeReads();
+      TestNoWriteAccess();
+      TestWrongDisc();
+      TestGameFilesDiffer();
+      TestReadFailsMidImport();
+      TestSwapBlockedThenCompleted();
+      TestSwapSecondRenameFailsUndone();
+      TestEachSwapState();
+      TestVerificationCatchesDamage();
+      TestNewWithoutMarkerRefused();
+      TestPythonImportKept();
+      TestSecondImportOverKeptPythonOld();
+      TestWritesOnlyUnderUserData();
+      TestManifestOrderIndependentOfFinish();
+      TestWorkers();
+      TestVerifyImportFolder();
+      TestHookThrowsLeavesForeignNew();
+      TestBlockedCleanupKeepsMarker();
+      TestRecoveryVerificationCancellable();
+      TestCancelFromInsideTheWork();
+      TestThreadAndRegistrationFailures();
+      TestThrowBetweenSwapRenames();
+    }
+    if (run_real) {
+      TestRealImportEqualsOracle();
+      TestRealImportWorkerCounts();
+      TestRealReverseOrder();
+      TestRealFma3Toggle();
+      TestRealDirtyMxcsr();
+      TestRealTimeAndMemory();
+    }
+    if (run_fake) TestHookThrowsNonStdException();
   } catch (const std::exception& e) {
     ++g_checks;
     ++g_failures;

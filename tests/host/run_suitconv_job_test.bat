@@ -8,8 +8,11 @@ rem DOA4_SUITCONV_OUT, if set, replaces that output folder (the mutation probes 
 rem DOA4_SUITCONV_REUSE=1 (the probes): a converter object that already exists in the output folder is not rebuilt, except
 rem the job's own.
 rem Environment variables read by the test (all optional, all read-only): DOA4_SUITCONV_DISC (the DOAX2 ISO or an extracted
-rem folder) and DOA4_SUITCONV_GAME_DIR (the DOA4 game folder): with both set the test also runs one full import with the
-rem production defaults into a temporary user data folder.
+rem folder), DOA4_SUITCONV_GAME_DIR (the DOA4 game folder) and DOA4_SUITCONV_ORACLE_DIR (the 68 suit files and manifest.txt the
+rem reference converter wrote): with all three set the test also runs the real sections (real imports into
+rem %TEMP%\doa4_suitconv_real\<case>\ud, compared with the reference file by file; determinism across worker counts, order, FMA3
+rem and control-word state; timing and memory). With DOA4_SUITCONV_ONLY=real only those sections run (a run of its own, so the
+rem memory figures belong to the imports alone); =fake runs only the fake-world groups; =<section name> only that section.
 rem Prints "skipped sections: K", the slowest cancel latency and "PASSED: N checks, 0 failures" (or FAILED) as its last lines.
 setlocal
 if not defined DOA4_VSDEVCMD set "DOA4_VSDEVCMD=C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools\VsDevCmd.bat"

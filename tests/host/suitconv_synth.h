@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <winioctl.h>
 
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -21,6 +22,7 @@
 
 #include "../../src/doa4_afs_overlay.h"
 #include "../../src/doa4_gamefiles.h"
+#include "../../src/doa4_suitconv.h"
 #include "../../src/doa4_suitconv_core.h"
 #include "../../src/doa4_suitconv_num.h"
 #include "../../src/doa4_suitconv_recipe.h"
@@ -583,6 +585,311 @@ inline Chest MakeChest() {
   return c;
 }
 
+// The synthetic suit's recipe row and girl (no game data), and its inputs as the converter takes them.
+inline doa4::suitconv::SuitRecipe SynthSuit() {
+  return doa4::suitconv::SuitRecipe{"syn_su_a", 0, "vsy", ArcId::kWerone, 7, 0.5, 0.5, false, false, false, false, 0.0, 0.0,
+                                    0.0, 0, "", 0, ""};
+}
+inline doa4::suitconv::GirlRecipe SynthGirl() {
+  const EntryRef none{ArcId::kChrone, 0, 0, ""};
+  return doa4::suitconv::GirlRecipe{"vsy", 1, 3, none, none, none, none, 1 << 30, 1 << 30, false, false, false, false};
+}
+inline doa4::suitconv::SuitInputs SynthInputs(const Inputs& s) {
+  auto P = [](const std::vector<uint8_t>& v) { return std::make_shared<const std::vector<uint8_t>>(v); };
+  doa4::suitconv::SuitInputs in;
+  in.body_tpr = P(s.body_tpr);
+  in.body_cat = P(s.body_cat);
+  in.suit_tpr = P(s.suit_tpr);
+  in.suit_cat = P(s.suit_cat);
+  in.ref_tpr = P(s.ref_tpr);
+  in.ref_cat = P(s.ref_cat);
+  in.waist_tpr = P(s.waist_tpr);
+  in.waist_cat = P(s.waist_cat);
+  return in;
+}
+
+// The fixture of prep_bust's synthetic test: a chest model with two morph decls (up and down buffers, one of them
+// running backwards) and a plain decl, five vertices, a body model and a strap model, six parts. The morph targets are
+// the position plus UpOff(j) / DnOff(j) (multiples of 1/16, so every subtraction is exact). Parts are made in `arena`;
+// the fixture is not copyable (the parts point at its models).
+struct BustFixture {
+  static constexpr int n = 5;
+  static std::array<float, 3> UpOff(int j) { return {0.0625f * float(j + 1), 0.25f, 0.015625f * float(j)}; }
+  static std::array<float, 3> DnOff(int j) { return {-0.0625f, -0.5f * float(j + 1), 0.125f}; }
+
+  doa4::suitconv::core::Model chest_model, strap_model, body_model;
+  doa4::suitconv::core::PartArena arena;
+  int64_t chest = 0;
+  doa4::suitconv::core::Part *morph = nullptr, *reversed = nullptr, *thin = nullptr, *carried = nullptr, *body = nullptr,
+                             *strap = nullptr;
+  std::vector<std::optional<doa4::suitconv::core::Object>> objects;
+  doa4::suitconv::core::PyDict<int64_t, int64_t> chan2id;
+  std::vector<doa4::suitconv::core::Part*> parts;
+
+  doa4::suitconv::core::Part* Make(const doa4::suitconv::core::Model* model, int64_t decl, int64_t owner,
+                                   std::vector<doa4::suitconv::core::Vec3> pos) {
+    doa4::suitconv::core::Part* p = arena.New();
+    p->model = model;
+    p->obj_id = 0;
+    p->decl_index = decl;
+    p->owner = owner;
+    for (const auto& v : pos) {
+      doa4::suitconv::core::Vert vv;
+      vv.pos = v;
+      p->verts.push_back(vv);
+    }
+    return p;
+  }
+
+  BustFixture() {
+    namespace core = doa4::suitconv::core;
+    std::vector<uint8_t> data;
+    auto desc = [](uint32_t base, uint32_t size) {
+      std::vector<uint8_t> d;
+      PutBe32(d, base);
+      PutBe32(d, size);
+      return d;
+    };
+    chest_model.vbs = {desc(0, 16 * n), desc(80, 12 * n), desc(140, 12 * n)};
+    for (int j = 0; j < n; ++j) {  // main buffer: position + 4 pad bytes
+      PutBeF(data, 0.0625f * float(j));
+      PutBeF(data, 0.125f);
+      PutBeF(data, -0.25f);
+      PutBe32(data, 0);
+    }
+    for (int j = 0; j < n; ++j) {  // buffer 1: the up target = P + UpOff
+      const auto o = UpOff(j);
+      PutBeF(data, 0.0625f * float(j) + o[0]);
+      PutBeF(data, 0.125f + o[1]);
+      PutBeF(data, -0.25f + o[2]);
+    }
+    for (int j = 0; j < n; ++j) {  // buffer 2: the down target
+      const auto o = DnOff(j);
+      PutBeF(data, 0.0625f * float(j) + o[0]);
+      PutBeF(data, 0.125f + o[1]);
+      PutBeF(data, -0.25f + o[2]);
+    }
+    chest_model.x.data = data;
+    auto tail = [](uint32_t vb, uint32_t stride) {
+      std::vector<uint8_t> t;
+      PutBe32(t, vb);
+      PutBe32(t, stride);
+      PutBe32(t, 0);
+      PutBe32(t, 0);
+      return t;
+    };
+    auto morph_decl = [&](uint32_t up_vb, uint32_t down_vb) {
+      tp::Decl d;
+      d.head = {0, 7, 0, 0, 2, uint32_t(n), 0, 0, 0, 0, 0, 0};
+      d.elems = {tp::DeclElem{0, 0, 0x2A23B9, 0, 0, 0, 0}, tp::DeclElem{0xFF, 0, 0, 0, 0, 0, 0}};
+      d.tails = {tail(0, 16), tail(0, 0), tail(0, 0), tail(0, 0), tail(0, 0), tail(up_vb, 12), tail(down_vb, 12)};
+      return d;
+    };
+    chest_model.geo.resize(1);
+    chest_model.geo[0].decls = {morph_decl(1, 2), morph_decl(2, 1)};
+    tp::Decl plain;
+    plain.head = {0, 1, 0, 0, 2, uint32_t(n), 0, 0, 0, 0, 0, 0};
+    plain.elems = {tp::DeclElem{0, 0, 0x2A23B9, 0, 0, 0, 0}, tp::DeclElem{0xFF, 0, 0, 0, 0, 0, 0}};
+    plain.tails = {tail(0, 16)};
+    chest_model.geo[0].decls.push_back(plain);
+
+    const std::vector<core::Vec3> cpos = {{0, 0, 0}, {10, 0, 0}, {20.0, 0, 0}, {30.0, 0, 0}, {0.022, 5.0, 0}};
+    morph = Make(&chest_model, 0, chest, cpos);
+    reversed = Make(&chest_model, 1, chest, cpos);
+    thin = Make(&chest_model, 2, chest, cpos);
+    carried = Make(nullptr, 0, chest, cpos);
+    body = Make(&body_model, 0, 5, {{20.0005, 0, 0}, {30.0025, 0, 0}, {0.025, 5.0, 0}});
+    strap = Make(&strap_model, 0, 7, {{0, 0.02, 0}});
+    objects.resize(1);
+    objects[0] = core::Object{{morph, reversed, thin, carried}, {1}};
+    chan2id.Set(0x9000, chest);
+    parts = {morph, reversed, thin, carried, body, strap};
+  }
+  BustFixture(const BustFixture&) = delete;
+  BustFixture& operator=(const BustFixture&) = delete;
+};
+
+// A cloth chunk laid out by hand (offsets in hex): cloth count 1 at 0x18, table at 0x20 -> C = 0x40; C+0x24 -> GRID_DATA at
+// 0x80 (its node block at 0xC0, 48 bytes a node, the first 12 the position), C+0x2C -> FIX_GRID after the nodes (one pin,
+// node `pinned`), C+0x38 -> the shape chain after that, 0x70 bytes a shape, in the order given. A sphere (type 2) has its
+// centre at +0x30 and its radius at +0x3C; a capsule (type 1) its start at +0x30, its axis vector at +0x40 and its radius
+// at +0x4C. The shapes' bone is `bone`; none is bound.
+struct ClothShape {
+  int type = 2, bone = 0;
+  std::array<float, 3> a{}, axis{};
+  float r = 0.1f;
+};
+inline void SetBe32(std::vector<uint8_t>& b, size_t at, uint32_t v) {
+  for (int i = 0; i < 4; ++i) b.at(at + size_t(i)) = uint8_t(v >> (8 * (3 - i)));
+}
+inline std::vector<uint8_t> ClothChunk(const std::vector<std::array<float, 3>>& nodes, int pinned,
+                                       const std::vector<ClothShape>& shapes) {
+  const size_t nodes_at = 0xC0, fg = (nodes_at + 48 * nodes.size() + 0xF) & ~size_t(0xF), chain = fg + 0x40;
+  std::vector<uint8_t> b(chain + 0x70 * shapes.size(), 0);
+  auto f32 = [&](size_t at, float v) { SetBe32(b, at, std::bit_cast<uint32_t>(v)); };
+  SetBe32(b, 0x18, 1);
+  SetBe32(b, 0x1C, 0x20);
+  SetBe32(b, 0x20, 0x40);
+  SetBe32(b, 0x40 + 0x24, 0x40);
+  SetBe32(b, 0x40 + 0x2C, uint32_t(fg - 0x40));
+  SetBe32(b, 0x40 + 0x38, uint32_t(chain - 0x40));
+  SetBe32(b, 0x80 + 0x20, 0x40);
+  SetBe32(b, 0x80 + 0x24, uint32_t(nodes.size()));
+  for (size_t k = 0; k < nodes.size(); ++k)
+    for (size_t c = 0; c < 3; ++c) f32(nodes_at + 48 * k + 4 * c, nodes[k][c]);
+  SetBe32(b, fg + 0x18, 0x20);
+  SetBe32(b, fg + 0x1C, 1);
+  SetBe32(b, fg + 0x20 + 0x14, uint32_t(0x40 + 48 * pinned));
+  for (size_t i = 0; i < shapes.size(); ++i) {
+    const size_t at = chain + 0x70 * i;
+    const ClothShape& s = shapes[i];
+    SetBe32(b, at, uint32_t(s.type));
+    SetBe32(b, at + 4, uint32_t(s.bone));
+    SetBe32(b, at + 8, i + 1 < shapes.size() ? uint32_t(0x70 * (i + 1)) : 0u);
+    for (size_t c = 0; c < 3; ++c) f32(at + 0x30 + 4 * c, s.a[c]);
+    if (s.type == 2) {
+      f32(at + 0x3C, s.r);
+    } else {
+      for (size_t c = 0; c < 3; ++c) f32(at + 0x40 + 4 * c, s.axis[c]);
+      f32(at + 0x4C, s.r);
+    }
+  }
+  return b;
+}
+
 }  // namespace conv
+
+// The generated cloth's synthetic world: a hand-made skirt (no game byte): an 8-sided tube of 3 rows whose seam column is
+// stored twice (27 vertices, 24 nodes after the weld), a second mesh whose pass is not a skirt mesh (its triangle must be
+// left out), synthetic donors with the offsets cloth_gen reads. kPins are what the recipe's own cloth_gen.build produced for
+// the same input in the recipe's interpreter (length and SHA-1 of the chunk). The seam duplicate sits at x = 0.00025, which
+// divides by the weld size 0.0005 to exactly 0.5: round() ties to even and welds it to the column at x = 0 (key 0); a
+// round-half-away weld key (key 1) leaves it alone.
+namespace gensy {
+using doa4::suitconv::core::Vec3;
+namespace tp = doa4::suitconv::tpr;
+
+inline void PutWords(std::vector<uint8_t>& b, size_t at, std::initializer_list<uint32_t> words) {
+  for (uint32_t w : words) {
+    b[at] = uint8_t(w >> 24);
+    b[at + 1] = uint8_t(w >> 16);
+    b[at + 2] = uint8_t(w >> 8);
+    b[at + 3] = uint8_t(w);
+    at += 4;
+  }
+}
+inline void PutBytes(std::vector<uint8_t>& b, size_t at, const char* s, size_t n) {
+  for (size_t i = 0; i < n; ++i) b[at + i] = uint8_t(s[i]);
+}
+
+inline std::vector<uint8_t> Donor() {
+  std::vector<uint8_t> d = synth::Seeded(7, 0x80000);
+  const std::pair<size_t, const char*> clouds[] = {{0x538C0, "ks_skirt"}, {0x71450, "ht_skirt"}};
+  for (const auto& [base, name] : clouds) {
+    const size_t c = base + 0x50;
+    PutWords(d, base + 0x1C, {0x40});
+    PutWords(d, base + 0x40, {0x50});
+    PutBytes(d, c, "CLOTH_DATA", 10);
+    for (size_t i = 10; i < 16; ++i) d[c + i] = 0;
+    PutWords(d, c + 0x18, {0xF0});
+    PutWords(d, c + 0x20, {0x80});
+    PutWords(d, c + 0x38, {0x120});
+    PutBytes(d, c + 0x70, name, 8);
+    PutWords(d, c + 0x80 + 0x34, {std::bit_cast<uint32_t>(1.5f)});
+    PutWords(d, c + 0x80 + 0x5C, {std::bit_cast<uint32_t>(0.75f)});
+    PutWords(d, c + 0x120 + 8, {0x20});
+    PutWords(d, c + 0x120 + 0x20 + 8, {0});
+  }
+  return d;
+}
+inline std::vector<uint8_t> Bend() {
+  std::vector<uint8_t> b = synth::Seeded(9, 0x600);
+  const size_t mm = 0x100;
+  PutBytes(b, mm, "MULTI_CLOTH", 11);
+  b[mm + 11] = 0;
+  PutWords(b, mm + 0x1C, {0x40});
+  PutWords(b, mm + 0x40, {0x50});
+  const size_t mc0 = mm + 0x50;
+  PutWords(b, mc0 + 0x34, {0x100});
+  const size_t th0 = mc0 + 0x100;
+  PutWords(b, th0 + 0x28, {0x60});
+  PutWords(b, th0 + 0x60, {1, 0x40});
+  PutWords(b, th0 + 0x60 + 0x2C, {2});
+  return b;
+}
+
+inline constexpr Vec3 kOwn{0.0, 0.25, -0.125};
+
+struct Skirt {
+  doa4::suitconv::core::Model suit;
+  doa4::suitconv::core::PartArena arena;
+  doa4::suitconv::core::Part* part = nullptr;
+  std::vector<tp::ObjGeo> geos;
+  doa4::suitconv::core::PyDict<int64_t, Vec3> bind4;
+};
+
+inline void MakeSkirt(Skirt& sk) {
+  namespace core = doa4::suitconv::core;
+  const double ring[8][2] = {{0, 1}, {-0.75, 0.75}, {-1, 0}, {-0.75, -0.75}, {0, -1}, {0.75, -0.75}, {1, 0}, {0.75, 0.75}};
+  const double yrow[3] = {1.0, 0.75, 0.5};
+  core::Part* p = sk.arena.New();
+  sk.part = p;
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 9; ++c) {
+      const int k = c % 8;
+      double x = ring[k][0] * 0.25;
+      const double z = ring[k][1] * 0.25;
+      if (c >= 1 && c <= 7) x += double((c * 7 + r) % 3) * 0x1p-10;
+      const double y = yrow[r] + double((r * 5 + k * 3) % 4) * 0x1p-8;
+      if (c == 8 && r == 0) x = 0.00025;
+      core::Vert v;
+      v.pos = Vec3{x, y + kOwn[1], z + kOwn[2]};
+      p->verts.push_back(v);
+    }
+  std::vector<uint16_t> idx;
+  for (int r = 0; r < 2; ++r) {
+    for (int c = 0; c < 9; ++c) {
+      idx.push_back(uint16_t(r * 9 + c));
+      idx.push_back(uint16_t((r + 1) * 9 + c));
+    }
+    idx.push_back(0xFFFF);
+  }
+  for (uint16_t i : {0, 1, 2}) idx.push_back(i);
+  p->icount = uint32_t(idx.size());
+  for (uint16_t i : idx) {
+    p->ib.push_back(uint8_t(i >> 8));
+    p->ib.push_back(uint8_t(i));
+  }
+  for (const auto& [st, cnt] : {std::pair<uint32_t, uint32_t>{0, 38}, {38, 3}}) {
+    std::vector<uint8_t> m(0x40, 0);
+    PutWords(m, 0x10, {st, cnt});
+    p->meshes.push_back(m);
+  }
+  p->passes = {core::PassRec{1, 0, 0}, core::PassRec{5, 0, 0}};
+  tp::Decl d;
+  d.head = {0, 1, 0, uint32_t(idx.size()), 3, 27, 0, 0, 1, 0, 0, 0};
+  d.elems = {tp::DeclElem{0, 0, 0x2A23B9, 0, 0, 0, 0}, tp::DeclElem{0, 12, 0x2A23B9, 0, 3, 0, 0},
+             tp::DeclElem{0xFF, 0, 0, 0, 0, 0, 0}};
+  std::vector<uint8_t> tail(16, 0);
+  PutWords(tail, 4, {24});
+  d.tails = {tail};
+  sk.geos.resize(2);
+  sk.geos[1].decls = {d, d};
+  sk.bind4.Set(1, kOwn);
+}
+
+struct Pin {
+  const char* design;
+  size_t length;
+  const char* sha1;
+};
+inline const Pin kPins[] = {{"vks_on_o", 7904, "3a012dac510bf2b612ddd36da3c733ad88832148"},
+                            {"vle_sk_h", 7664, "2d7e599e93107b2dedd109cd16d577ee41611442"}};
+
+inline uint32_t U32At(const std::vector<uint8_t>& b, size_t at) {
+  return uint32_t(b.at(at)) << 24 | uint32_t(b.at(at + 1)) << 16 | uint32_t(b.at(at + 2)) << 8 | b.at(at + 3);
+}
+inline std::string What(const std::exception& e) { return e.what(); }
+}  // namespace gensy
 
 }  // namespace synth
