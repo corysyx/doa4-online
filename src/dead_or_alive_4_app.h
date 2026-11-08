@@ -61,8 +61,10 @@
 #include "doa4_afs_overlay.h"
 #include "doa4_afs_vfs.h"
 #include "doa4_display.h"
+#include "doa4_suitconv_job.h"
 #include "doa4_suits.h"
 #include "doa4_suits_hooks.h"
+#include "doa4_suits_import_flow.h"
 #include "doa4_suits_labels.h"
 #include "doa4_suits_picks.h"
 #include "doa4_title_word.h"
@@ -253,6 +255,19 @@ class DeadOrAlive4App : public rex::ReXApp {
       REXLOG_WARN("[doa4][SETUP] could not save doa4_game_files ({}); the setup screen will "
                   "open again next time",
                   error);
+    }
+    return error;
+  }
+
+  // The offer-again setting: saved like doa4_game_files. Unused until Task 5 wires it as the import Flow's save_pending effect.
+  std::string SaveSuitsImportPending(bool pending) {
+    const std::string error =
+        doa4::SaveTomlKey(ConfigPath(), "doa4_suits_import_pending", pending ? "true" : "false");
+    if (error.empty()) {
+      rex::cvar::SetFlagByName("doa4_suits_import_pending", pending ? "true" : "false");
+      REXLOG_INFO("[doa4][SUITS] saved doa4_suits_import_pending = {}", pending ? "true" : "false");
+    } else {
+      REXLOG_WARN("[doa4][SUITS] could not save doa4_suits_import_pending ({})", error);
     }
     return error;
   }
@@ -1497,6 +1512,10 @@ class DeadOrAlive4App : public rex::ReXApp {
   bool guest_ready_ = false;
   doa4::tweaks::TweakPatcher patcher_;
   doa4::suits::ImportStatus suits_status_;  // DOAX2 swimsuits (SetUpSuits)
+  // Set by the first-run setup screen (Task 5, OnFinalizePaths) before SetUpSuits runs.
+  bool first_run_shown_ = false;
+  // Why the finished import could not be put in place at this start ("" when it was, or there was none); Task 6 draws it in Extras.
+  std::string suits_swap_problem_;
   std::string suits_checksum_;              // suits::ImportChecksum, what this PC tells the other player; "" without an import
   std::shared_ptr<const doa4::afs::Overlay> title_spr_;  // spr.afs as the title word serves it (SetUpLabels goes on top)
   doa4::tweaks::ProtectFn protect_;
@@ -1541,6 +1560,20 @@ class DeadOrAlive4App : public rex::ReXApp {
     const std::filesystem::path game_root = std::filesystem::absolute(rt->game_data_root());
     using doa4::np::rules::SuitSession;
     const bool session = session_.has_value();
+    // Review Focus 2: a session process never completes a swap (s.complete_swap is false there). The hand-off's checksum names
+    // the import the lobby process loaded, and the session must load that same import, so nothing may replace it here. In a
+    // process that is not a session the finished import is put in place BEFORE LoadImport opens the folder (LoadImport holds
+    // the current import's files open for the whole run, which blocks a swap).
+    const doa4::suits_import::StartupSuits s = doa4::suits_import::DecideStartup(
+        session, rex::cvar::Query<bool>("doa4_suits_import_pending"), first_run_shown_);
+    if (s.complete_swap) {
+      const std::string why = doa4::suitconv::CompletePendingSwap(
+          UserData(), [](std::string_view line) { REXLOG_INFO("[doa4][SUITS] {}", line); });
+      if (!why.empty()) {
+        REXLOG_WARN("[doa4][SUITS] the finished import could not be put in place: {}", why);
+        suits_swap_problem_ = why;
+      }
+    }
     const SuitSession suit_state = session ? session_->suit_state : SuitSession::kNone;
     if (session) {
       REXLOG_INFO("[doa4][SUITS] session: the hand-off says swimsuits {}", doa4::np::rules::SuitSessionName(suit_state));

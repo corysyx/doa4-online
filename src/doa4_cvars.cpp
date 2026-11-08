@@ -19,6 +19,11 @@ REXCVAR_DEFINE_BOOL(doa4_show_fps, false, "DOA4", "Show frames per second over t
 REXCVAR_DEFINE_STRING(doa4_game_files, "", "DOA4",
                       "Folder holding the game files (default.xex), chosen by the first-run setup");
 
+// DOAX2 swimsuit import (doa4_suits_import_flow.h): set when an import starts, cleared when it ends well; while set, the
+// next start offers the import again.
+REXCVAR_DEFINE_BOOL(doa4_suits_import_pending, false, "DOA4",
+                    "A DOAX2 swimsuit import was started and has not finished; the next start offers it again");
+
 // The save and shader-cache folder (doa4_gamefiles.h ChooseUserData); the
 // command line's --user_data_root overrides it. Empty: Documents\dead_or_alive_4.
 REXCVAR_DEFINE_STRING(doa4_user_data, "", "DOA4",

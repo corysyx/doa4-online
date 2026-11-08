@@ -51,6 +51,7 @@ struct ImportStatus {
   std::string fingerprint;           // SHA-1 of the canonical manifest text (with file order and converter); empty without one
   std::vector<LoadedSuit> suits;     // passed every check, in manifest order
   std::vector<std::string> skipped;  // "<label>: <why>", one per suit left out
+  std::string converter;             // the manifest's converter word, set as soon as the manifest parses; empty without one
   std::string problem;               // why nothing loaded, or empty
   std::string Summary() const;
   void Fail(const std::string& why);  // nothing loads: the problem is set, the suits dropped

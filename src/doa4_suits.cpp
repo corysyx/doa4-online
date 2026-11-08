@@ -123,6 +123,7 @@ ImportStatus LoadImport(const std::filesystem::path& folder, const std::filesyst
   }
   const std::string canonical = FormatManifest(*parsed.manifest);
   status.fingerprint = gamefiles::Sha1Hex(canonical.data(), canonical.size());
+  status.converter = parsed.manifest->converter;  // here, not after the suit checks: a manifest whose suits all fail still reports it
 
   // Each game archive is opened once for the whole import: its TOC, and the open file the slot
   // contents are read through. Released when LoadImport returns.

@@ -48,6 +48,7 @@ set(DEADORALIVE4_SOURCES
     src/doa4_xdvdfs.cpp
     src/doa4_gamefiles.cpp
     src/doa4_setup_flow.cpp
+    src/doa4_suits_import_flow.cpp
     src/doa4_setup_win.cpp
     src/doa4_setup_dialog.cpp
     src/net/np_core.cpp

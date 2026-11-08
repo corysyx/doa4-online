@@ -242,6 +242,49 @@ static void TestNoFolder() {
   CHECK(s.path == w.root / "nothing" && s.problem.empty() && s.fingerprint.empty());
 }
 
+// The manifest's converter word is read into the status (the first-run offer compares it with the current converter).
+static void TestConverterWordRead() {
+  World w;
+  FakeGuest g;
+  std::string text = w.TwoSuits();
+  const std::string from = "converter test\n";
+  text.replace(text.find(from), from.size(), "converter proto-1c\n");
+  WriteText(w.import / "manifest.txt", text);
+  const ImportStatus s = LoadImport(w.import, w.game, g.guest);
+  CHECK(s.suits.size() == 2 && s.problem.empty());
+  CHECK(s.converter == "proto-1c");
+}
+
+// A manifest that parses reports its word even when every suit in it fails a check.
+static void TestConverterWordKeptWhenSuitsFail() {
+  World w;
+  FakeGuest g;
+  std::string text = w.TwoSuits();
+  const std::string from = "converter test\n";
+  text.replace(text.find(from), from.size(), "converter proto-1c\n");
+  WriteText(w.import / "manifest.txt", text);
+  for (const char* name : {"ka.tpr", "ay.tpr"}) {
+    std::vector<uint8_t> changed = w.files[name];
+    changed[100] ^= 1;
+    Write(w.import / name, changed);
+  }
+  const ImportStatus s = LoadImport(w.import, w.game, g.guest);
+  CHECK(s.suits.empty() && s.skipped.size() == 2);
+  CHECK(s.converter == "proto-1c");
+  CHECK(!s.fingerprint.empty());
+}
+
+// No word without a manifest that parses: no folder, a folder without a manifest, a manifest that does not parse.
+static void TestConverterWordEmptyWithoutManifest() {
+  World w;
+  FakeGuest g;
+  CHECK(LoadImport(w.import, w.game, g.guest).converter.empty());
+  CHECK(LoadImport(w.root / "nothing", w.game, g.guest).converter.empty());
+  WriteText(w.import / "manifest.txt", "not a manifest\n");
+  const ImportStatus bad = LoadImport(w.import, w.game, g.guest);
+  CHECK(!bad.problem.empty() && bad.converter.empty());
+}
+
 // A regular file where the folder should be is not an import folder.
 static void TestImportIsAFile() {
   World w;
@@ -1752,6 +1795,7 @@ int main() {
   TestNoFolder();
   TestImportIsAFile();
   TestNoManifest();
+  TestConverterWordEmptyWithoutManifest();
   TestBadManifest();
   TestManifestSizeLimit();
   TestPicksTable();
@@ -1761,6 +1805,8 @@ int main() {
   if (const std::optional<doa4_test::CostumeImage> image = doa4_test::LoadCostumeImage(&why)) {
     g_image = &*image;
     TestLoadsTwo();
+    TestConverterWordRead();
+    TestConverterWordKeptWhenSuitsFail();
     TestFingerprintIsCanonical();
     TestKnownChecksums();
     TestBigFiles();
