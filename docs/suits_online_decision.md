@@ -1,6 +1,6 @@
 # Imported swimsuits online: the decision record (Task 7, Task 7b)
 
-Sections 1, 3c and 6 are Task 7b's, on `public-suits` after e68224b, snapshot `t8b` (a snapshot of the working tree before the fixes were committed as 5f2020c, not of a commit: **every number in `t8/gsum_all.txt` and in this record's tables is from `t8b`**); section 3d is Task 7c's fix round, and section 9 is the final-commit gate, **which has not run yet**; the rest describes Task 7's runs. Task 7's build: `public-suits` at 82d585b, tools/np_build.bat, SDK sdk-np1-ft, snapshot `t7b` (rebuilt from the clean tree; `git status` shows only `tools/__pycache__`). Import under test: `physics_spike/imports/all34_m1` (the m1 recipe, per-suit bust strengths), copied into a test user data folder for whichever side holds it. Evidence folder: `notes/plans/2026-11-06-public-importer-plan1-foundation/t7/`. Report: `../plans/2026-11-06-public-importer-plan1-foundation/task-7-report.md`.
+Sections 1, 3c and 6 are Task 7b's, on `public-suits` after 34d7204, snapshot `t8b` (a snapshot of the working tree before the fixes were committed as 5f00ad4, not of a commit: **every number in `t8/gsum_all.txt` and in this record's tables is from `t8b`**); section 3d is Task 7c's fix round, and section 9 is the final-commit gate, **which has not run yet**; the rest describes Task 7's runs. Task 7's build: `public-suits` at 061820b, tools/np_build.bat, SDK sdk-np1-ft, snapshot `t7b` (rebuilt from the clean tree; `git status` shows only `tools/__pycache__`). Import under test: `physics_spike/imports/all34_m1` (the m1 recipe, per-suit bust strengths), copied into a test user data folder for whichever side holds it. Evidence folder: `notes/plans/2026-11-06-public-importer-plan1-foundation/t7/`. Report: `../plans/2026-11-06-public-importer-plan1-foundation/task-7-report.md`.
 
 ## 1. Verdict
 
@@ -340,7 +340,7 @@ Written to `t7/audit_table.md`; its rows follow.
 
 ## 9. The final-commit gate (Task 7c)
 
-Snapshot `t9`, built from commit 68fbfb3, SDK `sdk-np1-ft` c276e9b. `t9/batch7.sh`, 24 pairs, 2026-11-07, 90 minutes, nothing else running. Read with `t9/summ.py` (`t9/summ_all.txt`). The rows of sections 3 and 3c are from `t8b`; this section is what a commit has run.
+Snapshot `t9`, built from commit 3ec2343, SDK `sdk-np1-ft` c276e9b. `t9/batch7.sh`, 24 pairs, 2026-11-07, 90 minutes, nothing else running. Read with `t9/summ.py` (`t9/summ_all.txt`). The rows of sections 3 and 3c are from `t8b`; this section is what a commit has run.
 
 | Pairs | Script | Holder | Frames | Round frames | Result |
 |---|---|---|---|---|---|
@@ -361,9 +361,9 @@ In all of them: `verdict ok`, position, life and state rows differing 0, made-eq
 
 **What this doesn't show:** a lock-held frame, since none has happened, so the skip path has only host tests; two PCs, other CPUs, a slower PC. `H_TM`'s two tag-outs are few: `H_L1` and `H_td1` carry the tag-out count.
 
-**After this gate,** comments, `tools/np_pair.py`, the fake, its tests, this record and the SDK pin changed (`git diff 68fbfb3`); the code the game runs did not. The final commit's short run is below.
+**After this gate,** comments, `tools/np_pair.py`, the fake, its tests, this record and the SDK pin changed (`git diff 3ec2343`); the code the game runs did not. The final commit's short run is below.
 
-**The final commit, 56cd351, snapshot `t10`, 2026-11-07 (`t9/batch8.sh`, `t9/summ_z.txt`).**
+**The final commit, a5d9135, snapshot `t10`, 2026-11-07 (`t9/batch8.sh`, `t9/summ_z.txt`).**
 
 | Pair | Script | Holder | Frames | Round frames | Result |
 |---|---|---|---|---|---|
