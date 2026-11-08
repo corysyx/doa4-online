@@ -513,6 +513,9 @@ std::wstring FolderClaimName(const fs::path& ud) {
   return L"Local\\doa4-suitconv-" + std::wstring(hex.begin(), hex.end());
 }
 
+// Test seam: replaces CreateEventW in FolderClaim::Take (null = the real one), so a host test can reach the failure branch.
+HANDLE (*g_create_event)(const wchar_t* name) = nullptr;
+
 class FolderClaim {
  public:
   FolderClaim() = default;
@@ -522,14 +525,20 @@ class FolderClaim {
   // False when the folder is taken: by another claim in this process, or by another process (a named event per folder, see
   // FolderClaimName). The event's EXISTENCE is the claim, never its ownership: this claim is released from the job's own thread,
   // not the thread that took it. The OS drops the event when its last process dies. Nothing is created in the user data folder.
-  bool Take(const fs::path& ud) {
+  // On false, *error says why: 0 = the folder is held by another claim or process; otherwise the Windows error code of the
+  // failed CreateEventW (the folder was not claimed, and nobody is known to hold it).
+  bool Take(const fs::path& ud, DWORD* error) {
+    *error = 0;
     key_ = FolderKey(ud);
     std::lock_guard<std::mutex> lk(g_active_mu);
     if (!ActiveFolders().insert(key_).second) return false;
     SetLastError(0);
-    HANDLE event = CreateEventW(nullptr, TRUE, FALSE, FolderClaimName(ud).c_str());
-    if (!event || GetLastError() == ERROR_ALREADY_EXISTS) {
+    const std::wstring name = FolderClaimName(ud);
+    HANDLE event = g_create_event ? g_create_event(name.c_str()) : CreateEventW(nullptr, TRUE, FALSE, name.c_str());
+    const DWORD err = GetLastError();
+    if (!event || err == ERROR_ALREADY_EXISTS) {
       if (event) CloseHandle(event);
+      else *error = err ? err : ERROR_GEN_FAILURE;  // a failure with no error code still must not read as "held"
       ActiveFolders().erase(key_);
       return false;
     }
@@ -1185,9 +1194,14 @@ std::unique_ptr<ImportJob> ImportJob::StartForTest(ImportRequest request, Hooks 
     raw->prog.fraction = 1.0;
     raw->done.store(true);
   };
-  if (!raw->claim.Take(raw->req.user_data)) {
-    // An import is already working on this folder (in this process): nothing is started and nothing is touched.
-    finish_without_threads("an import is already running in " + Utf8(raw->req.user_data) + "; this one was not started");
+  DWORD claim_error = 0;
+  if (!raw->claim.Take(raw->req.user_data, &claim_error)) {
+    // Nothing is started and nothing is touched: an import is already working on this folder, or the lock could not be made.
+    if (claim_error != 0)
+      finish_without_threads("could not lock the user data folder (error " + std::to_string(claim_error) + ") in " +
+                             Utf8(raw->req.user_data) + "; this import was not started");
+    else
+      finish_without_threads("an import is already running in " + Utf8(raw->req.user_data) + "; this one was not started");
     return job;
   }
   try {
@@ -1232,11 +1246,19 @@ uint64_t BytesNeeded(std::span<const SuitRecipe> suits) {
 uint64_t BytesNeeded() { return BytesNeeded(Suits()); }
 
 std::wstring FolderClaimNameForTest(const fs::path& user_data) { return FolderClaimName(user_data); }
+void SetFolderClaimCreateEventForTest(void* (*create_event)(const wchar_t* name)) {
+  g_create_event = reinterpret_cast<HANDLE (*)(const wchar_t*)>(create_event);
+}
 
 std::string CompletePendingSwap(const fs::path& user_data, const std::function<void(std::string_view)>& log) {
   FolderClaim claim;  // held while it works: an import started meanwhile on this folder is refused
-  if (!claim.Take(user_data))
+  DWORD claim_error = 0;
+  if (!claim.Take(user_data, &claim_error)) {
+    if (claim_error != 0)
+      return "could not lock the user data folder (error " + std::to_string(claim_error) + ") in " + Utf8(user_data) +
+             "; nothing was changed";
     return "an import is running in " + Utf8(user_data) + "; nothing was changed";
+  }
   const Logger logger = [&log](const std::string& s) {
     try {
       if (log) log(s);

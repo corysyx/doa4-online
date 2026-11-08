@@ -1812,6 +1812,33 @@ static void TestInProcessGuard() {
   CK(!Exists(w2.New()));
 }
 
+static void* FailingCreateEvent(const wchar_t*) {
+  SetLastError(ERROR_ACCESS_DENIED);
+  return nullptr;
+}
+
+// A CreateEventW that fails is not "an import is running": both entry points name the lock failure and its error code, touch
+// nothing, and the folder is claimable again once the seam is removed.
+static void TestFolderClaimFailure() {
+  Group("folder_claim_failure");
+  World w("claimfail");
+  w.WriteCurrent(w.Cur(), "cur", true);
+  fs::create_directories(w.New());
+  WriteText(w.New() / kMarker, "doa4 suit importer\n");
+  const Snap before = SnapTree(w.ud);
+  SetFolderClaimCreateEventForTest(&FailingCreateEvent);
+  const std::string why = CompletePendingSwap(w.ud);
+  CKF(Has(why, "could not lock the user data folder (error 5)") && !Has(why, "import is running"), "CompletePendingSwap: '%s'", why.c_str());
+  auto b = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+  CK(b->done());
+  const ImportResult rb = b->result();
+  CKF(Is(rb, Outcome::kFailed) && Has(rb.detail, "could not lock the user data folder (error 5)") && !Has(rb.detail, "already running"),
+      "StartForTest: outcome %d (%s)", int(rb.outcome), rb.detail.c_str());
+  SetFolderClaimCreateEventForTest(nullptr);
+  CK_SAME(before, SnapTree(w.ud), "user data after the refused calls");
+  CK(CompletePendingSwap(w.ud).empty());  // the failed claims left nothing held
+}
+
 // Another PROCESS is simulated by the test creating the folder's named kernel object itself: while it exists, CompletePendingSwap
 // and a Start on that folder are refused and touch nothing (a planted interrupted .new is the thing a recovery would delete).
 static void TestCrossProcessGuard() {
@@ -2869,6 +2896,7 @@ int main() {
     }
     if (Want("final_guard")) TestInProcessGuard();
     if (Want("final_cross_process")) TestCrossProcessGuard();
+    if (Want("folder_claim_failure")) TestFolderClaimFailure();
     if (Want("final_ownerless")) TestOwnerlessFolderRecovery();
     if (Want("final_held_folder")) TestHeldFolderKeepsMarker();
     if (Want("final_swap_retry")) TestSwapRetriesBlockedRename();
