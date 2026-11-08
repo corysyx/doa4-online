@@ -70,7 +70,8 @@ class SetupDialog : public rex::ui::ImGuiDialog {
   void RunTestScript();
   void LogStage();
   void DrawSuitsScreen(bool offer_title);  // kSuitsOffer, and kFirstRun after the DOA4 part when the section comes back
-  void StartImport();                      // Flow::Start over the known game folder
+  std::function<void(std::function<void()>)> GuardedDefer();  // host_.defer that skips a call queued before ~SetupDialog
+  void StartImport();                     // Flow::Start over the known game folder
   void FinishSuits(bool skip);             // once: end the section and resume the start
 
   SetupHost host_;

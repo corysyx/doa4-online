@@ -55,7 +55,20 @@ SetupDialog::SetupDialog(rex::ui::ImGuiDrawer* drawer, SetupHost host)
       flow_(MakeEffects()),
       test_(setup::ParseTestScript(std::getenv("DOA4_SETUP_TEST"))) {
   if ((test_.active() || test_.doax2_active()) && host_.log) host_.log("test script active (DOA4_SETUP_TEST)");
+  if (host_.mode == SetupHost::Mode::kSuitsOffer && test_.active() && host_.log) {
+    host_.log("test script: the DOA4 part is ignored in the suits offer");
+  }
   game_folder_ = host_.current;
+}
+
+// host_.defer, but a call queued before this dialog was destroyed does nothing. The import flow is destroyed only after the
+// dialog (ResumeFromSetup, OnShutdown), so a call that passes this check still has its flow.
+std::function<void(std::function<void()>)> SetupDialog::GuardedDefer() {
+  return [this, alive = alive_weak_](std::function<void()> fn) {
+    host_.defer([alive, fn = std::move(fn)] {
+      if (auto a = alive.lock(); a && *a) fn();
+    });
+  };
 }
 
 SetupDialog::~SetupDialog() {
@@ -106,7 +119,7 @@ setup::Effects SetupDialog::MakeEffects() {
   fx.done = [this](const fs::path& folder) {
     if (host_.log) host_.log("chosen: " + Utf8(folder));
     game_folder_ = folder;
-    save_error_ = host_.done(folder);
+    if (host_.done) save_error_ = host_.done(folder);
   };
   return fx;
 }
@@ -146,7 +159,7 @@ void SetupDialog::FinishSuits(bool skip) {
 void SetupDialog::DrawSuitsScreen(bool offer_title) {
   if (offer_title) Wrapped(nullptr, std::string(suits_import::kOfferTitle));
   suits_import::DrawHooks hooks;
-  hooks.defer = host_.defer;
+  hooks.defer = GuardedDefer();
   hooks.start_game = [this] { FinishSuits(false); };
   hooks.start_import = [this] { StartImport(); };
   suits_import::DrawSuitImport(*host_.suits, hooks);
@@ -178,7 +191,7 @@ void SetupDialog::RunTestScript() {
         }
         if (host_.mode == SetupHost::Mode::kSuitsOffer) FinishSuits(true);
       } else {
-        host_.defer([this] {
+        GuardedDefer()([this] {
           const fs::path source = *test_.doax2;
           std::error_code ec;
           const bool folder = fs::is_directory(source, ec);
@@ -193,7 +206,7 @@ void SetupDialog::RunTestScript() {
       }
     }
   }
-  if (!test_.active()) return;
+  if (!test_.active() || host_.mode == SetupHost::Mode::kSuitsOffer) return;  // the offer has no DOA4 part (no done callback)
   if (flow_.stage() == Stage::kChoose && !test_started_) {
     test_started_ = true;
     host_.defer([this] {
@@ -264,7 +277,7 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
         if (section) {
           ImGui::Separator();
           suits_import::DrawHooks hooks;
-          hooks.defer = host_.defer;
+          hooks.defer = GuardedDefer();
           suits_import::DrawSuitImport(*host_.suits, hooks);
         }
         ImGui::Spacing();
@@ -293,7 +306,7 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
         if (section) {
           ImGui::Separator();
           suits_import::DrawHooks hooks;
-          hooks.defer = host_.defer;
+          hooks.defer = GuardedDefer();
           suits_import::DrawSuitImport(*host_.suits, hooks);
         }
         break;

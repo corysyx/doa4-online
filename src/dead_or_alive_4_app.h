@@ -199,8 +199,11 @@ class DeadOrAlive4App : public rex::ReXApp {
   }
 
   void EndStartupSuits() {
+    const bool running = suits_flow_ && suits_flow_->busy();
+    if (running) REXLOG_INFO("[doa4][SETUP] suits: import running at close: cancelling");
     suits_flow_.reset();  // a running import is cancelled once, here
     if (suits_worker_.joinable()) suits_worker_.join();
+    if (running) REXLOG_INFO("[doa4][SETUP] suits: import stopped");
   }
 
   // The start-up section is over (UI thread, after a frame): close the screen, end the import flow, resume the start.
@@ -209,7 +212,11 @@ class DeadOrAlive4App : public rex::ReXApp {
     setup_resume_ = nullptr;
     CloseSetup();
     EndStartupSuits();
-    if (resume) resume();
+    if (resume) {
+      resume();
+    } else {
+      REXLOG_WARN("[doa4][SETUP] the setup section ended with no start to resume");
+    }
   }
 
   // The save and shader-cache folder: --user_data_root, else doa4_user_data,
