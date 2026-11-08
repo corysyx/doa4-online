@@ -71,8 +71,10 @@ struct FakeRunner : Runner {
   std::vector<sc::Progress> steps;
   sc::ImportResult res;
   bool until_cancel = false;
+  std::optional<sc::Progress> after_done;  // what progress() shows once done() has returned true
   sc::Progress progress() const override {
     if (until_cancel) return steps.front();
+    if (after_done && st->polls.load() >= int(steps.size())) return *after_done;
     const size_t i = std::min<size_t>(size_t(st->polls.load()), steps.size() - 1);
     return steps[i];
   }
@@ -98,6 +100,8 @@ struct Fake {
   std::vector<sc::Progress> steps{Prog(sc::Phase::kDone, 34, 34, 1.0)};
   sc::ImportResult res;
   bool until_cancel = false;
+  std::optional<sc::Progress> after_done;
+  bool per_run_state = false;  // every start gets a fresh RunState (f.state is the latest)
   std::shared_ptr<RunState> state = std::make_shared<RunState>();
   // threading
   bool defer = false;  // run_async queues the work instead of running it
@@ -132,7 +136,9 @@ struct Fake {
       requests.push_back(req);
       if (start_null) return nullptr;
       auto r = std::make_unique<FakeRunner>();
+      if (per_run_state) state = std::make_shared<RunState>();
       r->st = state;
+      r->after_done = after_done;
       r->steps = steps;
       r->res = res;
       r->until_cancel = until_cancel;
@@ -670,6 +676,109 @@ static void TestDestroyAfterUserCancelCancelsOnce() {
   CHECK(g.state->cancels == 0);
 }
 
+// Cancel run 1, retry (Start from kResult), and run 2 must be cancellable again: by Cancel(), and by ~Flow.
+static void TestRetryAfterCancel() {
+  for (const bool by_destructor : {false, true}) {
+    Fake f;
+    f.defer = true;
+    f.until_cancel = true;
+    f.per_run_state = true;
+    f.res.outcome = sc::Outcome::kCancelled;
+    auto flow = std::make_unique<Flow>(Mode::kFirstRun, f.Make());
+    CHECK(PickAndStart(f, *flow));
+    flow->Cancel();
+    CHECK(f.state->cancels == 1);
+    f.RunQueued();
+    CHECK(flow->stage() == Stage::kResult && flow->can_retry());
+    const auto run1 = f.state;
+    CHECK(flow->Start(kGame, Ud(), 2));  // the retry; run 2's waiter stays queued
+    CHECK(f.starts == 2 && f.state != run1 && f.state->cancels == 0);
+    CHECK(flow->busy());
+    if (by_destructor) {
+      flow.reset();
+    } else {
+      flow->Cancel();
+      flow->Cancel();
+    }
+    CHECK(f.state->cancels == 1);  // run 2 got exactly one Cancel
+    CHECK(run1->cancels == 1);     // and run 1 no second one
+    flow.reset();
+    CHECK(f.state->cancels == 1);
+  }
+}
+
+// A job that is done always has an outcome; if it says kRunning anyway the screen shows a failure, not "running".
+static void TestRunningOutcomeAtDone() {
+  Fake f;
+  f.res.outcome = sc::Outcome::kRunning;
+  Flow flow(Mode::kFirstRun, f.Make());
+  CHECK(PickAndStart(f, flow));
+  CHECK(flow.stage() == Stage::kResult && flow.result() && flow.result()->outcome == sc::Outcome::kFailed);
+  CHECK_LINES(flow.ResultLines(), (Lines{"The import failed (the import ended without a result). Nothing was changed."}));
+  CHECK(flow.can_retry());
+  CHECK(f.pending_calls == std::vector<bool>{true});
+  CHECK(f.LogHas("import: result kFailed"));
+}
+
+// A retry from kResult starts clean: while run 2 runs, run 1's result is gone and progress() is run 2's.
+static void TestRetryStartsClean() {
+  Fake f;
+  f.defer = true;
+  f.defer_posts = true;
+  f.per_run_state = true;
+  f.res.outcome = sc::Outcome::kWrongDisc;  // run 1: default steps end at kDone 34/34, fraction 1.0
+  Flow flow(Mode::kFirstRun, f.Make());
+  CHECK(PickAndStart(f, flow));
+  f.RunQueued();
+  auto drain = [&] {
+    for (;;) {
+      std::function<void()> fn;
+      {
+        std::lock_guard<std::mutex> lock(f.posts_mutex);
+        if (f.posts.empty()) return;
+        fn = std::move(f.posts.front());
+        f.posts.pop_front();
+      }
+      fn();
+    }
+  };
+  drain();
+  CHECK(flow.stage() == Stage::kResult && flow.result() && flow.progress().fraction == 1.0);
+  f.steps = {Prog(sc::Phase::kConverting, 3, 34, 0.2), Prog(sc::Phase::kDone, 34, 34, 0.9)};
+  f.res.outcome = sc::Outcome::kFailed;
+  CHECK(flow.Start(kGame, Ud(), 2));
+  CHECK(flow.busy() && !flow.result());
+  CHECK(flow.progress().fraction == 0 && flow.progress().suits_total == 0);  // not run 1's snapshot
+  CHECK(flow.ResultLines().empty() && !flow.can_retry());
+  f.RunQueued();  // run 2's waiter: posts its snapshots, nothing delivered yet
+  std::function<void()> first;
+  {
+    std::lock_guard<std::mutex> lock(f.posts_mutex);
+    CHECK(f.posts.size() == 3);
+    if (!f.posts.empty()) {
+      first = std::move(f.posts.front());
+      f.posts.pop_front();
+    }
+  }
+  if (first) first();  // run 2's first snapshot
+  CHECK(flow.busy() && !flow.result());
+  CHECK(flow.progress().suits_done == 3 && flow.progress().fraction == 0.2);
+  drain();
+  CHECK(flow.stage() == Stage::kResult && flow.result() && flow.result()->outcome == sc::Outcome::kFailed);
+}
+
+// n (the imported count) comes from the final snapshot, read after done(), not from the last one polled.
+static void TestFinalSnapshotDecidesCount() {
+  Fake f;
+  f.steps = {Prog(sc::Phase::kConverting, 1, 30, 0.5)};
+  f.after_done = Prog(sc::Phase::kDone, 34, 34, 1.0);
+  f.res.outcome = sc::Outcome::kImported;
+  Flow flow(Mode::kFirstRun, f.Make());
+  CHECK(PickAndStart(f, flow));
+  CHECK_LINES(flow.ResultLines(), (Lines{"34 swimsuits imported."}));
+  CHECK(flow.progress().phase == sc::Phase::kDone && flow.progress().suits_total == 34 && flow.progress().fraction == 1.0);
+}
+
 static void TestReimportNote() {
   CHECK(ReimportNote("proto-1d").empty());
   CHECK(ReimportNote("") .empty());
@@ -781,6 +890,10 @@ int main() {
   TestChoosingAndStages();
   TestDestroyWhileRunning();
   TestDestroyAfterUserCancelCancelsOnce();
+  TestRetryAfterCancel();
+  TestRunningOutcomeAtDone();
+  TestRetryStartsClean();
+  TestFinalSnapshotDecidesCount();
   TestReimportNote();
   TestDecideStartup();
   TestLogLines();
