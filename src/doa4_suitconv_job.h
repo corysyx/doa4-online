@@ -114,6 +114,15 @@ struct Hooks {
   std::function<void(Phase)> on_phase;
   // The Nth file write of the import (1-based; the marker is the first, the manifest the last) fails; 0 = none.
   int write_fault_at = 0;
+  // Called after each file write that completed (its rename done), with the write's number; from any job thread.
+  std::function<void(int)> on_write;
+  // Failure seams: the Nth worker thread (1-based) cannot be started; the job's own thread cannot be started; the Nth thread
+  // registration for Cancel (the job's thread is the first, the workers follow) fails as DuplicateHandle failing would. 0 = none.
+  int fail_worker_start_at = 0;
+  bool fail_job_thread_start = false;
+  int fail_register_at = 0;
+  // Called between the swap's two renames (the current import is .old, .new not yet the current import), on the job's thread.
+  std::function<void()> between_renames;
   // The Nth file write writes half of its bytes and the job ends at once, leaving the disk as a crash would; 0 = none.
   int crash_at_write = 0;
 };

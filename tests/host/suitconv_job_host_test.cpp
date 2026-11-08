@@ -287,9 +287,14 @@ struct World {
       while (now > peak_now && !peak.compare_exchange_weak(peak_now, now)) {}
       if (delay_ms[idx] > 0) SleepMs(delay_ms[idx]);
       --converting;
+      size_t finished_n = 0;
       {
         std::lock_guard<std::mutex> lk(order_mu);
         finish_order.push_back(idx);
+        finished_n = finish_order.size();
+      }
+      if (cancel_after_finishes > 0 && finished_n == cancel_after_finishes) {
+        if (ImportJob* j = job_ptr.load()) j->Cancel();  // a cancel from inside the work
       }
       if (throw_bad_alloc.count(idx)) throw std::bad_alloc();
       if (throw_runtime.count(idx)) throw std::runtime_error("synthetic converter failure");
@@ -311,6 +316,9 @@ struct World {
     };
     h.on_phase = [this](Phase p) {
       if (phase_hook) phase_hook(p);
+    };
+    h.on_write = [this](int n) {
+      if (on_write_hook) on_write_hook(n);
     };
     return h;
   }
@@ -399,6 +407,9 @@ struct World {
   std::mutex log_mu;
   std::vector<std::string> log;
   std::function<void(Phase)> phase_hook;
+  std::function<void(int)> on_write_hook;
+  std::atomic<ImportJob*> job_ptr{nullptr};  // set by a test that cancels from inside the fake converter
+  size_t cancel_after_finishes = 0;
   uint64_t free_value = uint64_t(1) << 40;
   fs::path free_bytes_arg;
 };
@@ -1375,6 +1386,320 @@ static void TestWorkers() {
   }
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------
+// fix round 1
+// ---------------------------------------------------------------------------------------------------------------
+
+// A hook that throws before anything was created by this run: the folders an earlier import (or somebody else) left are not
+// this job's to delete. A marker-less .new is never touched; a pending verified .new waits for the recovery that follows the
+// checks. A .new this run created itself is still deleted.
+static void TestHookThrowsLeavesForeignNew() {
+  Group("hook_throws_leaves_foreign_new");
+  for (Phase at : {Phase::kCheckingSpace, Phase::kCheckingDisc, Phase::kCheckingGame}) {
+    for (int variant = 0; variant < 2; ++variant) {
+      World w(std::string("throw_") + PhaseName(at) + (variant == 0 ? "_stray" : "_pending"));
+      w.WriteCurrent(w.Cur(), "cur", true);
+      if (variant == 0) {
+        fs::create_directories(w.New());
+        WriteText(w.New() / "stray.txt", "someone else's folder\n");  // no marker
+      } else {
+        w.WriteImport(w.New(), {0, 1, 2, 3, 4});  // a verified import waiting for its swap
+      }
+      w.phase_hook = [at](Phase p) {
+        if (p == at) throw std::runtime_error("synthetic hook failure");
+      };
+      const Snap before = SnapTree(w.ud);
+      CK(Exists(w.New()));
+      const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+      CKF(Is(r, Outcome::kFailed), "%s/%d: outcome %d (%s)", PhaseName(at), variant, int(r.outcome), r.detail.c_str());
+      CK(Has(r.detail, "synthetic hook failure"));
+      CK_SAME(before, SnapTree(w.ud), "user data after a throwing hook (the .new that was not ours or not yet decided stays)");
+    }
+  }
+  {
+    World w("throw_converting");  // the .new this run created is its own: deleted
+    w.WriteCurrent(w.Cur(), "cur", true);
+    w.phase_hook = [](Phase p) {
+      if (p == Phase::kConverting) throw std::runtime_error("synthetic hook failure");
+    };
+    const Snap before = SnapTree(w.ud);
+    const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+    CKF(Is(r, Outcome::kFailed), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+    CK(!Exists(w.New()));
+    CK_SAME(before, SnapTree(w.ud), "user data after a throw while converting");
+  }
+}
+
+// An exception between the swap's two renames leaves the state exactly as it is (the previous import as .old, .new complete,
+// no current import): nothing is deleted on the way out, and the recovery finishes the swap.
+static void TestThrowBetweenSwapRenames() {
+  Group("throw_between_swap_renames");
+  World w("throw_between_renames");
+  w.WriteCurrent(w.Cur(), "cur", true);
+  const Snap cur_before = SnapTree(w.Cur());
+  Hooks h = w.MakeHooks();
+  h.between_renames = [] { throw std::runtime_error("synthetic failure between the renames"); };
+  const ImportResult r = RunJob(w, std::move(h), 2);
+  CKF(Is(r, Outcome::kFailed), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+  CK(Has(r.detail, "between the renames"));
+  CK(!Exists(w.Cur()));
+  CK(Exists(w.New()));
+  CK(VerifyImportFolder(w.New()).empty());  // .new is complete and verified
+  CK_SAME(cur_before, SnapTree(w.Old()), "the previous import, now .old");
+  const std::string why = CompletePendingSwap(w.ud);
+  CKF(why.empty(), "%s", why.c_str());
+  CheckImportFolder(w, w.Cur(), {}, "the new import after the recovery");
+  CK(!Exists(w.New()) && !Exists(w.Old()));
+}
+
+static std::string ReadSmall(const fs::path& p) {
+  std::string data;
+  HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return data;
+  char buf[4096];
+  DWORD n = 0;
+  while (ReadFile(h, buf, sizeof buf, &n, nullptr) && n > 0) data.append(buf, n);
+  CloseHandle(h);
+  return data;
+}
+
+// A cleanup that cannot finish (a file in the folder is held open) keeps the folder marked as ours, so the next import or
+// CompletePendingSwap still recognises and deletes it; the marker goes last.
+static void TestBlockedCleanupKeepsMarker() {
+  Group("blocked_cleanup_keeps_marker");
+  const std::string name = dsuits::PickSuits()[0].tpr.name;
+  for (int variant = 0; variant < 3; ++variant) {
+    World w("blocked_cleanup_" + std::to_string(variant));
+    w.WriteCurrent(w.Cur(), "cur", true);
+    const Snap cur_before = SnapTree(w.Cur());
+    std::shared_ptr<doa4::afs::FileSource> held;
+    std::atomic<bool> opened{false};
+    if (variant < 2) {
+      // The job's own cleanup after a cancel in the writing phase, with one written suit file held open.
+      w.phase_hook = [&](Phase p) {
+        if (p != Phase::kWriting) return;
+        held = doa4::afs::FileSource::Open(w.New() / name);
+        opened = true;
+        SleepMs(60);
+      };
+      auto job = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+      const auto t_wait = Clock::now();
+      while (!opened.load() && MsSince(t_wait) < 10000) SleepMs(1);
+      CK(opened.load() && held != nullptr);
+      job->Cancel();
+      CK(WaitDone(*job, 15000));
+      CKF(Is(job->result(), Outcome::kCancelled), "outcome %d", int(job->result().outcome));
+    } else {
+      // The recovery's own deletion of an interrupted .new, with a file held open.
+      fs::create_directories(w.New());
+      WriteText(w.New() / kMarker, "doa4 suit importer\n");
+      synth::WriteFileBytes(w.New() / "a_suit.tpr", synth::Seeded(3, 500));
+      held = doa4::afs::FileSource::Open(w.New() / "a_suit.tpr");
+      CK(held != nullptr);
+    }
+    // The folder is still there, still ours, and says it is unfinished (no manifest).
+    CK(Exists(w.New()));
+    CKF(Exists(w.New() / kMarker), "variant %d: the marker was deleted while a file could not be", variant);
+    CK(!Exists(w.New() / "manifest.txt"));
+    const std::string why1 = CompletePendingSwap(w.ud);
+    CKF(!why1.empty(), "variant %d: a cleanup that cannot delete the held file says why", variant);
+    CKF(Exists(w.New() / kMarker), "variant %d: the marker survives the second failed cleanup", variant);
+    held.reset();
+    if (variant == 1) {
+      // The next import recovers the same way and goes on (the hook that held the file open is gone).
+      w.phase_hook = nullptr;
+      const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+      CKF(Is(r, Outcome::kImported), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+      CheckImportFolder(w, w.Cur(), {}, "the import after a blocked cleanup");
+      CK(w.LogCount("interrupted") >= 1);
+    } else {
+      const std::string why2 = CompletePendingSwap(w.ud);
+      CKF(why2.empty(), "variant %d: %s", variant, why2.c_str());
+      CK(!Exists(w.New()));
+      CK_SAME(cur_before, SnapTree(w.Cur()), "the current import");
+    }
+  }
+}
+
+static void WriteSparse(const fs::path& p, uint64_t size) {
+  HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot create " + p.string());
+  DWORD ret = 0;
+  DeviceIoControl(h, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &ret, nullptr);
+  LARGE_INTEGER at;
+  at.QuadPart = LONGLONG(size);
+  const bool ok = SetFilePointerEx(h, at, nullptr, FILE_BEGIN) && SetEndOfFile(h);
+  CloseHandle(h);
+  if (!ok) throw std::runtime_error("cannot size " + p.string());
+}
+
+static std::map<std::string, uint64_t> Sizes(const fs::path& root) {
+  std::map<std::string, uint64_t> m;
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    m[fs::relative(it->path(), root).generic_string()] = it->is_directory(e2) ? uint64_t(-1) : fs::file_size(it->path(), e2);
+  }
+  return m;
+}
+
+// The recovery hashes a leftover .new before deciding anything: a cancel during it returns within a second, reads the
+// cancelled hash as "cancelled" (never as "damaged"), and the leftover is untouched.
+static void TestRecoveryVerificationCancellable() {
+  Group("recovery_verification_is_cancellable");
+  World w("recovery_cancel");
+  w.WriteCurrent(w.Cur(), "cur", true);
+  // A leftover whose first file is a 4 GiB (less one byte) sparse file (its SHA-1 takes seconds to compute) and whose manifest lists a wrong
+  // SHA-1: left alone to finish, the recovery would call it damaged and delete it.
+  fs::create_directories(w.New());
+  WriteText(w.New() / kMarker, "doa4 suit importer\n");
+  dsuits::Manifest m;
+  m.converter = std::string(kConverterWord);
+  const std::vector<dsuits::Suit> picks = dsuits::PickSuits();
+  for (int i : {0, 1}) {
+    dsuits::Suit s = picks[size_t(i)];
+    s.tpr.size = 0xFFFFFFFFull;  // the largest size a manifest line takes
+    s.tpr.sha1 = std::string(40, 'a');
+    s.cat.size = 100;
+    s.cat.sha1 = std::string(40, 'b');
+    WriteSparse(w.New() / s.tpr.name, s.tpr.size);
+    synth::WriteFileBytes(w.New() / s.cat.name, synth::Seeded(40 + uint32_t(i), 100));
+    m.suits.push_back(std::move(s));
+  }
+  WriteText(w.New() / "manifest.txt", dsuits::FormatManifest(m));
+  const auto sizes_before = Sizes(w.New());
+  const std::string manifest_before = ReadSmall(w.New() / "manifest.txt");
+  const Snap cur_before = SnapTree(w.Cur());
+  CK(sizes_before.size() == 6 && !manifest_before.empty());
+  auto job = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+  const auto t_wait = Clock::now();
+  while (job->progress().phase != Phase::kCheckingGame && MsSince(t_wait) < 10000) SleepMs(1);
+  SleepMs(300);  // the game check is a few ms: the recovery is hashing the first leftover file now
+  CK(!job->done());
+  CK(job->progress().phase == Phase::kCheckingGame);
+  const auto t0 = Clock::now();
+  job->Cancel();
+  const bool ok = WaitDone(*job, 30000);
+  const long long ms = MsSince(t0);
+  NoteCancel(ms, "cancel during the recovery's verification");
+  CKF(ok && ms <= 1000, "done within 1 s: %lld ms", ms);
+  const ImportResult r = job->result();
+  CKF(Is(r, Outcome::kCancelled), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+  CK(Exists(w.New()) && Exists(w.New() / kMarker));
+  CK(Sizes(w.New()) == sizes_before);
+  CK(ReadSmall(w.New() / "manifest.txt") == manifest_before);
+  CK(!Exists(w.Old()));
+  CK_SAME(cur_before, SnapTree(w.Cur()), "the current import");
+  CK(w.LogCount("damaged") == 0);
+}
+
+// A cancel that comes from inside the work, not at a phase's entry: from the converter after ten suits, and between the
+// manifest's write and the end of the verification (the verification must stop: the swap phase is never reached).
+static void TestCancelFromInsideTheWork() {
+  Group("cancel_from_inside_the_work");
+  {
+    World w("cancel_in_converter");
+    w.WriteCurrent(w.Cur(), "cur", true);
+    w.cancel_after_finishes = 10;
+    w.phase_hook = [](Phase p) {
+      if (p == Phase::kCheckingSpace) SleepMs(30);  // the test stores the job's address first
+    };
+    const Snap before = SnapTree(w.ud);
+    auto job = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+    w.job_ptr = job.get();
+    CK(WaitDone(*job, 30000));
+    const ImportResult r = job->result();
+    CKF(Is(r, Outcome::kCancelled), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+    CK(job->progress().suits_done >= 5 && job->progress().suits_done < 34);  // it stopped part-way (the tenth conversion finished, its write never started)
+    CK(!Exists(w.New()));
+    CK_SAME(before, SnapTree(w.ud), "user data after a cancel from the converter");
+  }
+  {
+    World w("cancel_in_verification");
+    w.WriteCurrent(w.Cur(), "cur", true);
+    std::atomic<bool> swap_reached{false};
+    w.phase_hook = [&](Phase p) {
+      if (p == Phase::kSwapping) swap_reached = true;
+      if (p == Phase::kCheckingSpace) SleepMs(30);
+    };
+    std::atomic<ImportJob*> job_ptr{nullptr};
+    w.on_write_hook = [&](int n) {
+      if (n == 70) {  // the manifest is in place: the verification of .new is next
+        if (ImportJob* j = job_ptr.load()) j->Cancel();
+      }
+    };
+    const Snap before = SnapTree(w.ud);
+    auto job = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+    job_ptr = job.get();
+    CK(WaitDone(*job, 30000));
+    const ImportResult r = job->result();
+    CKF(Is(r, Outcome::kCancelled), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+    CKF(!swap_reached.load(), "the swap phase began although the cancel came before the verification ended");
+    CK(!Exists(w.New()));
+    CK_SAME(before, SnapTree(w.ud), "user data after a cancel between the manifest and the verification");
+  }
+}
+
+// The routes to std::terminate: a thread that cannot be started, a registration for Cancel that fails.
+static void TestThreadAndRegistrationFailures() {
+  Group("thread_and_registration_failures");
+  {
+    World w("worker_start_fails");
+    w.WriteCurrent(w.Cur(), "cur", true);
+    Hooks h = w.MakeHooks();
+    h.fail_worker_start_at = 2;  // the first worker runs, the second cannot be started
+    const Snap before = SnapTree(w.ud);
+    const ImportResult r = RunJob(w, std::move(h), 3);
+    CKF(Is(r, Outcome::kFailed), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+    CK(Has(r.detail, "worker"));
+    CK(!Exists(w.New()));
+    CK_SAME(before, SnapTree(w.ud), "user data after a worker thread could not be started");
+  }
+  {
+    World w("job_thread_start_fails");
+    Hooks h = w.MakeHooks();
+    h.fail_job_thread_start = true;
+    auto job = ImportJob::StartForTest(w.Req(2), std::move(h));
+    CK(job->done());  // nothing is running: the failure is the result
+    const ImportResult r = job->result();
+    CKF(Is(r, Outcome::kFailed), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+    CK(Has(r.detail, "thread"));
+    CK(job->progress().phase == Phase::kDone);
+    job.reset();  // the destructor must not join a thread that never started
+    CK(SnapTree(w.ud).empty());
+  }
+  for (int at : {1, 2}) {
+    World w("register_fails_" + std::to_string(at));
+    w.WriteCurrent(w.Cur(), "cur", true);
+    Hooks h = w.MakeHooks();
+    h.fail_register_at = at;  // 1: the job's thread; 2: a worker (the first registration after the job's)
+    const Snap before = SnapTree(w.ud);
+    const ImportResult r = RunJob(w, std::move(h), 2);
+    CKF(Is(r, Outcome::kFailed), "at %d: outcome %d (%s)", at, int(r.outcome), r.detail.c_str());
+    CKF(Has(r.detail, "Cancel"), "at %d: detail: %s", at, r.detail.c_str());
+    CKF(w.LogCount("Cancel") >= 1, "at %d: logged", at);
+    CK(!Exists(w.New()));
+    CK_SAME(before, SnapTree(w.ud), "user data after a failed registration");
+  }
+}
+
+// Last: without the catch-all in the job's thread this ends the process.
+static void TestHookThrowsNonStdException() {
+  Group("hook_throws_non_std_exception");
+  World w("throw_int");
+  w.WriteCurrent(w.Cur(), "cur", true);
+  w.phase_hook = [](Phase p) {
+    if (p == Phase::kCheckingDisc) throw 42;
+  };
+  const Snap before = SnapTree(w.ud);
+  const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+  CKF(Is(r, Outcome::kFailed), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+  CK(!r.detail.empty());
+  CK_SAME(before, SnapTree(w.ud), "user data");
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // VerifyImportFolder
 // ---------------------------------------------------------------------------------------------------------------
@@ -1474,6 +1799,7 @@ static void TestRealImport() {
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash must still show how far the run got
   SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);  // a crash under test ends the process without a dialog
   try {
     TestBytesNeeded();
     TestDefaultsAreProduction();
@@ -1504,7 +1830,14 @@ int main() {
     TestManifestOrderIndependentOfFinish();
     TestWorkers();
     TestVerifyImportFolder();
+    TestHookThrowsLeavesForeignNew();
+    TestBlockedCleanupKeepsMarker();
+    TestRecoveryVerificationCancellable();
+    TestCancelFromInsideTheWork();
+    TestThreadAndRegistrationFailures();
+    TestThrowBetweenSwapRenames();
     TestRealImport();
+    TestHookThrowsNonStdException();
   } catch (const std::exception& e) {
     ++g_checks;
     ++g_failures;
