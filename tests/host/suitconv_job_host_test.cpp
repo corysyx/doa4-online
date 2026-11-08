@@ -35,7 +35,7 @@
 #include "../../src/doa4_costumes.h"
 #include "../../src/doa4_suits.h"
 #include "../../src/doa4_suits_manifest.h"
-#include "doa4_costume_fixtures.h"
+#include "doa4_test_image.h"
 #include "../../src/doa4_suits_picks.h"
 #include "suitconv_synth.h"
 
@@ -2476,8 +2476,8 @@ static void CheckRealImport(const char* what, const RealRun& run, const Files& o
 }
 
 // real_import_equals_oracle: one production import, the folder equals the reference byte for byte.
-// The game's costume tables as the game holds them in memory (the fixture bytes the loader's own host test uses), for
-// doa4::suits::LoadImport.
+// The game's costume tables as the game holds them in memory (read from your own image, DOA4_TEST_IMAGE, as the loader's own
+// host test does), for doa4::suits::LoadImport.
 struct FixtureGuest {
   std::map<uint32_t, uint8_t> bytes;
   doa4::GuestBytes guest{[this](uint32_t a) {
@@ -2485,14 +2485,13 @@ struct FixtureGuest {
                            return it == bytes.end() ? uint8_t(0) : it->second;
                          },
                          [this](uint32_t a, uint8_t v) { bytes[a] = v; }};
-  FixtureGuest() {
-    Load(doa4_fixtures::kTablesStart, doa4_fixtures::kTables);
-    Load(doa4_fixtures::kRecordsStart, doa4_fixtures::kRecords);
-    Load(doa4_fixtures::kFilesStart, doa4_fixtures::kFiles);
+  explicit FixtureGuest(const doa4_test::CostumeImage& image) {
+    Load(doa4_test::kCostumeTablesRange.address, image.tables);
+    Load(doa4_test::kCostumeRecordsRange.address, image.records);
+    Load(doa4_test::kCostumeFilesRange.address, image.files);
   }
-  template <size_t N>
-  void Load(uint32_t start, const std::array<uint8_t, N>& data) {
-    for (size_t i = 0; i < N; ++i) bytes[start + uint32_t(i)] = data[i];
+  void Load(uint32_t start, const std::vector<uint8_t>& data) {
+    for (size_t i = 0; i < data.size(); ++i) bytes[start + uint32_t(i)] = data[i];
   }
 };
 
@@ -2506,12 +2505,18 @@ static void TestRealImportEqualsOracle() {
   // The folder the job wrote is accepted by the game's own loader: all 34 suits pass every check, none skipped. (The loader
   // keeps the files open for the rest of the process.)
   {
-    FixtureGuest guest;
-    const dsuits::ImportStatus st = dsuits::LoadImport(run.ud / "doax2_suits", fs::path(env.game), guest.guest);
-    CKF(st.problem.empty(), "LoadImport: %s", st.problem.c_str());
-    CKF(st.suits.size() == 34 && st.skipped.empty(), "LoadImport accepted %zu suits, skipped %zu (%s)", st.suits.size(),
-        st.skipped.size(), st.skipped.empty() ? "" : st.skipped[0].c_str());
-    std::printf("real_import_equals_oracle: LoadImport accepted %zu of 34\n", st.suits.size());
+    std::string why;
+    if (const std::optional<doa4_test::CostumeImage> image = doa4_test::LoadCostumeImage(&why)) {
+      FixtureGuest guest(*image);
+      const dsuits::ImportStatus st = dsuits::LoadImport(run.ud / "doax2_suits", fs::path(env.game), guest.guest);
+      CKF(st.problem.empty(), "LoadImport: %s", st.problem.c_str());
+      CKF(st.suits.size() == 34 && st.skipped.empty(), "LoadImport accepted %zu suits, skipped %zu (%s)", st.suits.size(),
+          st.skipped.size(), st.skipped.empty() ? "" : st.skipped[0].c_str());
+      std::printf("real_import_equals_oracle: LoadImport accepted %zu of 34\n", st.suits.size());
+    } else {
+      std::printf("real_import_equals_oracle: LoadImport check: SKIPPED (%s)\n", why.c_str());
+      ++g_skipped;
+    }
   }
   std::printf("real_import_equals_oracle: outcome %d, %zu files compared with %zu of the reference, %.1f s\n",
               int(run.result.outcome), run.files.size(), oracle.size(), run.wall_s);

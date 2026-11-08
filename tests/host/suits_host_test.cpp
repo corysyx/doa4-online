@@ -1,5 +1,7 @@
 // Host test for src/doa4_suits.cpp: an import folder against a fake game folder and the image's
-// real tables. Built and run by run_suits_test.bat. Optional real-archive check:
+// real costume tables, read from your own image (DOA4_TEST_IMAGE, doa4_test_image.h; no game byte is in this
+// repository). Without the image the sections that need the tables print SKIPPED; the manifest and folder checks that fail
+// before the tables are read run on an empty guest. Built and run by run_suits_test.bat. Optional real-archive check:
 // DOA4_SUITS_GAME_DIR=<the DOA4 folder holding chrone.afs, chrtwo.afs, chrthree.afs> (read-only).
 // Prints "suits: N checks run" before its verdict line: a run that ends a section early shows
 // as a smaller N.
@@ -25,7 +27,7 @@
 #include "../../src/doa4_gamefiles.h"
 #include "../../src/doa4_suits_picks.h"
 #include "../../src/doa4_utf8.h"
-#include "doa4_costume_fixtures.h"
+#include "doa4_test_image.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -43,7 +45,9 @@ static int g_checks = 0;  // every CHECK that ran: a mutant that skips or ends a
 
 using namespace doa4::suits;
 namespace fs = std::filesystem;
-namespace fx = doa4_fixtures;
+
+// The image's costume ranges, loaded once in main; null when the image is not there (FakeGuest is then empty).
+static const doa4_test::CostumeImage* g_image = nullptr;
 
 struct FakeGuest {
   std::map<uint32_t, uint8_t> bytes;
@@ -53,13 +57,13 @@ struct FakeGuest {
                          },
                          [this](uint32_t a, uint8_t v) { bytes[a] = v; }};
   FakeGuest() {
-    Load(fx::kTablesStart, fx::kTables);
-    Load(fx::kRecordsStart, fx::kRecords);
-    Load(fx::kFilesStart, fx::kFiles);
+    if (!g_image) return;
+    Load(doa4_test::kCostumeTablesRange.address, g_image->tables);
+    Load(doa4_test::kCostumeRecordsRange.address, g_image->records);
+    Load(doa4_test::kCostumeFilesRange.address, g_image->files);
   }
-  template <size_t N>
-  void Load(uint32_t start, const std::array<uint8_t, N>& data) {
-    for (size_t i = 0; i < N; ++i) bytes[start + uint32_t(i)] = data[i];
+  void Load(uint32_t start, const std::vector<uint8_t>& data) {
+    for (size_t i = 0; i < data.size(); ++i) bytes[start + uint32_t(i)] = data[i];
   }
 };
 
@@ -1361,7 +1365,7 @@ static const std::pair<uint32_t, uint32_t> kOwnSuits[] = {
 // The census: every (character, model) of the UNPATCHED image whose body .tpr or .cat is an empty
 // slot in the game's own archives (68 slots of 0x77: 16 in chrone, 38 in chrtwo, 14 in chrthree).
 // Taken from the run below and agreed by an independent script that reads the archives' TOCs and
-// the fixtures' tables with its own parser. 15 are the own suits' models; the other 21 are dummy
+// the image's tables with its own parser. 15 are the own suits' models; the other 21 are dummy
 // models that share a slot with a suit (Kasumi's (23, 7..9) share (5, 7..9)'s files, and so on).
 static const std::pair<uint32_t, uint32_t> kCensus[] = {
     {0, 3},   {1, 5},   {2, 4},   {3, 4},   {5, 7},   {5, 8},   {5, 9},   {6, 4},   {7, 4},
@@ -1744,47 +1748,54 @@ static void TestSessionFilesAndGuard() {
 int main() {
   // Unbuffered: a run that dies mid-way still shows the FAIL lines printed before it.
   std::setvbuf(stdout, nullptr, _IONBF, 0);
+  // Fail before the tables are read: an empty guest is enough, with or without the image.
   TestNoFolder();
   TestImportIsAFile();
   TestNoManifest();
   TestBadManifest();
   TestManifestSizeLimit();
-  TestLoadsTwo();
-  TestFingerprintIsCanonical();
-  TestKnownChecksums();
-  TestBigFiles();
-  TestChecksumMismatch();
-  TestFileReasons();
-  TestMissingAndWrongSize();
-  TestFileInUse();
-  TestNotAPlaceholder();
-  TestPlaceholderEdges();
-  TestPlaceholderContent();
-  TestEntryBeyondArchive();
-  TestArchiveMissing();
-  TestTableReasonPropagates();
-  TestTableReasonComesFirst();
-  TestUnicodeFolder();
-  TestUnicodeGameFolder();
-  TestBuildOverlays();
-  TestThreeArchives();
-  TestBuildOverlaysEdges();
-  TestOverlayRecheck();
-  TestFailDropsSuits();
-  TestFileHeldOpen();
-  TestMarkSingleFiles();
-  TestMarkEverything();
-  TestMarkThroughOverlay();
-  TestMarkNoLocation();
-  TestMarkEntryPastEnd();
-  TestMarkUnreadableArchive();
-  TestMarkClearsOldMarks();
-  TestMarkAppliedTables();
-  TestRealGameFolder();
   TestPicksTable();
   TestPicksAgainstRealManifest();
   TestImportChecksum();
-  TestSessionFilesAndGuard();
+  std::string why;
+  if (const std::optional<doa4_test::CostumeImage> image = doa4_test::LoadCostumeImage(&why)) {
+    g_image = &*image;
+    TestLoadsTwo();
+    TestFingerprintIsCanonical();
+    TestKnownChecksums();
+    TestBigFiles();
+    TestChecksumMismatch();
+    TestFileReasons();
+    TestMissingAndWrongSize();
+    TestFileInUse();
+    TestNotAPlaceholder();
+    TestPlaceholderEdges();
+    TestPlaceholderContent();
+    TestEntryBeyondArchive();
+    TestArchiveMissing();
+    TestTableReasonPropagates();
+    TestTableReasonComesFirst();
+    TestUnicodeFolder();
+    TestUnicodeGameFolder();
+    TestBuildOverlays();
+    TestThreeArchives();
+    TestBuildOverlaysEdges();
+    TestOverlayRecheck();
+    TestFailDropsSuits();
+    TestFileHeldOpen();
+    TestMarkSingleFiles();
+    TestMarkEverything();
+    TestMarkThroughOverlay();
+    TestMarkNoLocation();
+    TestMarkEntryPastEnd();
+    TestMarkUnreadableArchive();
+    TestMarkClearsOldMarks();
+    TestMarkAppliedTables();
+    TestRealGameFolder();
+    TestSessionFilesAndGuard();
+  } else {
+    doa4_test::PrintSkipped("suits: the sections on the image's costume tables", why);
+  }
   std::printf("suits: %d checks run\n", g_checks);
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);

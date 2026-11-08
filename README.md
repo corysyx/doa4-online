@@ -421,6 +421,13 @@ and judges each by that line and its exit code (`--only <name>` for some). The r
 Studio's `VsDevCmd.bat` from `DOA4_VSDEVCMD` and LLVM's `bin` folder from `DOA4_LLVM_BIN` when set
 (the release workflow sets both).
 
+No game byte is in the repository. The tests that check the code against the game's real tables (the
+costume tables, the unlock tables, the suit loader) read them from a decrypted image of your own
+default.xex: set `DOA4_TEST_IMAGE` to that file's path (the whole image, loaded at `0x82000000`). Each
+range the tests read is checked against a SHA-1 first, so a different or damaged image is refused. Without
+the variable those sections print `SKIPPED (<why>)` and the rest still run; the unlock and Extras tests
+always run on synthetic tables and repeat on the real ones when the image is there.
+
 ## 10. Troubleshooting
 
 | Symptom | Cause and fix |

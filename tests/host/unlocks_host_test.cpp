@@ -1,25 +1,34 @@
-// Host test for src/doa4_unlocks.cpp, on the game's real tables and real save
-// bytes (doa4_unlock_fixtures.h). Built and run by run_unlocks_test.bat.
+// Host test for src/doa4_unlocks.cpp. No game byte is in this file: the tables are synthetic (chosen here, a different
+// permutation and different maxima from the game's, so a charId read as a profile index reads a wrong value) and the
+// profiles are built by FreshProfile and FullProfile. Every check runs on the synthetic tables; with DOA4_TEST_IMAGE set
+// (doa4_test_image.h) the whole set runs again on the three real ranges the unlock code reads. Built and run by
+// run_unlocks_test.bat.
 
 #include "../../src/doa4_unlocks.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <map>
+#include <optional>
+#include <string>
 #include <vector>
 
-#include "doa4_unlock_fixtures.h"
+#include "doa4_test_image.h"
 
 static int g_failures = 0;
-#define CHECK(cond)                                               \
-  do {                                                            \
-    if (!(cond)) {                                                \
-      std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      ++g_failures;                                               \
-    }                                                             \
+static int g_checks = 0;
+static const char* g_tables_name = "synthetic";
+#define CHECK(cond)                                                                    \
+  do {                                                                                 \
+    ++g_checks;                                                                        \
+    if (!(cond)) {                                                                     \
+      std::printf("FAIL [%s] %s:%d: %s\n", g_tables_name, __FILE__, __LINE__, #cond); \
+      ++g_failures;                                                                    \
+    }                                                                                  \
   } while (0)
 
 using namespace doa4::unlocks;
-namespace fx = doa4_fixtures;
 
 // Guest memory as a map; unset bytes read 0. Counts writes.
 struct FakeGuest {
@@ -41,23 +50,155 @@ struct FakeGuest {
 
 constexpr uint32_t kSlot = 0;
 constexpr uint32_t kP = kRecordBase + kSlot * kRecordStride + kRecordToProfile;  // 0x831B0A40
-constexpr uint32_t kFixtureStart = 0x3FC0;  // fixtures hold P+0x3FC0..P+0x404B
+constexpr uint32_t kFixtureStart = 0x3FC0;  // the profile range the unlock fields live in: P+0x3FC0..P+0x404B
+constexpr size_t kProfileBytes = 0x8C;
+
+// The three image tables the unlock code reads.
+struct Tables {
+  const char* name;
+  std::array<uint8_t, 23> index_to_char;  // profile index -> charId
+  std::array<uint8_t, 25> max;            // maximum costume count by charId
+  std::array<uint8_t, 18> roster;         // the Story roster's charIds
+};
+
+// Synthetic tables. index -> charId is (6 i + 14) mod 25 (23 distinct charIds, none equal to its index; 2 and 8 have no
+// profile index); the maxima run 2..12 with neighbours always different; the roster is the charIds of the 17 profile
+// indices that have Story mode (all but 3, 6, 8, 12, 21 and 22), the later ones first, and the first one again.
+static Tables SyntheticTables() {
+  Tables t{"synthetic", {}, {}, {}};
+  for (int i = 0; i < 23; ++i) t.index_to_char[size_t(i)] = uint8_t((6 * i + 14) % 25);
+  for (int c = 0; c < 25; ++c) t.max[size_t(c)] = uint8_t(2 + (4 * c + 1) % 11);
+  size_t k = 0;
+  for (int i = 22; i >= 0; --i) {
+    if (i == 3 || i == 6 || i == 8 || i == 12 || i == 21 || i == 22) continue;
+    t.roster[k++] = t.index_to_char[size_t(i)];
+  }
+  t.roster[k++] = t.roster[0];
+  return t;
+}
+
+// The real tables, when the image is there.
+static std::optional<Tables> ImageTables(std::string* why) {
+  const auto index_to_char = doa4_test::ReadImageRange(doa4_test::kProfileIndexToCharRange, why);
+  if (!index_to_char) return std::nullopt;
+  const auto max = doa4_test::ReadImageRange(doa4_test::kMaxCostumesRange, why);
+  if (!max) return std::nullopt;
+  const auto roster = doa4_test::ReadImageRange(doa4_test::kStoryRosterRange, why);
+  if (!roster) return std::nullopt;
+  Tables t{"image", {}, {}, {}};
+  std::copy(index_to_char->begin(), index_to_char->end(), t.index_to_char.begin());
+  std::copy(max->begin(), max->end(), t.max.begin());
+  std::copy(roster->begin(), roster->end(), t.roster.begin());
+  return t;
+}
+
+static bool HasStory(const Tables& t, int index) {
+  for (uint8_t c : t.roster) {
+    if (c == t.index_to_char[size_t(index)]) return true;
+  }
+  return false;
+}
+
+static bool InUnlockField(uint32_t offset) {
+  return offset == kFirstStoryClear || (offset >= kCostumeCount && offset < kCostumeCount + kCharacterCount) ||
+         (offset >= kCharacterUnlocked && offset < kCharacterUnlocked + kCharacterCount) ||
+         (offset >= kStoryClears && offset < kStoryClears + kCharacterCount) ||
+         (offset >= kStoryClearedNormal && offset < kStoryClearedNormal + kCharacterCount) ||
+         (offset >= kVoiceUnlocked && offset < kVoiceUnlocked + kCharacterCount);
+}
+
+// A new save's unlock fields: costume counts 2, the 7 hidden characters (indices 3, 6, 7, 8, 12, 21, 22: Ein, Gen Fu,
+// Helena, Leon, Tengu, Alpha-152, Spartan-458) locked, no voices, no Story clears. Every byte of the range that is not an
+// unlock field is uint8_t(0xA5 ^ offset), so a write outside the fields shows.
+static std::vector<uint8_t> FreshProfile() {
+  std::vector<uint8_t> p(kProfileBytes);
+  for (uint32_t o = kFixtureStart; o < kFixtureStart + kProfileBytes; ++o) p[o - kFixtureStart] = uint8_t(0xA5 ^ o);
+  p[kFirstStoryClear - kFixtureStart] = 0;
+  for (int i = 0; i < kCharacterCount; ++i) {
+    const bool hidden = i == 3 || i == 6 || i == 7 || i == 8 || i == 12 || i == 21 || i == 22;
+    const uint32_t u = uint32_t(i);
+    p[kCostumeCount - kFixtureStart + u] = 2;
+    p[kCharacterUnlocked - kFixtureStart + u] = hidden ? 0 : 1;
+    p[kStoryClears - kFixtureStart + u] = 0;
+    p[kStoryClearedNormal - kFixtureStart + u] = 0;
+    p[kVoiceUnlocked - kFixtureStart + u] = 0;
+  }
+  return p;
+}
+
+// A save that has everything: every count at its table maximum, every character unlocked but Alpha-152 (never unlocked in
+// retail), every voice, one or more Story clears for each Story character, the first-clear flag. The bytes outside the
+// unlock fields (Time Attack records and the rest) are uint8_t(0x5A ^ offset): different from the fresh ones everywhere,
+// so a test can tell "kept" from "reset".
+static std::vector<uint8_t> FullProfile(const Tables& t) {
+  std::vector<uint8_t> p(kProfileBytes);
+  for (uint32_t o = kFixtureStart; o < kFixtureStart + kProfileBytes; ++o) p[o - kFixtureStart] = uint8_t(0x5A ^ o);
+  p[kFirstStoryClear - kFixtureStart] = 1;
+  for (int i = 0; i < kCharacterCount; ++i) {
+    const uint32_t u = uint32_t(i);
+    p[kCostumeCount - kFixtureStart + u] = t.max[t.index_to_char[size_t(i)]];
+    p[kCharacterUnlocked - kFixtureStart + u] = i == kAlphaIndex ? 0 : 1;
+    p[kStoryClears - kFixtureStart + u] = HasStory(t, i) ? uint8_t(1 + i % 5) : uint8_t(0);
+    p[kStoryClearedNormal - kFixtureStart + u] = HasStory(t, i) ? 1 : 0;
+    p[kVoiceUnlocked - kFixtureStart + u] = 1;
+  }
+  return p;
+}
+
+// The tables under test, the two profiles built for them, and the characters the tests name: A and B are two girls
+// (charId 5 and 0x0A) who get imported suits, B also has a costume box; H is the character at profile index 7, hidden in a
+// new save but with Story mode; C is charId 13, a girl with no suits; g_unused is a charId with no profile index.
+static Tables g_t;
+static std::vector<uint8_t> g_fresh, g_full;
+constexpr uint8_t kCharA = 5, kCharB = 0x0A, kCharC = 13;
+constexpr int kHiddenWithStory = 7;
+constexpr int kBoxCostumes = 2;  // what B's costume box adds to her table maximum
+constexpr int kSuitsPerGirl = 4;
+static int g_index_a, g_index_b, g_index_c;
+static uint8_t g_char_h, g_unused;
+
+static int IndexOf(uint8_t char_id) {
+  for (int i = 0; i < kCharacterCount; ++i) {
+    if (g_t.index_to_char[size_t(i)] == char_id) return i;
+  }
+  return -1;
+}
+
+static void UseTables(const Tables& t) {
+  g_t = t;
+  g_tables_name = t.name;
+  g_fresh = FreshProfile();
+  g_full = FullProfile(t);
+  g_index_a = IndexOf(kCharA);
+  g_index_b = IndexOf(kCharB);
+  g_index_c = IndexOf(kCharC);
+  g_char_h = t.index_to_char[kHiddenWithStory];
+  g_unused = 0;
+  while (IndexOf(g_unused) >= 0) ++g_unused;
+}
+
+static int BaseMax(int index) { return g_t.max[g_t.index_to_char[size_t(index)]]; }
+static int TotalExtras() {  // costumes a new save lacks: the sum of (maximum - 2) over the 23 characters
+  int total = 0;
+  for (int i = 0; i < kCharacterCount; ++i) total += BaseMax(i) - 2;
+  return total;
+}
 
 // The game's tables, the profile pointer and slot, and a profile's bytes at the pointer.
-template <size_t N>
-static void Setup(FakeGuest& g, const std::array<uint8_t, N>& profile, uint32_t slot = kSlot,
-                  uint32_t pointer = kP) {
-  for (size_t i = 0; i < fx::kProfileIndexToChar.size(); ++i)
-    g.bytes[kProfileIndexToChar + uint32_t(i)] = fx::kProfileIndexToChar[i];
-  for (size_t i = 0; i < fx::kMaxCostumes.size(); ++i)
-    g.bytes[kMaxCostumes + uint32_t(i)] = fx::kMaxCostumes[i];
-  for (size_t k = 0; k < fx::kStoryRosterChars.size(); ++k)
-    g.bytes[kStoryRoster + kStoryRosterStride * uint32_t(k)] = fx::kStoryRosterChars[k];
+static void Setup(FakeGuest& g, const std::vector<uint8_t>& profile, uint32_t slot = kSlot, uint32_t pointer = kP) {
+  for (size_t i = 0; i < g_t.index_to_char.size(); ++i) g.bytes[kProfileIndexToChar + uint32_t(i)] = g_t.index_to_char[i];
+  for (size_t i = 0; i < g_t.max.size(); ++i) g.bytes[kMaxCostumes + uint32_t(i)] = g_t.max[i];
+  for (size_t k = 0; k < g_t.roster.size(); ++k) g.bytes[kStoryRoster + kStoryRosterStride * uint32_t(k)] = g_t.roster[k];
+  // The charId -> profile index table (sub_82408398 reads it): the inverse, 0 for a charId with no index.
+  for (uint32_t c = 0; c < 26; ++c) {
+    const int index = c < 25 ? IndexOf(uint8_t(c)) : -1;
+    g.bytes[kCharToProfileIndex + c] = uint8_t(index >= 0 ? index : 0);
+  }
   g.SetBe32(kProfilePointer, pointer);
   g.SetBe32(kProfileSlot, slot);
   // The profile bytes go where the pointer points, so only the pointer checks
   // can reject a bad pointer.
-  for (size_t i = 0; i < N; ++i) g.bytes[pointer + kFixtureStart + uint32_t(i)] = profile[i];
+  for (size_t i = 0; i < profile.size(); ++i) g.bytes[pointer + kFixtureStart + uint32_t(i)] = profile[i];
   // The profile name, as in a loaded save: "User" in UTF-16BE at record+8.
   const char* name = "User";
   for (uint32_t i = 0; name[i]; ++i) g.bytes[pointer - kRecordToProfile + kRecordName + 2 * i + 1] = uint8_t(name[i]);
@@ -68,13 +209,13 @@ static uint8_t At(const FakeGuest& g, uint32_t offset, int index = 0) {
   return g.Get(kP + offset + uint32_t(index));
 }
 static uint8_t Full(uint32_t offset, int index = 0) {
-  return fx::kFullProfile[offset - kFixtureStart + index];
+  return g_full[offset - kFixtureStart + uint32_t(index)];
 }
 static uint8_t Fresh(uint32_t offset, int index = 0) {
-  return fx::kFreshProfile[offset - kFixtureStart + index];
+  return g_fresh[offset - kFixtureStart + uint32_t(index)];
 }
 
-static void TestFixturesAreWhatTheResearchSays() {
+static void TestFreshProfileIsANewSave() {
   // Fresh save: every costume count 2; the 7 hidden characters (Helena, Ein,
   // Gen Fu, Leon, Tengu, Alpha-152, Spartan-458) locked.
   for (int i = 0; i < kCharacterCount; ++i) {
@@ -82,45 +223,53 @@ static void TestFixturesAreWhatTheResearchSays() {
     const bool hidden = i == 3 || i == 6 || i == 7 || i == 8 || i == 12 || i == 21 || i == 22;
     CHECK(Fresh(kCharacterUnlocked, i) == (hidden ? 0 : 1));
   }
+  // The tables the tests lean on: the named characters exist, a charId is not its own index (so a charId read as an index
+  // reads another girl's cell), and the two profiles differ outside the unlock fields.
+  CHECK(g_index_a >= 0 && g_index_b >= 0 && g_index_c >= 0 && g_index_a != g_index_b);
+  CHECK(g_index_b != int(kCharB) && g_index_c != int(kCharC));
+  CHECK(g_unused < 25 && IndexOf(g_unused) < 0);
+  for (uint32_t o = kFixtureStart; o < kFixtureStart + kProfileBytes; ++o) {
+    if (!InUnlockField(o)) CHECK(Fresh(o) != Full(o));
+  }
 }
 
 static void TestFindProfile() {
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
+  Setup(g, g_fresh);
   CHECK(FindProfile(g.guest) == std::optional<uint32_t>(0x831B0A40));
   CHECK(g.writes == 0);
   // The slot index says 2 but the pointer still names slot 0's record.
   FakeGuest g2;
-  Setup(g2, fx::kFreshProfile, 2, kP);
+  Setup(g2, g_fresh, 2, kP);
   CHECK(!FindProfile(g2.guest));
   // Null pointer, pointer off the formula, slot index past the last record.
   FakeGuest g3;
-  Setup(g3, fx::kFreshProfile, kSlot, 0);
+  Setup(g3, g_fresh, kSlot, 0);
   CHECK(!FindProfile(g3.guest));
   FakeGuest g4;
-  Setup(g4, fx::kFreshProfile, kSlot, kP + 4);
+  Setup(g4, g_fresh, kSlot, kP + 4);
   CHECK(!FindProfile(g4.guest));
   FakeGuest g5;
-  Setup(g5, fx::kFreshProfile, 4, kRecordBase + 4 * kRecordStride + kRecordToProfile);
+  Setup(g5, g_fresh, 4, kRecordBase + 4 * kRecordStride + kRecordToProfile);
   CHECK(!FindProfile(g5.guest));
   // A record the game has not loaded (all zero) is not a profile.
   FakeGuest g6;
-  Setup(g6, std::array<uint8_t, 0x8C>{});
+  Setup(g6, std::vector<uint8_t>(kProfileBytes));
   CHECK(!FindProfile(g6.guest));
   // One costume count past its maximum, or one at 1, is not a profile either.
   FakeGuest g7;
-  Setup(g7, fx::kFreshProfile);
-  g7.bytes[kP + kCostumeCount + kAlphaIndex] = 3;  // Alpha-152's maximum is 2
+  Setup(g7, g_fresh);
+  g7.bytes[kP + kCostumeCount + kAlphaIndex] = uint8_t(BaseMax(kAlphaIndex) + 1);  // one past Alpha-152's maximum
   CHECK(!FindProfile(g7.guest));
   FakeGuest g8;
-  Setup(g8, fx::kFreshProfile);
+  Setup(g8, g_fresh);
   g8.bytes[kP + kCostumeCount + kSpartanIndex] = 1;
   CHECK(!FindProfile(g8.guest));
   // The game's default record before the save is read (seen at runtime from
   // 1 s after launch until Start is pressed): fresh costume counts and
   // character flags, but no name. Not a loaded profile.
   FakeGuest g10;
-  Setup(g10, fx::kFreshProfile);
+  Setup(g10, g_fresh);
   for (uint32_t i = 0; i < 32; ++i) g10.bytes[kP - kRecordToProfile + kRecordName + i] = 0;
   CHECK(!FindProfile(g10.guest));
   // A name is enough: one UTF-16 character.
@@ -128,13 +277,13 @@ static void TestFindProfile() {
   CHECK(FindProfile(g10.guest).has_value());
   // The 100% save is a profile.
   FakeGuest g9;
-  Setup(g9, fx::kFullProfile);
+  Setup(g9, g_full);
   CHECK(FindProfile(g9.guest).has_value());
 }
 
 static void TestEverythingMatchesTheFullSave() {
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
+  Setup(g, g_fresh);
   UnlockResult r = ApplyUnlock(g.guest, kP, Unlock::kEverything);
   for (int i = 0; i < kCharacterCount; ++i) {
     CHECK(At(g, kCostumeCount, i) == Full(kCostumeCount, i));
@@ -146,7 +295,7 @@ static void TestEverythingMatchesTheFullSave() {
   }
   CHECK(At(g, kFirstStoryClear) == 1);
   CHECK(r.characters == 6);
-  CHECK(r.costumes == 61);  // sum of (max - 2) over the 23 characters
+  CHECK(r.costumes == TotalExtras());  // sum of (max - 2) over the 23 characters
   CHECK(r.voices == 23);
   CHECK(r.stages == 3);
   CHECK(OpenStageCount(g.guest, kP) == 3);
@@ -166,7 +315,7 @@ static void TestEverythingMatchesTheFullSave() {
     (void)value;
     if (address >= kP + kFixtureStart && address < kP + kFixtureStart + 0x8C) continue;
     FakeGuest pristine;
-    Setup(pristine, fx::kFreshProfile);
+    Setup(pristine, g_fresh);
     CHECK(pristine.bytes.count(address) == 1);
   }
 }
@@ -184,7 +333,7 @@ static void TestEachButtonOnlyItsOwnBytes() {
                              kVoiceUnlocked};
   for (const Case& c : cases) {
     FakeGuest g;
-    Setup(g, fx::kFreshProfile);
+    Setup(g, g_fresh);
     ApplyUnlock(g.guest, kP, c.what);
     CHECK(IsUnlocked(g.guest, kP, c.what));
     for (uint32_t array : arrays) {
@@ -195,7 +344,7 @@ static void TestEachButtonOnlyItsOwnBytes() {
   }
   // Characters leaves Alpha-152 locked; voices include her.
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
+  Setup(g, g_fresh);
   UnlockResult r = ApplyUnlock(g.guest, kP, Unlock::kCharacters);
   CHECK(r.characters == 6 && r.costumes == 0 && r.voices == 0 && r.stages == 1);
   CHECK(At(g, kCharacterUnlocked, kAlphaIndex) == 0);
@@ -208,11 +357,11 @@ static void TestEachButtonOnlyItsOwnBytes() {
 
 static void TestStagesDoesWhatItTakes() {
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
+  Setup(g, g_fresh);
   CHECK(OpenStageCount(g.guest, kP) == 0);
   CHECK(!IsUnlocked(g.guest, kP, Unlock::kStages));
   UnlockResult r = ApplyUnlock(g.guest, kP, Unlock::kStages);
-  CHECK(r.stages == 3 && r.characters == 6 && r.costumes == 61 && r.voices == 23);
+  CHECK(r.stages == 3 && r.characters == 6 && r.costumes == TotalExtras() && r.voices == 23);
   CHECK(IsUnlocked(g.guest, kP, Unlock::kStages));
   CHECK(IsUnlocked(g.guest, kP, Unlock::kEverything));
   CHECK(IsUnlocked(g.guest, kP, Unlock::kCharacters));
@@ -230,13 +379,15 @@ static void TestStagesDoesWhatItTakes() {
 
 static void TestExistingProgressIsKept() {
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
-  g.bytes[kP + kStoryClears + 0] = 7;    // seven Story clears with Zack
-  g.bytes[kP + kCostumeCount + 14] = 5;  // Hitomi: 5 of 8 costumes
+  Setup(g, g_fresh);
+  constexpr int kFar = 14;  // a character with room for five costumes
+  CHECK(BaseMax(kFar) >= 5);
+  g.bytes[kP + kStoryClears + 0] = 7;    // seven Story clears with the first character
+  g.bytes[kP + kCostumeCount + kFar] = 5;  // five costumes of her maximum
   UnlockResult r = ApplyUnlock(g.guest, kP, Unlock::kStages);
   CHECK(At(g, kStoryClears, 0) == 7);
-  CHECK(At(g, kCostumeCount, 14) == 8);
-  CHECK(r.costumes == 58);  // Hitomi had 3 of her 6 extras already
+  CHECK(At(g, kCostumeCount, kFar) == BaseMax(kFar));
+  CHECK(r.costumes == TotalExtras() - 3);  // she had 3 of her extras already
   CHECK(r.stages == 2);     // Biolab Core was open (Zack's clears)
 }
 
@@ -245,7 +396,7 @@ static void TestSecondClickChangesNothing() {
                         Unlock::kEverything};
   for (Unlock what : all) {
     FakeGuest g;
-    Setup(g, fx::kFreshProfile);
+    Setup(g, g_fresh);
     CHECK(!IsUnlocked(g.guest, kP, what));
     ApplyUnlock(g.guest, kP, what);
     CHECK(IsUnlocked(g.guest, kP, what));
@@ -256,7 +407,7 @@ static void TestSecondClickChangesNothing() {
   }
   // The 100% save is fully unlocked already.
   FakeGuest g;
-  Setup(g, fx::kFullProfile);
+  Setup(g, g_full);
   for (Unlock what : all) CHECK(IsUnlocked(g.guest, kP, what));
   CHECK(OpenStageCount(g.guest, kP) == 3);
 }
@@ -264,19 +415,19 @@ static void TestSecondClickChangesNothing() {
 // Tatami: every voice but Ein's, every costume but Alpha-152's.
 static void TestTatamiRule() {
   FakeGuest g;
-  Setup(g, fx::kFullProfile);
+  Setup(g, g_full);
   g.bytes[kP + kVoiceUnlocked + kEinIndex] = 0;
   CHECK(OpenStageCount(g.guest, kP) == 3);
   g.bytes[kP + kVoiceUnlocked + 0] = 0;
   CHECK(OpenStageCount(g.guest, kP) == 2);
   FakeGuest g2;
-  Setup(g2, fx::kFullProfile);
+  Setup(g2, g_full);
   g2.bytes[kP + kCostumeCount + kAlphaIndex] = 1;  // Alpha's count does not matter
   CHECK(OpenStageCount(g2.guest, kP) == 3);
-  g2.bytes[kP + kCostumeCount + 0] = 3;  // Zack one short of 4
+  g2.bytes[kP + kCostumeCount + 0] = uint8_t(BaseMax(0) - 1);  // the first character one short of her maximum
   CHECK(OpenStageCount(g2.guest, kP) == 2);
   FakeGuest g3;
-  Setup(g3, fx::kFullProfile);
+  Setup(g3, g_full);
   g3.bytes[kP + kStoryClears + 7] = 0;  // Helena's Story never cleared
   CHECK(OpenStageCount(g3.guest, kP) == 2);
 }
@@ -285,20 +436,20 @@ static void TestTatamiRule() {
 // clamp can bring it back.
 static void TestClampCostumeCounts() {
   FakeGuest g;
-  Setup(g, fx::kFullProfile);
-  constexpr int kHelena = 7;
-  g.bytes[kP + kCostumeCount + kHelena] = 6;  // her maximum is 5
+  Setup(g, g_full);
+  constexpr int kHelena = kHiddenWithStory;
+  g.bytes[kP + kCostumeCount + kHelena] = uint8_t(BaseMax(kHelena) + 1);  // one past her maximum
   CHECK(!FindProfile(g.guest));
   CHECK(FindLoadedRecord(g.guest) == std::optional<uint32_t>(kP));
   CHECK(ClampCostumeCounts(g.guest, kP) == 1);
-  CHECK(At(g, kCostumeCount, kHelena) == 5);
+  CHECK(At(g, kCostumeCount, kHelena) == BaseMax(kHelena));
   CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
   // Nothing past a maximum: nothing written, the counts below the maximum stay below it.
   g.writes = 0;
   CHECK(ClampCostumeCounts(g.guest, kP) == 0);
   CHECK(g.writes == 0);
   FakeGuest fresh;
-  Setup(fresh, fx::kFreshProfile);
+  Setup(fresh, g_fresh);
   CHECK(ClampCostumeCounts(fresh.guest, kP) == 0);
   CHECK(At(fresh, kCostumeCount, kHelena) == 2);
 }
@@ -306,79 +457,80 @@ static void TestClampCostumeCounts() {
 // FindLoadedRecord keeps every check but the count ranges.
 static void TestFindLoadedRecord() {
   FakeGuest wrong_slot;
-  Setup(wrong_slot, fx::kFreshProfile, 2, kP);
+  Setup(wrong_slot, g_fresh, 2, kP);
   CHECK(!FindLoadedRecord(wrong_slot.guest));
   FakeGuest past_slots;
-  Setup(past_slots, fx::kFreshProfile, 4, kRecordBase + 4 * kRecordStride + kRecordToProfile);
+  Setup(past_slots, g_fresh, 4, kRecordBase + 4 * kRecordStride + kRecordToProfile);
   CHECK(!FindLoadedRecord(past_slots.guest));
   // The game's boot defaults, before the save is read: no name, so nothing may be written yet.
   FakeGuest boot;
-  Setup(boot, fx::kFreshProfile);
+  Setup(boot, g_fresh);
   for (uint32_t i = 0; i < 32; ++i) boot.bytes[kP - kRecordToProfile + kRecordName + i] = 0;
   CHECK(!FindLoadedRecord(boot.guest));
   FakeGuest bad_table;
-  Setup(bad_table, fx::kFreshProfile);
+  Setup(bad_table, g_fresh);
   bad_table.bytes[kProfileIndexToChar + 3] = kCharIdCount;
   CHECK(!FindLoadedRecord(bad_table.guest));
   FakeGuest fine;
-  Setup(fine, fx::kFreshProfile);
+  Setup(fine, g_fresh);
   CHECK(FindLoadedRecord(fine.guest) == std::optional<uint32_t>(kP));
 }
 
-// The charId is mapped through the game's table: Kokoro is charId 0x0A, profile index 18.
+// The charId is mapped through the game's table: girl B is charId 0x0A, at profile index g_index_b.
 static void TestRaiseCostumes() {
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
-  CHECK(RaiseCostumes(g.guest, kP, 0x0A));
-  CHECK(At(g, kCostumeCount, 18) == 7);
-  CHECK(At(g, kCostumeCount, 0x0A) == 2);  // profile index 10 is Lei Fang: not the charId's index
+  Setup(g, g_fresh);
+  CHECK(RaiseCostumes(g.guest, kP, kCharB));
+  CHECK(At(g, kCostumeCount, g_index_b) == BaseMax(g_index_b));
+  CHECK(At(g, kCostumeCount, kCharB) == 2);  // the cell at the charId as an index is another girl's: untouched
   CHECK(g.writes == 1);
-  CHECK(!RaiseCostumes(g.guest, kP, 0x0A));  // already there
+  CHECK(!RaiseCostumes(g.guest, kP, kCharB));  // already there
   CHECK(g.writes == 1);
-  // A character still locked becomes selectable: Helena (charId 7, profile index 7) is locked in a new save, and an
-  // added costume she cannot be picked in would be no costume at all.
+  // A character still locked becomes selectable: the one at profile index 7 is locked in a new save, and an added
+  // costume she cannot be picked in would be no costume at all.
   FakeGuest h;
-  Setup(h, fx::kFreshProfile);
-  CHECK(At(h, kCharacterUnlocked, 7) == 0);
-  CHECK(RaiseCostumes(h.guest, kP, 0x07));
-  CHECK(At(h, kCostumeCount, 7) == 5);
-  CHECK(At(h, kCharacterUnlocked, 7) == 1);
+  Setup(h, g_fresh);
+  CHECK(At(h, kCharacterUnlocked, kHiddenWithStory) == 0);
+  CHECK(RaiseCostumes(h.guest, kP, g_char_h));
+  CHECK(At(h, kCostumeCount, kHiddenWithStory) == BaseMax(kHiddenWithStory));
+  CHECK(At(h, kCharacterUnlocked, kHiddenWithStory) == 1);
   CHECK(At(h, kCharacterUnlocked, 3) == 0);  // Ein stays locked
   // Only the flag missing (costumes already at the maximum): it still writes it, and says so.
   FakeGuest flag_only;
-  Setup(flag_only, fx::kFreshProfile);
-  flag_only.bytes[kP + kCostumeCount + 7] = 5;
-  CHECK(RaiseCostumes(flag_only.guest, kP, 0x07));
-  CHECK(At(flag_only, kCharacterUnlocked, 7) == 1);
-  CHECK(!RaiseCostumes(flag_only.guest, kP, 0x07));
+  Setup(flag_only, g_fresh);
+  flag_only.bytes[kP + kCostumeCount + kHiddenWithStory] = uint8_t(BaseMax(kHiddenWithStory));
+  CHECK(RaiseCostumes(flag_only.guest, kP, g_char_h));
+  CHECK(At(flag_only, kCharacterUnlocked, kHiddenWithStory) == 1);
+  CHECK(!RaiseCostumes(flag_only.guest, kP, g_char_h));
   // A raised maximum is what it raises to.
-  g.bytes[kMaxCostumes + 0x0A] = 9;
-  CHECK(RaiseCostumes(g.guest, kP, 0x0A));
-  CHECK(At(g, kCostumeCount, 18) == 9);
-  // A charId with no profile index (the unused RTM, 0x16): nothing.
+  g.bytes[kMaxCostumes + kCharB] = uint8_t(BaseMax(g_index_b) + kBoxCostumes);
+  CHECK(RaiseCostumes(g.guest, kP, kCharB));
+  CHECK(At(g, kCostumeCount, g_index_b) == BaseMax(g_index_b) + kBoxCostumes);
+  // A charId with no profile index: nothing.
   g.writes = 0;
-  CHECK(!RaiseCostumes(g.guest, kP, 0x16));
+  CHECK(!RaiseCostumes(g.guest, kP, g_unused));
   CHECK(g.writes == 0);
 }
 
 // ---- Task 3: the import changes no saved count and re-locks no stage ----
 //
 // The import raises the table's maximum by the girl's suits (costumes::Apply) and tells SetSuitCostumes how many. The
-// fixtures: Kokoro (charId 0x0A, profile index 18) with her box on (maximum 9) and four suits (13); Kasumi (charId 5,
-// profile index 5, maximum 7) with four suits (11).
-constexpr int kKasumiIndex = 5, kKokoroIndex = 18;
+// setup: girl B (charId 0x0A) with her box on (her maximum + 2) and four suits (+ 4 more); girl A (charId 5) with four
+// suits (her maximum + 4). Their own maxima are the tables' (BaseMax).
+static int KasumiIndex() { return g_index_a; }
+static int KokoroIndex() { return g_index_b; }
 
 static void Import(FakeGuest& g, bool kokoro_box = true) {
-  g.bytes[kMaxCostumes + 0x0A] = kokoro_box ? 13 : 11;
-  g.bytes[kMaxCostumes + 5] = 11;
+  g.bytes[kMaxCostumes + kCharB] = uint8_t(BaseMax(g_index_b) + (kokoro_box ? kBoxCostumes : 0) + kSuitsPerGirl);
+  g.bytes[kMaxCostumes + kCharA] = uint8_t(BaseMax(g_index_a) + kSuitsPerGirl);
   std::array<uint8_t, kCharIdCount> suits{};
-  suits[0x0A] = 4;
-  suits[5] = 4;
+  suits[kCharB] = kSuitsPerGirl;
+  suits[kCharA] = kSuitsPerGirl;
   SetSuitCostumes(suits);
 }
 static void Removed(FakeGuest& g, bool kokoro_box = true) {
-  g.bytes[kMaxCostumes + 0x0A] = kokoro_box ? 9 : 7;
-  g.bytes[kMaxCostumes + 5] = 7;
+  g.bytes[kMaxCostumes + kCharB] = uint8_t(BaseMax(g_index_b) + (kokoro_box ? kBoxCostumes : 0));
+  g.bytes[kMaxCostumes + kCharA] = uint8_t(BaseMax(g_index_a));
   SetSuitCostumes({});
 }
 
@@ -386,7 +538,7 @@ static void Removed(FakeGuest& g, bool kokoro_box = true) {
 static void Tick(FakeGuest& g, bool kokoro_box_on) {
   if (const std::optional<uint32_t> loaded = FindLoadedRecord(g.guest)) {
     ClampCostumeCounts(g.guest, *loaded);
-    if (FindProfile(g.guest) && kokoro_box_on) RaiseCostumes(g.guest, *loaded, 0x0A);
+    if (FindProfile(g.guest) && kokoro_box_on) RaiseCostumes(g.guest, *loaded, kCharB);
   }
 }
 
@@ -405,7 +557,7 @@ static std::vector<uint8_t> Profile(const FakeGuest& g) {
 static void TestImportLeavesTheCounts() {
   for (const bool earned : {false, true}) {
     FakeGuest g;
-    Setup(g, earned ? fx::kFullProfile : fx::kFreshProfile);
+    Setup(g, earned ? g_full : g_fresh);
     Import(g, false);
     const std::vector<uint8_t> before = Profile(g);
     g.writes = 0;
@@ -415,26 +567,28 @@ static void TestImportLeavesTheCounts() {
   }
   for (const bool earned : {false, true}) {  // the box on: with the import = without it, byte for byte
     FakeGuest with, without;
-    Setup(with, earned ? fx::kFullProfile : fx::kFreshProfile);
-    Setup(without, earned ? fx::kFullProfile : fx::kFreshProfile);
-    without.bytes[kMaxCostumes + 0x0A] = 9;
-    with.bytes[kMaxCostumes + 0x0A] = 9;
+    Setup(with, earned ? g_full : g_fresh);
+    Setup(without, earned ? g_full : g_fresh);
+    const uint8_t box_max = uint8_t(BaseMax(g_index_b) + kBoxCostumes);
+    without.bytes[kMaxCostumes + kCharB] = box_max;
+    with.bytes[kMaxCostumes + kCharB] = box_max;
     SetSuitCostumes({});
-    for (int i = 0; i < 5; ++i) Tick(without, true);  // the game as it is: no suits told, the box maximum 9
+    for (int i = 0; i < 5; ++i) Tick(without, true);  // the game as it is: no suits told, only the box's maximum
     Import(with, true);
     for (int i = 0; i < 5; ++i) Tick(with, true);
     CHECK(Profile(with) == Profile(without));
-    CHECK(At(with, kCostumeCount, kKokoroIndex) == 9);  // the box's maximum, NOT the 13 with her suits
-    CHECK(At(with, kCostumeCount, kKasumiIndex) == (earned ? 7 : 2));
+    CHECK(At(with, kCostumeCount, KokoroIndex()) == box_max);  // the box's maximum, NOT the one with her suits
+    CHECK(At(with, kCostumeCount, KasumiIndex()) == (earned ? BaseMax(KasumiIndex()) : 2));
     SetSuitCostumes({});
   }
   FakeGuest control;
-  Setup(control, fx::kFreshProfile);
+  Setup(control, g_fresh);
   Import(control, false);
-  control.bytes[kP + kCostumeCount + kKasumiIndex] = 12;  // above her 11
+  const int kasumi_table_max = BaseMax(KasumiIndex()) + kSuitsPerGirl;
+  control.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(kasumi_table_max + 1);  // above her table maximum
   control.writes = 0;
   Tick(control, false);
-  CHECK(control.writes >= 1 && At(control, kCostumeCount, kKasumiIndex) == 11);
+  CHECK(control.writes >= 1 && At(control, kCostumeCount, KasumiIndex()) == kasumi_table_max);
   SetSuitCostumes({});
 }
 
@@ -442,7 +596,7 @@ static void TestImportLeavesTheCounts() {
 // control: with the maximum raised and the suits not told (what the table alone does), it re-locks.
 static void TestImportKeepsTatami() {
   FakeGuest g;
-  Setup(g, fx::kFullProfile);
+  Setup(g, g_full);
   CHECK(OpenStageCount(g.guest, kP) == 3);
   CHECK(TatamiOpen(g.guest, kP));
   Import(g, false);
@@ -453,9 +607,9 @@ static void TestImportKeepsTatami() {
   CHECK(OpenStageCount(g.guest, kP) == 2);
   // A count one short of the game's own maximum still keeps it locked: the suits are not a way in.
   Import(g, false);
-  g.bytes[kP + kCostumeCount + kKasumiIndex] = 6;
+  g.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(BaseMax(KasumiIndex()) - 1);
   CHECK(!TatamiOpen(g.guest, kP));
-  g.bytes[kP + kCostumeCount + kKasumiIndex] = 7;
+  g.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(BaseMax(KasumiIndex()));
   CHECK(TatamiOpen(g.guest, kP));
   // The rest of the rule is unchanged by the suits.
   g.bytes[kP + kVoiceUnlocked + 0] = 0;
@@ -468,18 +622,19 @@ static void TestImportKeepsTatami() {
 // Extras tab works again.
 static void TestUnlockAllThenImportRemoved() {
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
+  Setup(g, g_fresh);
   Import(g);
   CHECK(ApplyUnlock(g.guest, kP, Unlock::kCostumes).costumes > 0);
-  CHECK(At(g, kCostumeCount, kKasumiIndex) == 11 && At(g, kCostumeCount, kKokoroIndex) == 13);  // the explicit act
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == BaseMax(KasumiIndex()) + kSuitsPerGirl &&
+        At(g, kCostumeCount, KokoroIndex()) == BaseMax(KokoroIndex()) + kBoxCostumes + kSuitsPerGirl);  // the explicit act
   CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
   Removed(g);  // the import folder is gone: the tables are the game's again
   CHECK(!FindProfile(g.guest));  // before the clamp: refused, as the brief's removal case describes
   CHECK(FindLoadedRecord(g.guest) == std::optional<uint32_t>(kP));
   Tick(g, true);
   CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
-  CHECK(At(g, kCostumeCount, kKasumiIndex) == 7);   // her own maximum
-  CHECK(At(g, kCostumeCount, kKokoroIndex) == 9);   // the box's
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == BaseMax(KasumiIndex()));                     // her own maximum
+  CHECK(At(g, kCostumeCount, KokoroIndex()) == BaseMax(KokoroIndex()) + kBoxCostumes);  // the box's
   CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes));
   g.writes = 0;
   Tick(g, true);
@@ -489,50 +644,47 @@ static void TestUnlockAllThenImportRemoved() {
 // Fix round 1: sub_82408398(charId) = "her count >= her maximum" (the Story-clear unlock sub_824082F0 and the award
 // sub_824C3238 count++ only when it says no). With suits in the table the maximum is the raised one, so a girl at her
 // own maximum would earn another count. Offline with suits it compares against her own maximum; online, and for a
-// girl without suits, it is the table's. The charId -> profile index table is the image's 0x82C59FF8 (doa4.bin).
-static void SetCharToIndex(FakeGuest& g) {
-  static const uint8_t table[26] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 15, 10, 11, 19, 20, 21, 12, 22, 16, 17, 14, 0, 0, 13, 0};
-  for (uint32_t i = 0; i < 26; ++i) g.bytes[kCharToProfileIndex + i] = table[i];
-}
-
+// girl without suits, it is the table's. The charId -> profile index table (Setup writes the inverse of the profile
+// index -> charId table; the game's is at 0x82C59FF8) is what CostumesComplete reads.
 static void TestCostumesComplete() {
   FakeGuest g;
-  Setup(g, fx::kFreshProfile);
-  SetCharToIndex(g);
-  Import(g, false);  // Kasumi (charId 5, index 5): table maximum 11 = her own 7 + 4 suits; Kokoro 11 = 7 + 4
-  const auto count = [&](int index, uint8_t v) { g.bytes[kP + kCostumeCount + uint32_t(index)] = v; };
+  Setup(g, g_fresh);
+  Import(g, false);  // girl A (charId 5): table maximum = her own + 4 suits; girl B the same
+  const auto count = [&](int index, int v) { g.bytes[kP + kCostumeCount + uint32_t(index)] = uint8_t(v); };
+  const int own = BaseMax(KasumiIndex()), table = own + kSuitsPerGirl;
   // Precondition: own maximum and raised maximum differ, so the wrong rule cannot pass.
-  CHECK(g.Get(kMaxCostumes + 5) == 11);
-  count(kKasumiIndex, 7);
-  CHECK(CostumesComplete(g.guest, kP, 5, true));    // at her own maximum: complete (the table's 11 says no)
-  count(kKasumiIndex, 6);
-  CHECK(!CostumesComplete(g.guest, kP, 5, true));   // one below her own maximum
-  count(kKasumiIndex, 11);
-  CHECK(CostumesComplete(g.guest, kP, 5, true));    // above: complete
+  CHECK(g.Get(kMaxCostumes + kCharA) == table && own != table);
+  count(KasumiIndex(), own);
+  CHECK(CostumesComplete(g.guest, kP, kCharA, true));    // at her own maximum: complete (the table's says no)
+  count(KasumiIndex(), own - 1);
+  CHECK(!CostumesComplete(g.guest, kP, kCharA, true));   // one below her own maximum
+  count(KasumiIndex(), table);
+  CHECK(CostumesComplete(g.guest, kP, kCharA, true));    // above: complete
   // Online (not offline) the game's own rule: the table's maximum.
-  count(kKasumiIndex, 7);
-  CHECK(!CostumesComplete(g.guest, kP, 5, false));
-  count(kKasumiIndex, 11);
-  CHECK(CostumesComplete(g.guest, kP, 5, false));
-  // A girl with no suits (Ayane, charId 13 = profile index 11, maximum 6): the table's, offline or not.
-  g.bytes[kP + kCostumeCount + 11] = 5;
-  CHECK(!CostumesComplete(g.guest, kP, 13, true) && !CostumesComplete(g.guest, kP, 13, false));
-  g.bytes[kP + kCostumeCount + 11] = 6;
-  CHECK(CostumesComplete(g.guest, kP, 13, true) && CostumesComplete(g.guest, kP, 13, false));
+  count(KasumiIndex(), own);
+  CHECK(!CostumesComplete(g.guest, kP, kCharA, false));
+  count(KasumiIndex(), table);
+  CHECK(CostumesComplete(g.guest, kP, kCharA, false));
+  // A girl with no suits (charId 13): the table's, offline or not.
+  const int c_max = BaseMax(g_index_c);
+  count(g_index_c, c_max - 1);
+  CHECK(!CostumesComplete(g.guest, kP, kCharC, true) && !CostumesComplete(g.guest, kP, kCharC, false));
+  count(g_index_c, c_max);
+  CHECK(CostumesComplete(g.guest, kP, kCharC, true) && CostumesComplete(g.guest, kP, kCharC, false));
   // A charId past the 25: no maximum (0), so always complete, as the game's.
   CHECK(CostumesComplete(g.guest, kP, 25, true));
   // Nothing is written by asking.
   g.writes = 0;
-  CostumesComplete(g.guest, kP, 5, true);
+  CostumesComplete(g.guest, kP, kCharA, true);
   CHECK(g.writes == 0);
   SetSuitCostumes({});
 }
 
-// The real 100% save wiped: every unlock field equals the real fresh save's; every other byte stays the 100% save's
-// (it has Time Attack clears, which the fresh save has not, so "copy the fresh fixture" would fail here).
+// The full save wiped: every unlock field equals the fresh save's; every other byte stays the full save's
+// (its other bytes differ from the fresh save's, so "copy the fresh profile" would fail here).
 static void TestWipe() {
   FakeGuest g;
-  Setup(g, fx::kFullProfile);
+  Setup(g, g_full);
   CHECK(!IsWiped(g.guest, kP));
   CHECK(WipeUnlocks(g.guest, kP) > 0);
   const auto in_unlock_field = [](uint32_t offset) {
@@ -565,7 +717,7 @@ static void TestWipe() {
   CHECK(WipeUnlocks(g.guest, kP) == 0);
   CHECK(g.writes == 0);
   FakeGuest fresh;
-  Setup(fresh, fx::kFreshProfile);
+  Setup(fresh, g_fresh);
   CHECK(IsWiped(fresh.guest, kP));
   CHECK(WipeUnlocks(fresh.guest, kP) == 0);
   CHECK(fresh.writes == 0);
@@ -578,7 +730,7 @@ static void TestWipe() {
 static void TestIsWipedSeesEveryField() {
   const auto one_changed = [](uint32_t offset, uint8_t value) {
     FakeGuest g;
-    Setup(g, fx::kFreshProfile);
+    Setup(g, g_fresh);
     g.bytes[kP + offset] = value;
     return IsWiped(g.guest, kP);
   };
@@ -592,13 +744,14 @@ static void TestIsWipedSeesEveryField() {
   }
 }
 
-int main() {
+// Every test, on the tables set by UseTables.
+static void RunAll() {
   TestClampCostumeCounts();
   TestFindLoadedRecord();
   TestRaiseCostumes();
   TestWipe();
   TestIsWipedSeesEveryField();
-  TestFixturesAreWhatTheResearchSays();
+  TestFreshProfileIsANewSave();
   TestFindProfile();
   TestEverythingMatchesTheFullSave();
   TestEachButtonOnlyItsOwnBytes();
@@ -610,6 +763,19 @@ int main() {
   TestImportKeepsTatami();
   TestUnlockAllThenImportRemoved();
   TestCostumesComplete();
+}
+
+int main() {
+  UseTables(SyntheticTables());
+  RunAll();
+  std::string why;
+  if (const std::optional<Tables> image = ImageTables(&why)) {
+    UseTables(*image);
+    RunAll();
+  } else {
+    doa4_test::PrintSkipped("unlocks: the checks on the image's tables", why);
+  }
+  std::printf("unlocks: %d checks run\n", g_checks);
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

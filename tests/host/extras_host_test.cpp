@@ -1,31 +1,106 @@
 // Host test for src/doa4_extras.cpp (with doa4_unlocks.cpp and
-// doa4_backup.cpp). Built and run by run_extras_test.bat.
+// doa4_backup.cpp). No game byte is in this file: the game's tables and a new save's profile are synthetic (as in
+// unlocks_host_test.cpp); with DOA4_TEST_IMAGE set (doa4_test_image.h) the whole set runs again on the image's three
+// ranges. Built and run by run_extras_test.bat.
 
 #include "../../src/doa4_extras.h"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <string>
+#include <vector>
 
-#include "doa4_unlock_fixtures.h"
+#include "doa4_test_image.h"
 
 static int g_failures = 0;
-#define CHECK(cond)                                               \
-  do {                                                            \
-    if (!(cond)) {                                                \
-      std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      ++g_failures;                                               \
-    }                                                             \
+static int g_checks = 0;
+static const char* g_tables_name = "synthetic";
+#define CHECK(cond)                                                                    \
+  do {                                                                                 \
+    ++g_checks;                                                                        \
+    if (!(cond)) {                                                                     \
+      std::printf("FAIL [%s] %s:%d: %s\n", g_tables_name, __FILE__, __LINE__, #cond); \
+      ++g_failures;                                                                    \
+    }                                                                                  \
   } while (0)
 
 namespace fs = std::filesystem;
 using namespace doa4::unlocks;
-namespace fx = doa4_fixtures;
 
 constexpr uint32_t kP = kRecordBase + kRecordToProfile;  // slot 0
+constexpr uint32_t kFixtureStart = 0x3FC0;                // the profile range the unlock fields live in
+constexpr uint32_t kProfileBytes = 0x8C;
+
+// The three image tables the unlock code reads (as in unlocks_host_test.cpp).
+struct Tables {
+  const char* name;
+  std::array<uint8_t, 23> index_to_char;  // profile index -> charId
+  std::array<uint8_t, 25> max;            // maximum costume count by charId
+  std::array<uint8_t, 18> roster;         // the Story roster's charIds
+};
+
+// Synthetic: index -> charId is (6 i + 14) mod 25; the maxima run 2..12; the roster holds the charIds of the 17 profile
+// indices that have Story mode (all but 3, 6, 8, 12, 21 and 22) and the first one again.
+static Tables SyntheticTables() {
+  Tables t{"synthetic", {}, {}, {}};
+  for (int i = 0; i < 23; ++i) t.index_to_char[size_t(i)] = uint8_t((6 * i + 14) % 25);
+  for (int c = 0; c < 25; ++c) t.max[size_t(c)] = uint8_t(2 + (4 * c + 1) % 11);
+  size_t k = 0;
+  for (int i = 22; i >= 0; --i) {
+    if (i == 3 || i == 6 || i == 8 || i == 12 || i == 21 || i == 22) continue;
+    t.roster[k++] = t.index_to_char[size_t(i)];
+  }
+  t.roster[k++] = t.roster[0];
+  return t;
+}
+
+static std::optional<Tables> ImageTables(std::string* why) {
+  const auto index_to_char = doa4_test::ReadImageRange(doa4_test::kProfileIndexToCharRange, why);
+  if (!index_to_char) return std::nullopt;
+  const auto max = doa4_test::ReadImageRange(doa4_test::kMaxCostumesRange, why);
+  if (!max) return std::nullopt;
+  const auto roster = doa4_test::ReadImageRange(doa4_test::kStoryRosterRange, why);
+  if (!roster) return std::nullopt;
+  Tables t{"image", {}, {}, {}};
+  std::copy(index_to_char->begin(), index_to_char->end(), t.index_to_char.begin());
+  std::copy(max->begin(), max->end(), t.max.begin());
+  std::copy(roster->begin(), roster->end(), t.roster.begin());
+  return t;
+}
+
+static bool InUnlockField(uint32_t offset) {
+  return offset == kFirstStoryClear || (offset >= kCostumeCount && offset < kCostumeCount + kCharacterCount) ||
+         (offset >= kCharacterUnlocked && offset < kCharacterUnlocked + kCharacterCount) ||
+         (offset >= kStoryClears && offset < kStoryClears + kCharacterCount) ||
+         (offset >= kStoryClearedNormal && offset < kStoryClearedNormal + kCharacterCount) ||
+         (offset >= kVoiceUnlocked && offset < kVoiceUnlocked + kCharacterCount);
+}
+
+// A new save's unlock fields (costume counts 2, the 7 hidden characters 3, 6, 7, 8, 12, 21, 22 locked, no voices, no
+// Story clears); every other byte of the range is uint8_t(0xA5 ^ offset), so a write outside the fields shows.
+static std::vector<uint8_t> FreshProfile() {
+  std::vector<uint8_t> p(kProfileBytes);
+  for (uint32_t o = kFixtureStart; o < kFixtureStart + kProfileBytes; ++o) p[o - kFixtureStart] = uint8_t(0xA5 ^ o);
+  p[kFirstStoryClear - kFixtureStart] = 0;
+  for (int i = 0; i < kCharacterCount; ++i) {
+    const bool hidden = i == 3 || i == 6 || i == 7 || i == 8 || i == 12 || i == 21 || i == 22;
+    const uint32_t u = uint32_t(i);
+    p[kCostumeCount - kFixtureStart + u] = 2;
+    p[kCharacterUnlocked - kFixtureStart + u] = hidden ? 0 : 1;
+    p[kStoryClears - kFixtureStart + u] = 0;
+    p[kStoryClearedNormal - kFixtureStart + u] = 0;
+    p[kVoiceUnlocked - kFixtureStart + u] = 0;
+  }
+  return p;
+}
+
+static Tables g_t;
 
 // A loaded fresh profile in a map, as in unlocks_host_test.cpp.
 struct FakeGuest {
@@ -37,14 +112,21 @@ struct FakeGuest {
                            ++writes;
                          }};
   FakeGuest() {
-    for (size_t i = 0; i < fx::kProfileIndexToChar.size(); ++i)
-      bytes[kProfileIndexToChar + uint32_t(i)] = fx::kProfileIndexToChar[i];
-    for (size_t i = 0; i < fx::kMaxCostumes.size(); ++i)
-      bytes[kMaxCostumes + uint32_t(i)] = fx::kMaxCostumes[i];
-    for (size_t k = 0; k < fx::kStoryRosterChars.size(); ++k)
-      bytes[kStoryRoster + kStoryRosterStride * uint32_t(k)] = fx::kStoryRosterChars[k];
-    for (size_t i = 0; i < fx::kFreshProfile.size(); ++i)
-      bytes[kP + 0x3FC0 + uint32_t(i)] = fx::kFreshProfile[i];
+    for (size_t i = 0; i < g_t.index_to_char.size(); ++i) bytes[kProfileIndexToChar + uint32_t(i)] = g_t.index_to_char[i];
+    for (size_t i = 0; i < g_t.max.size(); ++i) bytes[kMaxCostumes + uint32_t(i)] = g_t.max[i];
+    for (size_t k = 0; k < g_t.roster.size(); ++k) bytes[kStoryRoster + kStoryRosterStride * uint32_t(k)] = g_t.roster[k];
+    const std::vector<uint8_t> fresh = FreshProfile();
+    for (size_t i = 0; i < fresh.size(); ++i) bytes[kP + kFixtureStart + uint32_t(i)] = fresh[i];
+  }
+  // Every byte of the profile range that is not an unlock field is still the fresh profile's filler: nothing wrote
+  // outside the fields (a write there, even of the same unlock value, would change 0xA5 ^ offset).
+  bool FillerIntact() const {
+    for (uint32_t o = kFixtureStart; o < kFixtureStart + kProfileBytes; ++o) {
+      if (InUnlockField(o)) continue;
+      const auto it = bytes.find(kP + o);
+      if (it == bytes.end() || it->second != uint8_t(0xA5 ^ o)) return false;
+    }
+    return true;
   }
 };
 
@@ -112,6 +194,7 @@ static void TestUnlockWithBackup() {
   CHECK(state.last_change == "Unlocked 6 characters and 1 stage.");
   CHECK(state.waiting_for_save && !state.saved);
   CHECK(g.writes == 6);
+  CHECK(g.FillerIntact());
 
   // Not saved while ups.dat is unchanged.
   doa4::PollSaved(g.guest, save, &state);
@@ -193,6 +276,7 @@ static void TestUnlockWithBackup() {
                                &error));
   CHECK(state5.backup.empty() && !state5.backup_note.empty());
   CHECK(g5.writes == 23);
+  CHECK(g5.FillerIntact());
   doa4::PollSaved(g5.guest, save5, &state5);
   CHECK(state5.waiting_for_save);
   fs::create_directories(save5);
@@ -228,6 +312,7 @@ static void TestWipeWithBackup() {
   // Unlocked and saved: the state a wipe starts from.
   WriteFile(save / "ups.dat", SaveFileFrom(g));
   CHECK(doa4::UnlockWithBackup(g.guest, kP, Unlock::kEverything, save, backups, "u1", &state, &error));
+  CHECK(g.FillerIntact());  // Unlock everything wrote the unlock fields and nothing else
   WriteFile(save / "ups.dat", SaveFileFrom(g));
   const std::string unlocked_file = SaveFileFrom(g);
   Touch(save / "ups.dat");
@@ -244,6 +329,7 @@ static void TestWipeWithBackup() {
     CHECK(copy == unlocked_file);
   }
   CHECK(IsWiped(g.guest, kP));
+  CHECK(g.FillerIntact());  // the wipe wrote the unlock fields and nothing else
   CHECK(state.last_change == "Wiped: characters, costumes, voices, stages and Story clears are back to a new save's.");
   CHECK(state.waiting_for_save && !state.saved && state.pending_wipe);
   CHECK(state.pending_unlocks == 0);
@@ -352,12 +438,13 @@ static void TestBackupBeforeCostumeBox() {
   fs::remove_all(root);
 }
 
-int main() {
+// Every test, on the tables in g_t.
+static void RunAll() {
   try {
     TestBackupBeforeCostumeBox();
     TestWipeWithBackup();
   } catch (const std::exception& e) {
-    std::printf("FAIL TestWipeWithBackup threw: %s\n", e.what());
+    std::printf("FAIL [%s] TestWipeWithBackup threw: %s\n", g_tables_name, e.what());
     ++g_failures;
   }
   TestSaveDir();
@@ -367,9 +454,23 @@ int main() {
     TestUnlockWithBackup();
     TestUnsavedWarning();
   } catch (const std::exception& e) {
-    std::printf("FAIL TestUnlockWithBackup threw: %s\n", e.what());
+    std::printf("FAIL [%s] TestUnlockWithBackup threw: %s\n", g_tables_name, e.what());
     ++g_failures;
   }
+}
+
+int main() {
+  g_t = SyntheticTables();
+  RunAll();
+  std::string why;
+  if (const std::optional<Tables> image = ImageTables(&why)) {
+    g_t = *image;
+    g_tables_name = "image";
+    RunAll();
+  } else {
+    doa4_test::PrintSkipped("extras: the checks on the image's tables", why);
+  }
+  std::printf("extras: %d checks run\n", g_checks);
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

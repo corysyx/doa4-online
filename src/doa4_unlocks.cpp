@@ -175,7 +175,7 @@ bool RaiseCostumes(const GuestBytes& guest, uint32_t profile, uint8_t char_id) {
 
 namespace {
 
-// The value of each unlock field in a new save (tests/host/doa4_unlock_fixtures.h kFreshProfile).
+// The value of each unlock field in a new save (tests/host/unlocks_host_test.cpp FreshProfile).
 bool StartsHidden(int index) {
   return index == kEinIndex || index == 6 || index == 7 || index == 8 || index == 12 || index == kAlphaIndex ||
          index == kSpartanIndex;

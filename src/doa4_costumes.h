@@ -1,5 +1,5 @@
 // DOA4's costume tables, extended with imported suits (spec section 3.3). Byte access through
-// GuestBytes, so host tests run on the image's real tables (tests/host/doa4_costume_fixtures.h).
+// GuestBytes, so host tests run on the image's real tables (read from your own image by tests/host/doa4_test_image.h).
 //
 // Per charId c:
 //   max[c]   u8   0x82C34888 + c       costumes (caps the save's unlock count)

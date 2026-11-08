@@ -1,20 +1,29 @@
-// Host test for src/doa4_costumes.cpp on the image's real tables (doa4_costume_fixtures.h).
-// Built and run by run_costumes_test.bat.
+// Host test for src/doa4_costumes.cpp on the image's real costume tables, read from your own image (DOA4_TEST_IMAGE,
+// doa4_test_image.h; no game byte is in this repository). Without the image the checks that need the tables print
+// SKIPPED and the rest run: the guard and model-set checks and the image reader's own checks. Built and run by
+// run_costumes_test.bat.
 
 #include "../../src/doa4_costumes.h"
 #include "../../src/doa4_suits_picks.h"
 #include "../../src/doa4_tweaks.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <optional>
 #include <set>
+#include <string>
+#include <vector>
 
-#include "doa4_costume_fixtures.h"
-#include "doa4_unlock_fixtures.h"
+#include "doa4_test_image.h"
 
 static int g_failures = 0;
+static int g_checks = 0;
 #define CHECK(cond)                                               \
   do {                                                            \
+    ++g_checks;                                                   \
     if (!(cond)) {                                                \
       std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
       ++g_failures;                                               \
@@ -24,9 +33,13 @@ static int g_failures = 0;
 using namespace doa4::costumes;
 using doa4::suits::kNoPart;
 using doa4::suits::Suit;
-namespace fx = doa4_fixtures;
 
-// Guest memory from the fixtures; unset bytes read 0. Records every written address.
+// The image's three costume ranges and its maximum-costume table, loaded once in main; the tests that use FakeGuest run
+// only when they are there.
+static const doa4_test::CostumeImage* g_image = nullptr;
+static std::vector<uint8_t> g_max_costumes;
+
+// Guest memory from the image's ranges; unset bytes read 0. Records every written address.
 struct FakeGuest {
   std::map<uint32_t, uint8_t> bytes;
   std::set<uint32_t> written;
@@ -45,13 +58,12 @@ struct FakeGuest {
     return block;
   };
   FakeGuest() {
-    Load(fx::kTablesStart, fx::kTables);
-    Load(fx::kRecordsStart, fx::kRecords);
-    Load(fx::kFilesStart, fx::kFiles);
+    Load(doa4_test::kCostumeTablesRange.address, g_image->tables);
+    Load(doa4_test::kCostumeRecordsRange.address, g_image->records);
+    Load(doa4_test::kCostumeFilesRange.address, g_image->files);
   }
-  template <size_t N>
-  void Load(uint32_t start, const std::array<uint8_t, N>& data) {
-    for (size_t i = 0; i < N; ++i) bytes[start + uint32_t(i)] = data[i];
+  void Load(uint32_t start, const std::vector<uint8_t>& data) {
+    for (size_t i = 0; i < data.size(); ++i) bytes[start + uint32_t(i)] = data[i];
   }
   uint8_t Get(uint32_t a) const {
     auto it = bytes.find(a);
@@ -97,8 +109,9 @@ static Suit MakeSuit(uint8_t c, int own, uint16_t tpr, uint16_t cat, uint16_t pt
 static void TestFixturesAgree() {
   FakeGuest g;
   bool same = true;
-  for (uint32_t c = 0; c < kCharCount; ++c) same = same && g.Get(kMaxTable + c) == fx::kMaxCostumes[c];
-  CHECK(same);  // both fixture files come from the same image
+  CHECK(g_max_costumes.size() == kCharCount);
+  for (uint32_t c = 0; c < kCharCount && c < g_max_costumes.size(); ++c) same = same && g.Get(kMaxTable + c) == g_max_costumes[c];
+  CHECK(same);  // the tables range and the maximum-costume range come from the same image
 }
 
 static void TestRecordCounts() {
@@ -1359,39 +1372,131 @@ static void TestRaiseCountRowFollowsBox() {
   CHECK(g.Get(kCountCopy + 10) == 11);  // the box off: 7 and 4
 }
 
+// ---- doa4_test_image.h itself: always run, with no image ----
+
+// A file of 0x300 bytes of a known pattern standing for an image: guest address 0x82000000 + n is file offset n.
+static std::filesystem::path WriteFakeImage(std::vector<uint8_t>* bytes) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "doa4_test_image_reader_check.bin";
+  bytes->resize(0x300);
+  for (size_t i = 0; i < bytes->size(); ++i) (*bytes)[i] = uint8_t(i * 7 + 3);
+  std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(bytes->data()), std::streamsize(bytes->size()));
+  return path;
+}
+
+static void SetImageVariable(const std::filesystem::path* value) {
+#ifdef _WIN32
+  _wputenv_s(L"DOA4_TEST_IMAGE", value ? value->c_str() : L"");
+#endif
+}
+
+static void TestImageReader() {
+  using namespace doa4_test;
+  // SHA-1 known answers (FIPS 180-1 examples and the empty message).
+  CHECK(Sha1Hex(nullptr, 0) == "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+  const std::string abc = "abc";
+  CHECK(Sha1Hex(reinterpret_cast<const uint8_t*>(abc.data()), abc.size()) == "a9993e364706816aba3e25717850c26c9cd0d89d");
+  const std::string two_blocks = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+  CHECK(Sha1Hex(reinterpret_cast<const uint8_t*>(two_blocks.data()), two_blocks.size()) ==
+        "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+  const std::vector<uint8_t> million(1000000, uint8_t('a'));
+  CHECK(Sha1Hex(million.data(), million.size()) == "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
+
+  std::vector<uint8_t> file;
+  const std::filesystem::path path = WriteFakeImage(&file);
+  const std::string name = PathText(path);
+  const auto pin = [](const std::vector<uint8_t>& v) { return Sha1Hex(v.data(), v.size()); };
+  const std::vector<uint8_t> plain(file.begin() + 0x40, file.begin() + 0x50);
+  const std::string plain_pin = pin(plain);
+  std::vector<uint8_t> strided;
+  for (int k = 0; k < 5; ++k) strided.push_back(file[size_t(0x10 + 8 * k)]);
+  const std::string strided_pin = pin(strided);
+
+  std::string why;
+  // The right bytes at the right offset; a stride takes every stride-th byte.
+  CHECK(ReadRangeFromFile(path, ImageRange{0x82000040, 16, plain_pin.c_str()}, &why) == plain);
+  CHECK(ReadRangeFromFile(path, ImageRange{0x82000010, 5, strided_pin.c_str(), 8}, &why) == strided);
+  // Wrong pin: refused, and the reason names the file, the address, what was there and what was expected.
+  why.clear();
+  CHECK(!ReadRangeFromFile(path, ImageRange{0x82000041, 16, plain_pin.c_str()}, &why));
+  CHECK(why.rfind(name + ": 0x82000041 has SHA-1 ", 0) == 0 && why.find(", expected " + plain_pin) != std::string::npos);
+  why.clear();
+  CHECK(!ReadRangeFromFile(path, ImageRange{0x82000010, 5, strided_pin.c_str()}, &why));  // the stride matters
+  CHECK(why.find("has SHA-1 ") != std::string::npos);
+  // Unreadable: no such file, and a range past the end of the file.
+  why.clear();
+  CHECK(!ReadRangeFromFile(path.string() + ".missing", ImageRange{0x82000040, 16, plain_pin.c_str()}, &why));
+  CHECK(why == name + ".missing: cannot read");
+  why.clear();
+  CHECK(!ReadRangeFromFile(path, ImageRange{0x820002F8, 16, plain_pin.c_str()}, &why));
+  CHECK(why == name + ": cannot read");
+
+  // Through the environment variable (Windows: read as UTF-16).
+#ifdef _WIN32
+  const std::optional<std::filesystem::path> before = ImagePath();
+  SetImageVariable(nullptr);
+  why.clear();
+  CHECK(!ReadImageRange(ImageRange{0x82000040, 16, plain_pin.c_str()}, &why) && why == "DOA4_TEST_IMAGE unset");
+  SetImageVariable(&path);
+  CHECK(ReadImageRange(ImageRange{0x82000040, 16, plain_pin.c_str()}, &why) == plain);
+  const std::filesystem::path missing = path.wstring() + L".missing";
+  SetImageVariable(&missing);
+  why.clear();
+  CHECK(!ReadImageRange(ImageRange{0x82000040, 16, plain_pin.c_str()}, &why) && why == name + ".missing: cannot read");
+  SetImageVariable(before ? &*before : nullptr);
+  CHECK(ImagePath() == before);
+#endif
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+}
+
 int main() {
-  TestFixturesAgree();
-  TestRecordCounts();
-  TestFileLocation();
-  TestCheckSuit();
-  TestApplyKasumi();
-  TestApplyAyane();
-  TestAllOrNothing();
-  TestMaxLimit();
-  TestFitting();
-  TestPicksMakeTheSameTables();
+  // The image first (before TestImageReader touches the variable and puts it back).
+  std::string why;
+  const std::optional<doa4_test::CostumeImage> image = doa4_test::LoadCostumeImage(&why);
+  std::string why_max;
+  const std::optional<std::vector<uint8_t>> max_costumes =
+      image ? doa4_test::ReadImageRange(doa4_test::kMaxCostumesRange, &why_max) : std::nullopt;
+  TestImageReader();
+  // Checks that never touch the tables.
   TestGuardModel();
-  TestRecordCountsAll();
-  TestRecordCountOutsideImage();
-  TestFileEdges();
-  TestCheckSuitEdges();
-  TestHeadPartPair();
-  TestAllocFailures();
-  TestAllocBlocks();
-  TestApplyInPlace();
-  TestApplyManyAppends();
-  TestApplyRefusals();
   TestGuardModelEdge();
   TestModelSet();
   TestGuardEmptySlot();
-  TestDecideLoad();
-  TestMixedSlotKey();
-  TweaksThenSuitsStayWithinLimit();
-  TestBoxToggledAfterSuits();
   TestVisibleCount();
-  TestCountSuits();
-  TestRaiseCountRow();
-  TestRaiseCountRowFollowsBox();
+  if (image && max_costumes) {
+    g_image = &*image;
+    g_max_costumes = *max_costumes;
+    TestFixturesAgree();
+    TestRecordCounts();
+    TestFileLocation();
+    TestCheckSuit();
+    TestApplyKasumi();
+    TestApplyAyane();
+    TestAllOrNothing();
+    TestMaxLimit();
+    TestFitting();
+    TestPicksMakeTheSameTables();
+    TestRecordCountsAll();
+    TestRecordCountOutsideImage();
+    TestFileEdges();
+    TestCheckSuitEdges();
+    TestHeadPartPair();
+    TestAllocFailures();
+    TestAllocBlocks();
+    TestApplyInPlace();
+    TestApplyManyAppends();
+    TestApplyRefusals();
+    TestDecideLoad();
+    TestMixedSlotKey();
+    TweaksThenSuitsStayWithinLimit();
+    TestBoxToggledAfterSuits();
+    TestCountSuits();
+    TestRaiseCountRow();
+    TestRaiseCountRowFollowsBox();
+  } else {
+    doa4_test::PrintSkipped("costumes: the checks on the image's costume tables", image ? why_max : why);
+  }
+  std::printf("costumes: %d checks run\n", g_checks);
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

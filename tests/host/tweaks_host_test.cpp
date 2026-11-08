@@ -1,7 +1,9 @@
 // Host test for src/doa4_tweaks.cpp, against the Xenia patch file's bytes and
-// the image's originals (doa4_tweak_fixtures.h). Built and run by
+// the image's originals (doa4_tweak_fixtures.h). The costume tweaks are checked on the game's real costume tables, read
+// from your own image (DOA4_TEST_IMAGE, doa4_test_image.h); without it that section prints SKIPPED. Built and run by
 // run_tweaks_test.bat.
 
+#include "../../src/doa4_costumes.h"
 #include "../../src/doa4_tweaks.h"
 
 #include <algorithm>
@@ -11,7 +13,7 @@
 #include <string>
 #include <utility>
 
-#include "doa4_costume_tweak_fixtures.h"
+#include "doa4_test_image.h"
 #include "doa4_tweak_fixtures.h"
 
 static int g_failures = 0;
@@ -192,6 +194,45 @@ static void TestCaptureOnlyOnce() {
 
 // ---- the costume tweaks ----
 
+// One character's costume tables as the image holds them, by charId.
+struct CostumeTables {
+  uint32_t list_pointer, variants_pointer;
+  uint8_t length, maximum;
+  uint32_t records;  // model records up to the next character's block (0 = the last block: unknown)
+  std::vector<uint8_t> list, variants;
+};
+static std::vector<CostumeTables> g_tables;
+
+// The tables of all 25 characters, derived from the two image ranges the costume code reads: the table words, lengths,
+// maximums, lists and variants from kCostumeTablesRange, the record blocks from kCostumeRecordsRange (the record count
+// is the code the game's loader guard uses, costumes::RecordCount).
+static std::vector<CostumeTables> DeriveCostumeTables(const doa4_test::CostumeImage& image) {
+  std::map<uint32_t, uint8_t> bytes;
+  for (size_t i = 0; i < image.tables.size(); ++i) bytes[doa4_test::kCostumeTablesRange.address + uint32_t(i)] = image.tables[i];
+  for (size_t i = 0; i < image.records.size(); ++i) bytes[doa4_test::kCostumeRecordsRange.address + uint32_t(i)] = image.records[i];
+  const doa4::GuestBytes guest{[&bytes](uint32_t a) {
+                                 const auto it = bytes.find(a);
+                                 return it == bytes.end() ? uint8_t(0) : it->second;
+                               },
+                               [](uint32_t, uint8_t) {}};
+  std::vector<CostumeTables> out;
+  for (uint32_t c = 0; c < doa4::costumes::kCharCount; ++c) {
+    CostumeTables t;
+    t.list_pointer = guest.ReadBe32(doa4::costumes::kListTable + 4 * c);
+    t.variants_pointer = guest.ReadBe32(doa4::costumes::kVarTable + 4 * c);
+    t.length = guest.Read(doa4::costumes::kLenTable + c);
+    t.maximum = guest.Read(doa4::costumes::kMaxTable + c);
+    t.records = doa4::costumes::RecordCount(guest, c);
+    // A list pointer outside the image (the unused charIds) names no list.
+    if (t.list_pointer < doa4::costumes::kImageEnd) {
+      for (uint32_t i = 0; i < t.length; ++i) t.list.push_back(guest.Read(t.list_pointer + i));
+    }
+    for (uint32_t i = 0; i < t.maximum; ++i) t.variants.push_back(guest.Read(t.variants_pointer + i));
+    out.push_back(std::move(t));
+  }
+  return out;
+}
+
 // The game's costume tables in a map, with exact-size heap blocks: a write outside a block or past its end counts.
 struct CostumeGuest {
   std::map<uint32_t, uint8_t> bytes;
@@ -232,8 +273,8 @@ struct CostumeGuest {
     return v;
   }
   CostumeGuest() {
-    for (uint32_t c = 0; c < fx::kCostumeTables.size(); ++c) {
-      const fx::CostumeTables& t = fx::kCostumeTables[c];
+    for (uint32_t c = 0; c < g_tables.size(); ++c) {
+      const CostumeTables& t = g_tables[c];
       SetBe32(kCostumeList + 4 * c, t.list_pointer);
       SetBe32(kCostumeVariants + 4 * c, t.variants_pointer);
       bytes[kCostumeLength + c] = t.length;
@@ -293,7 +334,7 @@ static const std::vector<CostumeCase> kCostumeCases = {
 
 static void TestCostumeTweaksAddSlots() {
   for (const CostumeCase& c : kCostumeCases) {
-    const fx::CostumeTables& t = fx::kCostumeTables[c.character];
+    const CostumeTables& t = g_tables[c.character];
     CHECK(c.tweak < AllTweaks().size());
     if (c.tweak >= AllTweaks().size()) continue;
     CHECK(std::string(AllTweaks()[c.tweak].cvar) == c.cvar);
@@ -332,9 +373,9 @@ static void TestCostumeTweaksAddSlots() {
     // No other character's tables moved.
     for (uint32_t other = 0; other < 25; ++other) {
       if (other == c.character) continue;
-      CHECK(g.Be32(kCostumeList + 4 * other) == fx::kCostumeTables[other].list_pointer);
-      CHECK(g.guest.Read(kCostumeLength + other) == fx::kCostumeTables[other].length);
-      CHECK(g.guest.Read(kCostumeMax + other) == fx::kCostumeTables[other].maximum);
+      CHECK(g.Be32(kCostumeList + 4 * other) == g_tables[other].list_pointer);
+      CHECK(g.guest.Read(kCostumeLength + other) == g_tables[other].length);
+      CHECK(g.guest.Read(kCostumeMax + other) == g_tables[other].maximum);
     }
     CHECK(g.stray_writes == 0);
 
@@ -382,14 +423,14 @@ static void TestCostumeTablesChangeInASafeOrder() {
     CHECK(patcher.Apply(recording, c.tweak, false, [](uint32_t, uint32_t, bool) { return true; }).empty());
     CHECK(words.size() == 2);
     CHECK(at(length) < at(list) && at(length) < at(variants) && at(maximum) < at(list) && at(maximum) < at(variants));
-    CHECK(g.Be32(list) == fx::kCostumeTables[c.character].list_pointer);
+    CHECK(g.Be32(list) == g_tables[c.character].list_pointer);
   }
 }
 
 // Past her entries a block holds zeros: a reader that walks on finds no more variants or models.
 static void TestCostumeBlocksAreZeroPadded() {
   for (const CostumeCase& c : kCostumeCases) {
-    const fx::CostumeTables& t = fx::kCostumeTables[c.character];
+    const CostumeTables& t = g_tables[c.character];
     CostumeGuest g;
     TweakPatcher patcher;
     patcher.CaptureOriginals(g.guest, g.alloc);
@@ -413,7 +454,7 @@ static void TestCostumeTweaksTogether() {
     CHECK(patcher.Apply(g.guest, c.tweak, true, [](uint32_t, uint32_t, bool) { return true; }).empty());
   }
   for (const CostumeCase& c : kCostumeCases) {
-    const fx::CostumeTables& t = fx::kCostumeTables[c.character];
+    const CostumeTables& t = g_tables[c.character];
     for (uint32_t j = 0; j < c.models.size(); ++j) CHECK(LookUp(g, c.character, t.maximum + j) == int(c.models[j]));
     for (uint32_t n = 0; n < t.maximum; ++n) CHECK(LookUp(g, c.character, n) == int(t.list[n]));
   }
@@ -459,12 +500,19 @@ static void TestCostumeBlockFailure() {
 }
 
 int main() {
-  TestCostumeTweaksAddSlots();
-  TestCostumeTablesChangeInASafeOrder();
-  TestCostumeBlocksAreZeroPadded();
-  TestCostumeTweaksTogether();
-  TestCostumeBlocksAreAllocatedOnceUpFront();
-  TestCostumeBlockFailure();
+  std::string why;
+  if (const std::optional<doa4_test::CostumeImage> image = doa4_test::LoadCostumeImage(&why)) {
+    g_tables = DeriveCostumeTables(*image);
+    CHECK(g_tables.size() == 25);
+    TestCostumeTweaksAddSlots();
+    TestCostumeTablesChangeInASafeOrder();
+    TestCostumeBlocksAreZeroPadded();
+    TestCostumeTweaksTogether();
+    TestCostumeBlocksAreAllocatedOnceUpFront();
+    TestCostumeBlockFailure();
+  } else {
+    doa4_test::PrintSkipped("tweaks: the costume tweaks on the image's costume tables", why);
+  }
   TestListsMatchThePatchFile();
   TestReadOnlyRanges();
   TestOnThenOffRestoresEveryByte();
