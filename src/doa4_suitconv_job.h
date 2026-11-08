@@ -53,8 +53,11 @@
 //     its writer. In one process this is enforced: a second Start or StartForTest on the same folder (canonical path, case
 //     folded) while a job runs there returns a job that is already done with kFailed ("an import is already running"), and
 //     CompletePendingSwap returns "an import is running ..."; both touch nothing. A folder is held from Start until the job's
-//     thread is done (done() true), and CompletePendingSwap holds it while it works. A second PROCESS is not detected: the
-//     cross-process lock is the caller's.
+//     thread is done (done() true), and CompletePendingSwap holds it while it works. A second PROCESS is detected too: the
+//     hold includes a named kernel event per folder ("Local\doa4-suitconv-" + SHA-1 of the folded canonical path), so the same
+//     answers come back when another game process on the same user data runs an import or a swap; the event's existence is
+//     the claim (the OS drops it when that process dies) and nothing is written to the user data folder. Only processes of
+//     one Windows session (the "Local\" namespace) see each other.
 //   - The log callback is called from worker threads (calls are serialised) and may throw: every exception from it is
 //     swallowed, so a failing logger cannot end the game or change an import's outcome.
 //   - The job may be destroyed from inside the log callback (or any hook): the destructor sees that it runs on the job's own
@@ -181,6 +184,9 @@ uint64_t BytesNeeded(std::span<const SuitRecipe> suits);
 // rename). log may be empty; it is called on the calling thread. See "For the caller" above.
 std::string CompletePendingSwap(const std::filesystem::path& user_data,
                                 const std::function<void(std::string_view)>& log = {});
+
+// Test seam: the name of the kernel object that stands for a user data folder across processes (same name for two spellings of one folder).
+std::wstring FolderClaimNameForTest(const std::filesystem::path& user_data);
 
 // "" when `folder` is a good import: manifest.txt parses, every line is a pick, every file exists with the listed size and
 // SHA-1. Otherwise the first reason.

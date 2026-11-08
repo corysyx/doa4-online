@@ -1566,7 +1566,14 @@ class DeadOrAlive4App : public rex::ReXApp {
     // the current import's files open for the whole run, which blocks a swap).
     const doa4::suits_import::StartupSuits s = doa4::suits_import::DecideStartup(
         session, rex::cvar::Query<bool>("doa4_suits_import_pending"), first_run_shown_);
-    if (s.complete_swap) {
+    if (s.complete_swap && session) {
+      // Cannot happen (DecideStartup says complete_swap = !session); the rule is kept local to the call, not argued from the function.
+      REXLOG_ERROR("[doa4][SUITS] a session process was asked to complete a swap; skipped");
+    } else if (s.complete_swap) {
+      std::error_code waiting_ec;
+      if (std::filesystem::exists(UserData() / "doax2_suits.new", waiting_ec)) {
+        REXLOG_INFO("[doa4][SUITS] a finished import is waiting: putting it in place (this can take a few seconds)");
+      }
       const std::string why = doa4::suitconv::CompletePendingSwap(
           UserData(), [](std::string_view line) { REXLOG_INFO("[doa4][SUITS] {}", line); });
       if (!why.empty()) {

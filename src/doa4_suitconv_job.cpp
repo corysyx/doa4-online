@@ -505,28 +505,50 @@ std::wstring FolderKey(const fs::path& ud) {
   return k;
 }
 
+// The name of the kernel object that stands for a user data folder across processes: "Local\\doa4-suitconv-" + the SHA-1 (hex) of the
+// folded key's UTF-8. Its existence, not ownership, is the claim (the job's claim is released from the job's own thread).
+std::wstring FolderClaimName(const fs::path& ud) {
+  const std::string utf8 = Utf8(fs::path(FolderKey(ud)));
+  const std::string hex = gamefiles::Sha1Hex(utf8.data(), utf8.size());
+  return L"Local\\doa4-suitconv-" + std::wstring(hex.begin(), hex.end());
+}
+
 class FolderClaim {
  public:
   FolderClaim() = default;
   FolderClaim(const FolderClaim&) = delete;
   FolderClaim& operator=(const FolderClaim&) = delete;
   ~FolderClaim() { Release(); }
-  // False when the folder is taken (by another claim in this process).
+  // False when the folder is taken: by another claim in this process, or by another process (a named event per folder, see
+  // FolderClaimName). The event's EXISTENCE is the claim, never its ownership: this claim is released from the job's own thread,
+  // not the thread that took it. The OS drops the event when its last process dies. Nothing is created in the user data folder.
   bool Take(const fs::path& ud) {
     key_ = FolderKey(ud);
     std::lock_guard<std::mutex> lk(g_active_mu);
-    held_ = ActiveFolders().insert(key_).second;
-    return held_;
+    if (!ActiveFolders().insert(key_).second) return false;
+    SetLastError(0);
+    HANDLE event = CreateEventW(nullptr, TRUE, FALSE, FolderClaimName(ud).c_str());
+    if (!event || GetLastError() == ERROR_ALREADY_EXISTS) {
+      if (event) CloseHandle(event);
+      ActiveFolders().erase(key_);
+      return false;
+    }
+    event_ = event;
+    held_ = true;
+    return true;
   }
   void Release() {
     if (!held_) return;
     std::lock_guard<std::mutex> lk(g_active_mu);
+    if (event_) CloseHandle(event_);
+    event_ = nullptr;
     ActiveFolders().erase(key_);
     held_ = false;
   }
 
  private:
   std::wstring key_;
+  HANDLE event_ = nullptr;
   bool held_ = false;
 };
 
@@ -1208,6 +1230,8 @@ uint64_t BytesNeeded(std::span<const SuitRecipe> suits) {
   return total;
 }
 uint64_t BytesNeeded() { return BytesNeeded(Suits()); }
+
+std::wstring FolderClaimNameForTest(const fs::path& user_data) { return FolderClaimName(user_data); }
 
 std::string CompletePendingSwap(const fs::path& user_data, const std::function<void(std::string_view)>& log) {
   FolderClaim claim;  // held while it works: an import started meanwhile on this folder is refused

@@ -1812,6 +1812,64 @@ static void TestInProcessGuard() {
   CK(!Exists(w2.New()));
 }
 
+// Another PROCESS is simulated by the test creating the folder's named kernel object itself: while it exists, CompletePendingSwap
+// and a Start on that folder are refused and touch nothing (a planted interrupted .new is the thing a recovery would delete).
+static void TestCrossProcessGuard() {
+  Group("cross_process_guard");
+  World w("xproc");
+  World other("xproc_other");
+  w.WriteCurrent(w.Cur(), "cur", true);
+  fs::create_directories(w.New());
+  WriteText(w.New() / kMarker, "doa4 suit importer\n");
+  const std::wstring name = FolderClaimNameForTest(w.ud);
+  // (d) the name: one folder, one name, whatever the spelling; another folder, another name.
+  std::wstring upper = w.ud.wstring();
+  for (wchar_t& c : upper) c = wchar_t(towupper(c));
+  CK(!name.empty() && name.rfind(L"Local\\doa4-suitconv-", 0) == 0);
+  CK(FolderClaimNameForTest(w.ud / ".." / "ud") == name);
+  CK(FolderClaimNameForTest(fs::path(upper)) == name);
+  CK(FolderClaimNameForTest(fs::path(w.ud.wstring() + L"\\")) == name);
+  CK(FolderClaimNameForTest(other.ud) != name);
+  const Snap before = SnapTree(w.ud);
+  HANDLE held = CreateEventW(nullptr, TRUE, FALSE, name.c_str());
+  CK(held != nullptr && GetLastError() != ERROR_ALREADY_EXISTS);
+  // (a) CompletePendingSwap: refused, listing unchanged, the .new with its marker and no manifest is still there.
+  {
+    const std::string why = CompletePendingSwap(w.ud);
+    CKF(Has(why, "import is running"), "CompletePendingSwap: '%s'", why.c_str());
+    CK_SAME(before, SnapTree(w.ud), "user data after the refused CompletePendingSwap");
+    CK(Exists(w.New() / kMarker) && !Exists(w.New() / "manifest.txt"));
+  }
+  // (b) a job: ends kFailed "already running", touches nothing.
+  {
+    auto b = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+    CK(b->done());
+    const ImportResult rb = b->result();
+    CKF(Is(rb, Outcome::kFailed) && Has(rb.detail, "already running"), "StartForTest: outcome %d (%s)", int(rb.outcome), rb.detail.c_str());
+    CK_SAME(before, SnapTree(w.ud), "user data after the refused StartForTest");
+  }
+  // (c) once the "other process" lets go, both work again.
+  if (held) CloseHandle(held);
+  held = nullptr;
+  CK(CompletePendingSwap(w.ud).empty());
+  CK(!Exists(w.New()));  // the interrupted .new was recovered now that nothing else holds the folder
+  // (e) a claim taken and released in this process leaves no object behind.
+  {
+    SetLastError(0);
+    HANDLE probe = CreateEventW(nullptr, TRUE, FALSE, name.c_str());
+    CKF(probe != nullptr && GetLastError() != ERROR_ALREADY_EXISTS, "a released claim left its object (error %lu)", GetLastError());
+    if (probe) CloseHandle(probe);
+  }
+  const ImportResult rc = RunJob(w, w.MakeHooks(), 2);
+  CKF(Is(rc, Outcome::kImported), "a job after the other process let go: outcome %d (%s)", int(rc.outcome), rc.detail.c_str());
+  {
+    SetLastError(0);
+    HANDLE probe = CreateEventW(nullptr, TRUE, FALSE, name.c_str());
+    CKF(probe != nullptr && GetLastError() != ERROR_ALREADY_EXISTS, "a finished job left its object (error %lu)", GetLastError());
+    if (probe) CloseHandle(probe);
+  }
+}
+
 // The log callback destroys the job: on the job's own thread (a recovery line) and on a worker (a reference mismatch).
 // The destructor must not join its own thread; the job ends in the background and the folder is free for the next job.
 static void DestroyFromCallback(const char* name, bool on_worker) {
@@ -2810,6 +2868,7 @@ int main() {
       TestThrowBetweenSwapRenames();
     }
     if (Want("final_guard")) TestInProcessGuard();
+    if (Want("final_cross_process")) TestCrossProcessGuard();
     if (Want("final_ownerless")) TestOwnerlessFolderRecovery();
     if (Want("final_held_folder")) TestHeldFolderKeepsMarker();
     if (Want("final_swap_retry")) TestSwapRetriesBlockedRename();

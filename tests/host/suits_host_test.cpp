@@ -1796,6 +1796,7 @@ int main() {
   TestImportIsAFile();
   TestNoManifest();
   TestConverterWordEmptyWithoutManifest();
+  TestConverterWordKeptWhenSuitsFail();  // not image-gated: the only pin of "a manifest whose suits all fail still reports its word"
   TestBadManifest();
   TestManifestSizeLimit();
   TestPicksTable();
@@ -1806,7 +1807,6 @@ int main() {
     g_image = &*image;
     TestLoadsTwo();
     TestConverterWordRead();
-    TestConverterWordKeptWhenSuitsFail();
     TestFingerprintIsCanonical();
     TestKnownChecksums();
     TestBigFiles();
