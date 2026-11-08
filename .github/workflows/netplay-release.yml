@@ -38,8 +38,13 @@ jobs:
           if (-not $m.Success) { throw 'DOA4_NETPLAY_VERSION (three numbers, x.y.z) not found in CMakeLists.txt' }
           $tag = "alpha-v$($m.Groups[1].Value)"
           # a release of this version exists: the version was not raised, and nothing is overwritten or duplicated
-          gh release view $tag --repo $env:GITHUB_REPOSITORY > $null 2>&1
-          if ($LASTEXITCODE -eq 0) { throw "The release $tag already exists: raise DOA4_NETPLAY_VERSION in CMakeLists.txt before publishing again." }
+          $out = (gh release view $tag --repo $env:GITHUB_REPOSITORY 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          if ($code -eq 0) { throw "The release $tag already exists: raise DOA4_NETPLAY_VERSION in CMakeLists.txt before publishing again." }
+          # only "release not found" means the version is new; any other gh failure (auth, network, rate limit) stops the step
+          if ($out -notmatch 'release not found') { throw "gh release view $tag failed (exit $code), so it is not known whether the release exists: $out" }
+          # the runner ends a pwsh step with 'exit $LASTEXITCODE': the expected exit 1 above must not become the step's result
+          $global:LASTEXITCODE = 0
           "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "tag $tag"
       - name: SDK at the pinned commit

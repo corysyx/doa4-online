@@ -6,7 +6,7 @@
 online play, statically recompiled with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). It
 also builds **34 swimsuits from Dead or Alive Xtreme 2** (DOAX2) on your PC from your own disc, as extra
 costumes. This is **alpha 0.3.0**: it works and is used, but it is still an alpha, and the
-[known issues](#9-known-issues) are listed below. **No game data is included.** You need your own copy of
+[known issues](#known-issues) are listed below. **No game data is included.** You need your own copy of
 the game, and the swimsuits need your own DOAX2 disc.
 
 It is a fork of [parkerallan/doa4-recomp](https://github.com/parkerallan/doa4-recomp), published at
@@ -15,19 +15,20 @@ play**, frame pacing, an Esc menu (Video / Audio / Controls / Photo / Extras / O
 graphics options, full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts
 the game files. Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
 
-## 2. Easy setup: play online with a friend
+## Easy setup: play online with a friend
 
 You do not need to build anything. Each player does steps 1-3 once.
 
 **What you need:** Windows 10 or 11, 64-bit; a CPU with AVX2 (Intel Haswell / AMD Zen or newer) and at
-least two cores; the Microsoft Visual C++ 2015-2022 x64 runtime (Windows asks for it if it is missing);
+least two cores; the Microsoft Visual C++ 2015-2022 x64 runtime (if it is missing, the game stops with a "VCRUNTIME140.dll was not found" style error: install it from
+[Microsoft's download page](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist));
 your own copy of *Dead or Alive 4 (USA, Europe) (Rev 1)* as a disc image (`.iso`) or an extracted
 folder; and, only for the swimsuits, your own **USA** copy of *Dead or Alive Xtreme 2*.
 
 1. **Download the game program.** Open the
    [Releases page](https://github.com/Dwreckgg/doa4-recomp/releases), pick the newest `alpha-v...`
    release and download `DOA4-alpha-v...-win64.zip`. Both players must use the **same** release. If you
-   already have an older copy, update it in the game instead: see [Updating](#5-updating).
+   already have an older copy, update it in the game instead: see [Updating](#updating).
 2. **Unzip it** into a folder of its own, for example `C:\Games\Dead or Alive 4 Online` (plain letters,
    digits and spaces only in the path).
 3. **Start `dead_or_alive_4.exe`.** The first time, the game shows its setup screen:
@@ -40,7 +41,7 @@ folder; and, only for the swimsuits, your own **USA** copy of *Dead or Alive Xtr
      image (`.iso`) or its extracted folder. Nothing from DOAX2 is installed or downloaded: the game
      builds the swimsuits on your PC, which takes a few seconds on a recent PC, and writes about 300 MB
      into your saves folder (it needs about 364 MB free there). Press **Start without swimsuits** to
-     skip it; you can import later from the Esc menu ([DOAX2 swimsuits](#4-doax2-swimsuits)).
+     skip it; you can import later from the Esc menu ([DOAX2 swimsuits](#doax2-swimsuits)).
 4. **Connect.** In the game press **Esc** and open the **Online** tab.
    - The **host** presses **Host**, then **Copy** to copy the code, and sends it to the friend.
    - The **friend** pastes the code and presses **Join**.
@@ -54,9 +55,9 @@ folder; and, only for the swimsuits, your own **USA** copy of *Dead or Alive Xtr
 **Can't connect?** On the host's router, turn on UPnP or forward **UDP port 7200** to the host's PC.
 If the friend's game shows its own code while connecting, the host can type it under
 **Strict router?** and press **Reach out**. More detail, and what each message means:
-[Online play](#3-online-play-in-more-detail).
+[Online play](#online-play-in-more-detail).
 
-## 3. Online play in more detail
+## Online play in more detail
 
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
@@ -83,17 +84,17 @@ until the router restarts or you remove it in the router's own settings.
 | Message | Meaning |
 |---|---|
 | "You have an older release (...): press Check for Updates, then restart the game." / "The other player has an older release (...): they need to press Check for Updates." | Two different releases: refused at the handshake. The older side updates. A copy from the old `netplay-v1.0.x` releases is always the older one, whatever its numbers; the message then shows both full tags. |
-| "You run a self-built exe ..." / "The other player runs a self-built exe ..." | One game was built from source: both should use the latest release. |
+| "You run a self-built exe ..." / "The other player runs a self-built exe ..." | One game was built from source: both should use the latest release. On an old `netplay-v1.0.x` copy, "The other player runs a self-built exe" also appears when the other player has the alpha: press **Check for Updates**. |
 | "The game files differ (...): both players need the same game files." | The named file groups of the two games' data differ. |
 | "A direct connection is not possible between your networks; relay arrives with lobbies." | The routers change the port per destination (symmetric NAT), or every attempt to connect failed: the two PCs cannot reach each other directly yet. |
 | "Waiting for the other player..." | The other player's input is late and the game holds. After 10 s: "The other player stopped responding. The session ended; both games restart." |
 | "The games went out of sync. The session ended; both games restart." | A desync. Both games wrote diagnostics: send the session logs (below). |
 
 **Session logs:** **Open session logs** in the Online tab opens `<saves folder>\netplay\sessions`
-(the saves folder is the one the Game tab shows, [section 7](#7-saves-settings-photos-and-logs)). After a
+(the saves folder is the one the Game tab shows, [Saves, settings, photos and logs](#saves-settings-photos-and-logs)). After a
 desync, send the newest session's folder.
 
-## 4. DOAX2 swimsuits
+## DOAX2 swimsuits
 
 The game can build 34 swimsuits from *Dead or Alive Xtreme 2* as extra costumes for the girls. They
 come after each character's own and extra costumes on the costume select screen, and you can pick them
@@ -126,20 +127,21 @@ straight away on any save.
 - Two players without the swimsuits play exactly as before.
 - Two imports made by different versions of the importer count as different imports.
 
-## 5. Updating
+## Updating
 
 When a new release is out, press **Check for Updates** in the Online tab of the Esc menu: it shows the
 newest release, downloads its three files, checks each against its `SHA256SUMS.txt`, swaps them in, and
 asks you to restart. Press it again if it says to. It is off while you are online. Both players need the
 same release. You can also download the new zip and unzip it over the old folder.
 
-- **The launcher is retired for now.** The DOA4 launcher is not shipped with the releases any more; use
-  **Check for Updates** in the game. It may come back later.
+- **The launcher is retired for now.** The DOA4 launcher is not shipped with the releases any more, and its
+  Update button should no longer be used: start `dead_or_alive_4.exe` and use **Check for Updates**. It may come
+  back later.
 - **Copies from the old `netplay-v1.0.x` releases** (v1.0.7, v1.0.9 and so on): press **Check for
   Updates** once. A last bridge release on the old channel carries the alpha build, and from then on the
   game follows the `alpha-v...` releases.
 
-## 6. The Esc menu and hotkeys
+## The Esc menu and hotkeys
 
 Press **Esc** at any time in the game to open the menu, and **Esc** again (or **Close (Esc)** at the
 bottom) to close it. Your choices are saved to `dead_or_alive_4.toml` next to the exe and come back on
@@ -183,7 +185,7 @@ the next start. The menu has seven tabs:
   the game backs up your save, and the tab shows where.
 - **Game tweaks:** "All stages in Tag battle" and "Hidden characters in multiplayer select".
 - **DOAX2 swimsuits:** **Import DOAX2 swimsuits...** (or **Import again...**), then **Restart now** to
-  use them; see [DOAX2 swimsuits](#4-doax2-swimsuits).
+  use them; see [DOAX2 swimsuits](#doax2-swimsuits).
 
 **Online**
 - **Play with a friend:** **Host** shows **Your code** (**Copy** puts it on the clipboard); the other
@@ -218,7 +220,7 @@ that need a restart, and changing the game folder.
 | **F6** | Shows the diagnostics overlay |
 | **F8** | Online: marks the moment of a sound or timing glitch in the session log (send the log with your report) |
 
-## 7. Saves, settings, photos and logs
+## Saves, settings, photos and logs
 
 - **Saves and the shader cache** go to the folder in `doa4_user_data` in `dead_or_alive_4.toml` (for
   example `doa4_user_data = "C:/Games/DOA4saves"`, with forward slashes), else to
@@ -228,9 +230,9 @@ that need a restart, and changing the game folder.
 - **Settings** live in `dead_or_alive_4.toml` next to the exe; the **Esc** menu edits them.
 - **Photos** go to `Pictures\DOA4` unless the Photo tab says otherwise (**Open folder** opens it).
 - **Logs:** `logs\dead_or_alive_4_NNN.log` next to the exe. Send the newest one with a bug report.
-- **Online session logs:** **Open session logs** in the Online tab ([section 3](#3-online-play-in-more-detail)).
+- **Online session logs:** **Open session logs** in the Online tab ([Online play in more detail](#online-play-in-more-detail)).
 
-## 8. Troubleshooting
+## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
@@ -248,9 +250,11 @@ that need a restart, and changing the game folder.
 | "Import cancelled. Nothing was changed." / "The import is offered again at the next start." | You cancelled, or the game was closed during the import. The game offers the import again at the next start; **Start without swimsuits** skips it. |
 | "The swimsuits are ready. They are put in place when the game next starts." | The game still held the files, so the swap waits. Restart the game. |
 | "No swimsuit could be built:" or "33 swimsuits imported, 1 skipped:" (the numbers vary) | The lines under it say which suit was skipped and why. Send the log from `logs\` if you want it looked at. |
+| "N of them differ from the reference build on this PC: they work, and online they count as a different import." | The swimsuits work, but their files are not byte for byte the ones the reference importer makes. In an online session they count as a different import (see Online with swimsuits above). |
+| "These swimsuits were built by an older importer. Import them again to match players who have the new ones." | Your swimsuits come from an older version of the importer. **Import again...** in the Extras tab rebuilds them, so they match players who have the new ones. |
 | "Restart the game to use them." | The import changed the suits. Press **Restart now**. |
 
-## 9. Known issues
+## Known issues
 
 | Issue | Status |
 |---|---|
@@ -260,16 +264,16 @@ that need a restart, and changing the game folder.
 | Kasumi COS. 10 clips through her top on the bounce. | Postponed. |
 | Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
 
-## 10. Roadmap
+## Roadmap
 
 Planned, no dates:
 
 - Rollback netcode for online play.
 - Online lobbies with up to 4 players.
-- Costumes imported from other DOA titles, for example DOA2 Ultimate, DOA2U (each from your own disc, as
+- Costumes imported from other DOA titles, for example Dead or Alive 2 Ultimate (each from your own disc, as
   with DOAX2).
 
-## 11. Credits
+## Credits
 
 - [parkerallan](https://github.com/parkerallan): the original
   [doa4-recomp](https://github.com/parkerallan/doa4-recomp) this is a fork of, and the DOA2U
@@ -281,7 +285,7 @@ Planned, no dates:
   and XMA lockstep is theirs, used with permission; also the main reference for the rollback-ready
   design.
 - [GekkoNet](https://github.com/HeatXD/GekkoNet) by HeatXD (the input exchange) and
-  [miniupnpc](https://github.com/miniupnp/miniupnp) (the router port); licences in
+  [miniupnpc](https://github.com/miniupnp/miniupnp) by Thomas Bernard (the router port); licences in
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - [MK-3D-rollback](https://github.com/Jstackzz/MK-3D-rollback) by Jstackzz: studied for the lobby,
   rotation and hold-point design.

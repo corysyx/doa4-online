@@ -1193,7 +1193,7 @@ void Lobby::Impl::OnBootMessage(const std::vector<uint8_t>& msg, uint8_t type) {
   const uint64_t own = Build();
   if (own == 0 || h.build != own) {
     const std::string text =
-        "The host runs a different build of the game: both players need the same netplay release (Check for Updates in the Online tab).";
+        "The host runs a different build of the game: both players need the same release (Check for Updates in the Online tab).";
     Answer(h.session_token, false, text);
     SetEvent(text);
     return;

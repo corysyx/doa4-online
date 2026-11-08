@@ -63,7 +63,7 @@ From a plain `cmd` window:
 ```bat
 mkdir C:\doa4
 cd /d C:\doa4
-git clone https://github.com/Dwreckgg/doa4-recomp doa4-recomp
+git clone -b netplay https://github.com/Dwreckgg/doa4-recomp doa4-recomp
 type doa4-recomp\netplay_sdk.txt
 ```
 
@@ -78,7 +78,7 @@ git -C rexglue-sdk submodule update --init --recursive
 py -3 doa4-recomp\tools\fix_git_symlinks.py rexglue-sdk
 ```
 
-Use the branch of `doa4-recomp` that the release is built from. CMake prints a harmless "no v* tag
+The release is built from the `netplay` branch (the repository's default branch), as cloned above. CMake prints a harmless "no v* tag
 reachable from HEAD" warning on a fresh SDK clone.
 
 ### Fix the SDK's symlinks (Windows)
@@ -122,13 +122,19 @@ build, so check `extract-xiso -h` if that command line does not work.
 
 `tools\np_build.bat` is the entry point. It sets up Visual Studio's environment, puts LLVM first on
 `PATH`, and runs CMake with the flags the build needs. It reads the SDK folder from `DOA4_SDK` (forward
-slashes). From a plain `cmd` window (not PowerShell), in `C:\doa4`:
+slashes). From a plain `cmd` window (not PowerShell). The script leaves the window in the `doa4-recomp` folder, so
+start there and call it relative to it:
 
 ```bat
+cd /d C:\doa4\doa4-recomp
 set "DOA4_SDK=C:/doa4/rexglue-sdk"
-doa4-recomp\tools\np_build.bat configure
-doa4-recomp\tools\np_build.bat build
+tools\np_build.bat configure
+tools\np_build.bat build
 ```
+
+`configure` passes `-DDOA4_RELEASE_CHANNEL=alpha`, so a build folder configured earlier with another channel (the
+old default was `netplay`) moves to `alpha` too; check `out\build\win-amd64-release\CMakeCache.txt` for
+`DOA4_RELEASE_CHANNEL:STRING=alpha`.
 
 `configure` runs once (or after deleting `out\build`); `build` every time. It expects Visual Studio's
 Build Tools at `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools` and LLVM at
@@ -143,10 +149,10 @@ The same, by hand (this is what the script and the release workflow run; the wor
 ```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
 set "PATH=C:\Program Files\LLVM\bin;%PATH%"
-cd doa4-recomp
+cd /d C:\doa4\doa4-recomp
 
 rem Configure (once, or after deleting out\build):
-cmake --preset win-amd64-release -DREXSDK_DIR=C:/doa4/rexglue-sdk "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3"
+cmake --preset win-amd64-release -DREXSDK_DIR=C:/doa4/rexglue-sdk "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3" -DDOA4_RELEASE_CHANNEL=alpha
 
 rem Build (every time):
 cmake --build --preset win-amd64-release
@@ -203,16 +209,17 @@ failures` or `<name>: all checks passed`). To run them all, judged by that line 
 (`--only <name> ...` for some), from a `cmd` window:
 
 ```bat
+cd /d C:\doa4\doa4-recomp
 set "REXSDK_DIR=C:\doa4\rexglue-sdk"
 set "DOA4_CI=1"
-py -3 -I doa4-recomp\tools\run_host_tests.py
+py -3 -I tools\run_host_tests.py
 ```
 
 The runners take Visual Studio's `VsDevCmd.bat` from `DOA4_VSDEVCMD` and LLVM's `bin` folder from
 `DOA4_LLVM_BIN` when set (defaults: the Build Tools and `C:\Program Files\LLVM\bin` of section 2; the
 release workflow sets both). `REXSDK_DIR` is the SDK folder some runners include headers from.
 
-**Tool tests.** From the repository folder:
+**Tool tests.** In the same window, in the repository folder:
 
 ```bat
 set "DOA4_CI=1"

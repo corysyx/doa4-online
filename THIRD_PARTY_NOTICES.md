@@ -152,19 +152,20 @@ Copyright (c) 2005-2023, NumPy Developers.
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
+modification, are permitted provided that the following conditions are
+met:
 
-   * Redistributions of source code must retain the above copyright
-     notice, this list of conditions and the following disclaimer.
+    * Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
 
-   * Redistributions in binary form must reproduce the above
-     copyright notice, this list of conditions and the following
-     disclaimer in the documentation and/or other materials provided
-     with the distribution.
+    * Redistributions in binary form must reproduce the above
+       copyright notice, this list of conditions and the following
+       disclaimer in the documentation and/or other materials provided
+       with the distribution.
 
-   * Neither the name of the NumPy Developers nor the names of any
-     contributors may be used to endorse or promote products derived
-     from this software without specific prior written permission.
+    * Neither the name of the NumPy Developers nor the names of any
+       contributors may be used to endorse or promote products derived
+       from this software without specific prior written permission.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -237,6 +238,14 @@ products or services of Licensee, or any third party.
 8. By copying, installing or otherwise using Python, Licensee
 agrees to be bound by the terms and conditions of this License Agreement.
 ```
+
+### OpenBLAS (BSD 3-Clause): an acknowledgement, no code copied
+
+The converter's matrix-vector and dot-product sums (`src/doa4_suitconv_cloth.cpp`, `Gemv3`, and
+`src/doa4_suitconv_num.h`, `NpDotFused`) match the order of arithmetic of the OpenBLAS 0.3.23 kernels numpy 1.26.3 calls
+(`dgemv_t_4.c` and the dot kernel), so that the results are the same bits. The arithmetic order was matched; no OpenBLAS
+code was copied. OpenBLAS: https://github.com/OpenMathLib/OpenBLAS, Copyright (c) 2011-2014, The OpenBLAS Project, and
+others, BSD 3-Clause.
 
 ### musl libc (MIT), the exp and atan2 functions
 

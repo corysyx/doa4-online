@@ -10,6 +10,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <mutex>
 #include <system_error>
@@ -448,6 +450,32 @@ Env GameEnv() {
   return e;
 }
 
+// After a successful swap: the game folder's own SHA256SUMS.txt (kept beside the files by the launcher and by the zip), if
+// there is one, becomes the release's verified one. The retired launcher's damage check reads exactly that file (its release
+// folder's SHA256SUMS.txt) and would otherwise find the new files "damaged" and reinstall the release it recorded. A failure
+// is only a WARN: the game files are already in place.
+void RefreshFolderSums(const Request& request, const fs::path& dir, const std::string& sums) {
+  std::error_code ec;
+  const fs::path target = dir / kSumsName;
+  if (!fs::exists(target, ec)) return;  // never create one
+  const fs::path tmp = dir / (std::string(kSumsName) + ".tmp");
+  bool ok = false;
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    out.write(sums.data(), std::streamsize(sums.size()));
+    out.flush();
+    ok = out.good();
+  }
+  if (ok) ok = MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+  if (!ok) {
+    const DWORD e = GetLastError();
+    fs::remove(tmp, ec);
+    if (request.log)
+      request.log("[doa4][UPDATE] WARN: could not refresh " + std::string(kSumsName) + " in the game folder (" + ErrorText(e) +
+                  "); the files are updated");
+  }
+}
+
 Result CheckAndUpdate(const Request& request, const Env& env) {
   Result r;
   {
@@ -539,6 +567,7 @@ Result CheckAndUpdate(const Request& request, const Env& env) {
       g_installed = c.tag;
       g_offered.clear();
     }
+    if (why.empty()) RefreshFolderSums(request, dir, sums);
   }
   fs::remove_all(staging, ec);
   if (!why.empty()) {

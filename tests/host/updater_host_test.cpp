@@ -452,8 +452,9 @@ static void TestChoose() {
 }
 
 // P3D / the bridge: what the DEPLOYED updaters (netplay-v1.0.7, np1-v109 = v1.0.9) do is the code of Choose/PickRelease at
-// those refs (np_rules.cpp identical in ParseVersion, CompareVersions, IsDevBuild, PickRelease), so these run today's code on
-// their behalf; and the new alpha channel's own picks.
+// those refs. ParseVersion, CompareVersions and PickRelease are unchanged since then; IsDevBuild is not (a patch of 0 no
+// longer counts as self-built), but these pins use inputs with a non-zero patch (1.0.7, 1.0.9, 1.0.10), where the old and
+// the new IsDevBuild agree. So they run today's code on the old updaters' behalf; and the new alpha channel's own picks.
 static void TestChannels() {
   const std::string json = "[" + Release("netplay-v1.0.9", kAll) + "," + Release("netplay-v1.0.10", kAll) + "," +
                            Release("alpha-v0.3.0", kAll) + "]";
@@ -877,6 +878,62 @@ static void TestCheckAndUpdate() {
 
 // M-1 (last: Shutdown is for good): a download stops at its next chunk; Shutdown waits at most its limit for the swap
 // step and a cancel there swaps nothing; after Shutdown nothing starts.
+// The folder's own SHA256SUMS.txt (the retired launcher's damage check reads exactly this file): after an in-game update it
+// is the release's verified one, so the launcher sees intact files; absent stays absent; a refused swap leaves the old one.
+static void TestSumsRefresh() {
+  up::ResetForTest();
+  {
+    FakeHttp h;
+    Serve(h, SumsText());
+    const fs::path d = GameDir("sums_refresh");
+    Write(d / "SHA256SUMS.txt", "the bridge's old sums\n");
+    const up::Result r = up::CheckAndUpdate(up::Request{}, MakeEnv(h, d, "netplay-v1.0.5"));
+    CHECK(r.ok);
+    std::string now;
+    CHECK(Read(d / "SHA256SUMS.txt", &now) && now == SumsText());
+    CHECK(!Exists(d / "SHA256SUMS.txt.tmp"));
+  }
+  up::ResetForTest();
+  {  // no SHA256SUMS.txt in the folder: none is created
+    FakeHttp h;
+    Serve(h, SumsText());
+    const fs::path d = GameDir("sums_absent");
+    const up::Result r = up::CheckAndUpdate(up::Request{}, MakeEnv(h, d, "netplay-v1.0.5"));
+    CHECK(r.ok);
+    CHECK(!Exists(d / "SHA256SUMS.txt") && !Exists(d / "SHA256SUMS.txt.tmp"));
+  }
+  up::ResetForTest();
+  {  // a swap that is refused (wrong sum for the last file): the old SHA256SUMS.txt stays
+    FakeHttp h;
+    Serve(h, SumsText(2));
+    const fs::path d = GameDir("sums_refused");
+    Write(d / "SHA256SUMS.txt", "old sums\n");
+    const up::Result r = up::CheckAndUpdate(up::Request{}, MakeEnv(h, d, "netplay-v1.0.5"));
+    CHECK(!r.ok);
+    std::string now;
+    CHECK(Read(d / "SHA256SUMS.txt", &now) && now == "old sums\n");
+  }
+  up::ResetForTest();
+  {  // the refresh cannot be written (a folder holds that name): a WARN line, the update still succeeded
+    FakeHttp h;
+    Serve(h, SumsText());
+    const fs::path d = GameDir("sums_warn");
+    std::error_code ec;
+    fs::create_directories(d / "SHA256SUMS.txt", ec);
+    std::vector<std::string> lines;
+    up::Request q;
+    q.log = [&](const std::string& l) { lines.push_back(l); };
+    const up::Result r = up::CheckAndUpdate(q, MakeEnv(h, d, "netplay-v1.0.5"));
+    CHECK(r.ok && r.message == up::UpdatedText(kTag, false));
+    bool warned = false;
+    for (const auto& l : lines) warned = warned || Has(l, "WARN") && Has(l, "SHA256SUMS.txt");
+    CHECK(warned);
+    std::string now;
+    CHECK(Read(d / up::kFiles[0], &now) && now == NewContent(0));
+  }
+  up::ResetForTest();
+}
+
 static void TestShutdown() {
   up::ResetForTest();
   {
@@ -952,6 +1009,7 @@ int main() {
   TestHostAllowed();
   TestStartBusy();
   TestCheckAndUpdate();
+  TestSumsRefresh();
   TestShutdown();  // last: the cancel flag stays set
   fs::remove_all(g_root, ec);
   std::printf("%s: %d checks, %d failures\n", g_failures ? "FAILED" : "PASSED", g_checks, g_failures);

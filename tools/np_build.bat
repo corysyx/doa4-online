@@ -12,7 +12,7 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools
 set "PATH=C:\Program Files\LLVM\bin;%PATH%"
 cd /d "%~dp0.."
 if not "%1"=="configure" goto build
-cmake --preset win-amd64-release "-DREXSDK_DIR=%DOA4_SDK%" "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3"
+cmake --preset win-amd64-release "-DREXSDK_DIR=%DOA4_SDK%" "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3" "-DDOA4_RELEASE_CHANNEL=alpha"
 if errorlevel 1 exit /b 1
 exit /b 0
 :build
