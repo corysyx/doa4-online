@@ -111,6 +111,10 @@ class Flow {
   std::vector<std::string> ResultLines() const;
   bool busy() const { return stage_ == Stage::kRunning; }
   bool restart_needed() const;  // kMenu, after kImported, kImportedWithSkips or kSwapPending
+  // kMenu, after any ending that could follow the job's swap-state recovery (which can complete a waiting import): every
+  // outcome except kWrongDisc, kGameFilesDiffer, kNoSpace and kNoWriteAccess, which are decided before it. Host and Join wait
+  // for a restart after any of these (the lobby's swimsuit checksum is fixed at start).
+  bool folder_may_have_changed() const;
   bool auto_start() const;      // kFirstRun / kStartOffer, after kImported with nothing differing: start the game
   bool can_retry() const;       // after kWrongDisc, kReadError, kNoSpace, kNoWriteAccess, kCancelled or kFailed
 

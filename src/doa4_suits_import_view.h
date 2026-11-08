@@ -1,5 +1,5 @@
 // The DOAX2 swimsuit import's ImGui view: draws a suits_import::Flow inside a window the caller has begun (the first-run setup
-// screen and the start-up offer; the Esc menu draws it too, later). No state of its own: the Flow is the state. The ImGui
+// screen, the start-up offer and the Esc menu's Extras tab). No state of its own: the Flow is the state. The ImGui
 // code is not host-tested; the live runs prove it.
 
 #pragma once
@@ -24,7 +24,9 @@ struct DrawHooks {
 
 // kChoose: the section (title, the two choose buttons, the chosen or not-chosen line, Clear, the unlock note) and, with
 // hooks.start_import, "Import". kRunning: the chosen line, progress bar, phase text, Cancel. kResult: the result lines,
-// "Start the game" (or an automatic start), "Choose another..." when Flow::can_retry().
+// "Start the game" (or an automatic start), "Choose another..." when Flow::can_retry(). In Mode::kMenu there is no
+// "Start the game": the result shows "Restart now" when Flow::restart_needed(), and "Choose another..." when
+// Flow::can_retry() or there is nothing to restart (so a result screen is never a dead end).
 void DrawSuitImport(Flow& flow, const DrawHooks& hooks);
 
 // Only the "Swimsuits from: ..." line (or the not-chosen line), for the stages where nothing can be changed.

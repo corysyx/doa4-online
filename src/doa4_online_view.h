@@ -93,7 +93,8 @@ std::string BannerText(bool waiting, Ending ending);
 
 // The F9 box lines for a connection (empty when `connected` is false): "Ping 42 ms", "Delay 2 frames (33 ms)".
 std::vector<std::string> StatsLines(bool connected, float ping_ms, int delay_frames);
-// "Last line the tab logs once per change": "[doa4][NET] tab: <state> start=<0|1> leave=<0|1>".
+// "Last line the tab logs once per change": "[doa4][NET] tab: <state> start=<0|1> leave=<0|1> join_host=<0|1>" and, when the Host/Join note is not
+// empty, " note=<join_host_note>".
 std::string TabLogLine(const In& in, const View& view);
 
 }  // namespace doa4::online_view

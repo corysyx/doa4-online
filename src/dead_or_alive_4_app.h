@@ -248,10 +248,11 @@ class DeadOrAlive4App : public rex::ReXApp {
     return menu_suits_flow_.get();
   }
 
-  // UI thread. Once a menu import ended with files changed (or a swap waiting), Host and Join stay off until the next start:
+  // UI thread. Once a menu import ended in a way that could have changed the folder (Flow::folder_may_have_changed: every
+  // ending but those decided before the job's swap-state recovery), Host and Join stay off until the next start:
   // the lobby's swimsuit checksum was fixed at this start. Never cleared in this process, whatever the screen shows later.
   void LatchSuitsRestart() {
-    if (suits_restart_pending_ || !menu_suits_flow_ || !menu_suits_flow_->restart_needed()) return;
+    if (suits_restart_pending_ || !menu_suits_flow_ || !menu_suits_flow_->folder_may_have_changed()) return;
     suits_restart_pending_ = true;
     REXLOG_INFO("[doa4][SUITS] restart needed: Host and Join stay off until the game restarts");
   }
@@ -1550,10 +1551,15 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.suits_summary = suits_status_.Summary();
     host.suits_notes = suits_status_.skipped;
     host.suits_import = EnsureMenuSuitsFlow();
-    host.suits_import_note = !suits_swap_problem_.empty() ? suits_swap_problem_
-                                                          : doa4::suits_import::ReimportNote(suits_status_.converter);
-    host.suits_loaded = !suits_status_.suits.empty();
-    host.game_root = SuitsGameRoot();
+    host.suits_import_info = [this] {  // read when used: this menu may be built before the paths and the runtime exist
+      doa4::MenuHost::SuitsImportInfo info;
+      info.game_root = SuitsGameRoot();
+      info.user_data = user_data_;  // the resolved folder (OnFinalizePaths); empty until then, never the SDK default
+      info.loaded = !suits_status_.suits.empty();
+      info.note = !suits_swap_problem_.empty() ? suits_swap_problem_
+                                               : doa4::suits_import::ReimportNote(suits_status_.converter);
+      return info;
+    };
     host.save_dir = SaveFolder();
     host.backup_root = BackupFolder();
     host.extras = &extras_;

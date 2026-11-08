@@ -412,6 +412,36 @@ static void TestMenuRestartNeeded() {
   }
 }
 
+// Host and Join wait after any menu ending that can follow the job's swap-state recovery (it can complete a waiting import).
+static void TestMenuFolderMayHaveChanged() {
+  const sc::Outcome never[] = {sc::Outcome::kWrongDisc, sc::Outcome::kGameFilesDiffer, sc::Outcome::kNoSpace,
+                               sc::Outcome::kNoWriteAccess};
+  const sc::Outcome maybe[] = {sc::Outcome::kImported,  sc::Outcome::kImportedWithSkips, sc::Outcome::kSwapPending,
+                               sc::Outcome::kNothingImported, sc::Outcome::kCancelled, sc::Outcome::kReadError,
+                               sc::Outcome::kFailed};
+  for (Mode mode : {Mode::kMenu, Mode::kFirstRun, Mode::kStartOffer}) {
+    for (sc::Outcome o : never) {
+      Fake f;
+      f.res.outcome = o;
+      Flow flow(mode, f.Make());
+      CHECK(!flow.folder_may_have_changed());  // before any import
+      CHECK(PickAndStart(f, flow));
+      CHECK(!flow.folder_may_have_changed());
+    }
+    for (sc::Outcome o : maybe) {
+      Fake f;
+      f.res.outcome = o;
+      Flow flow(mode, f.Make());
+      CHECK(PickAndStart(f, flow));
+      CHECK(flow.folder_may_have_changed() == (mode == Mode::kMenu));
+      if (mode == Mode::kMenu && flow.can_retry()) {
+        flow.Back();  // the answer is the result screen's; the app latches in the callback that posted the result
+        CHECK(!flow.folder_may_have_changed());
+      }
+    }
+  }
+}
+
 static void TestMenuFullOrder() {
   const std::string differs =
       "2 of them differ from the reference build on this PC: they work, and online they count as a different import.";
@@ -879,6 +909,7 @@ int main() {
   TestNoSpaceMegabytes();
   TestFormatMB();
   TestMenuRestartNeeded();
+  TestMenuFolderMayHaveChanged();
   TestMenuFullOrder();
   TestEmptyDetail();
   TestPhaseTexts();

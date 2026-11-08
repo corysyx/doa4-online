@@ -78,10 +78,15 @@ struct MenuHost {
   // The Esc import (Plan 3, Task 6). The app owns the flow (the import survives the menu closing; the app destroys it after
   // this menu, before the runtime, at shutdown): the menu only borrows the pointer. Null: no import section.
   suits_import::Flow* suits_import = nullptr;
-  // Why the finished import could not be put in place at start, else the older-importer note; "" for neither.
-  std::string suits_import_note;
-  bool suits_loaded = false;            // an import loaded at start: the button reads "Import again..."
-  std::filesystem::path game_root;      // the game files the import reads (the folder the game runs from)
+  // Answered by the app when asked (the menu may be built before the game paths and the runtime exist): the game files the
+  // import reads, the resolved user data it writes, whether an import loaded at start (the button reads "Import again..."),
+  // and the note (why the finished import could not be put in place at start, else the older-importer note; "" for neither).
+  struct SuitsImportInfo {
+    std::filesystem::path game_root, user_data;
+    bool loaded = false;
+    std::string note;
+  };
+  std::function<SuitsImportInfo()> suits_import_info;
   std::filesystem::path save_dir;  // the ups.dat save package folder, or empty
   // Where the one-time save backup goes: outside the folder the game lists
   // its saves from.

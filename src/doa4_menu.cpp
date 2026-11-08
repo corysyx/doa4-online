@@ -175,7 +175,13 @@ void MenuDialog::StartSuitsImport() {
     REXLOG_INFO("[doa4][SUITS] import: start refused: {}", why);
     return;
   }
-  host_.suits_import->Start(host_.game_root, host_.user_data, 2);
+  const MenuHost::SuitsImportInfo info = host_.suits_import_info ? host_.suits_import_info() : MenuHost::SuitsImportInfo{};
+  if (info.game_root.empty() || info.user_data.empty()) {
+    REXLOG_INFO("[doa4][SUITS] import: start refused: the game files or the user data folder is not known yet");
+    return;
+  }
+  REXLOG_INFO("[doa4][SUITS] import: game files {}, user data {}", Utf8(info.game_root), Utf8(info.user_data));
+  host_.suits_import->Start(info.game_root, info.user_data, 2);
 }
 
 bool MenuDialog::SessionLocked() const { return host_.session_locked && host_.session_locked(); }
@@ -625,15 +631,16 @@ void MenuDialog::DrawExtrasTab() {
 void MenuDialog::DrawSuitsImport() {
   if (!host_.suits_import) return;
   suits_import::Flow& flow = *host_.suits_import;
-  if (!host_.suits_import_note.empty() && !flow.restart_needed()) {
-    ImGui::TextColored(kNoteColor, "%s", host_.suits_import_note.c_str());
+  const MenuHost::SuitsImportInfo info = host_.suits_import_info ? host_.suits_import_info() : MenuHost::SuitsImportInfo{};
+  if (!info.note.empty() && !flow.restart_needed()) {
+    ImGui::TextColored(kNoteColor, "%s", info.note.c_str());
   }
   suits_import::DrawHooks hooks;
   hooks.defer = GuardedDefer();
   hooks.start_game = [] {};
   hooks.restart = [this] { Restart(online_view::Control::kUpdateRestart); };  // the session lock applies as for the update's
   hooks.start_import = [this] { StartSuitsImport(); };
-  hooks.import_label = host_.suits_loaded ? "Import again..." : "Import DOAX2 swimsuits...";
+  hooks.import_label = info.loaded ? "Import again..." : "Import DOAX2 swimsuits...";
   std::string why;
   const bool choosing = flow.stage() == suits_import::Stage::kChoose;
   const bool enabled = SuitsImportEnabled(&why);

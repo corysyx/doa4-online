@@ -296,6 +296,19 @@ bool Flow::restart_needed() const {
   return mode_ == Mode::kMenu && stage_ == Stage::kResult && result_ && ClearsPending(result_->outcome);
 }
 
+bool Flow::folder_may_have_changed() const {
+  if (mode_ != Mode::kMenu || stage_ != Stage::kResult || !result_) return false;
+  switch (result_->outcome) {
+    case Outcome::kWrongDisc:
+    case Outcome::kGameFilesDiffer:
+    case Outcome::kNoSpace:
+    case Outcome::kNoWriteAccess:
+      return false;  // decided before the recovery runs (doa4_suitconv_job.cpp), or by the flow before any job
+    default:
+      return true;
+  }
+}
+
 bool Flow::auto_start() const {
   return mode_ != Mode::kMenu && stage_ == Stage::kResult && result_ && result_->outcome == Outcome::kImported &&
          result_->differs_from_reference.empty();
