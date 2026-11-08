@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <system_error>
 #include <utility>
 
 #include "doa4_photo_win.h"
 #include "doa4_setup_win.h"
+#include "doa4_suits_import_view.h"
 #include "doa4_utf8.h"
 
 namespace doa4 {
@@ -52,7 +54,8 @@ SetupDialog::SetupDialog(rex::ui::ImGuiDrawer* drawer, SetupHost host)
       host_(std::move(host)),
       flow_(MakeEffects()),
       test_(setup::ParseTestScript(std::getenv("DOA4_SETUP_TEST"))) {
-  if (test_.active() && host_.log) host_.log("test script active (DOA4_SETUP_TEST)");
+  if ((test_.active() || test_.doax2_active()) && host_.log) host_.log("test script active (DOA4_SETUP_TEST)");
+  game_folder_ = host_.current;
 }
 
 SetupDialog::~SetupDialog() {
@@ -102,6 +105,7 @@ setup::Effects SetupDialog::MakeEffects() {
   };
   fx.done = [this](const fs::path& folder) {
     if (host_.log) host_.log("chosen: " + Utf8(folder));
+    game_folder_ = folder;
     save_error_ = host_.done(folder);
   };
   return fx;
@@ -125,9 +129,70 @@ void SetupDialog::LogStage() {
   }
 }
 
+void SetupDialog::StartImport() {
+  if (!host_.suits) return;
+  if (!host_.suits->Start(game_folder_, host_.user_data, 0) && host_.log) host_.log("import: not started");
+}
+
+// Once: the section is over. The app destroys the import flow, joins its worker, closes this dialog and resumes the start.
+void SetupDialog::FinishSuits(bool skip) {
+  if (finish_requested_) return;
+  finish_requested_ = true;
+  if (host_.log) host_.log(skip ? "suits: start without swimsuits" : "suits: start the game");
+  host_.defer(skip ? host_.suits_skip : host_.suits_finish);
+}
+
+// The screen after the DOA4 part (kFirstRun, when the import ran or came back) and the start-up offer (kSuitsOffer).
+void SetupDialog::DrawSuitsScreen(bool offer_title) {
+  if (offer_title) Wrapped(nullptr, std::string(suits_import::kOfferTitle));
+  suits_import::DrawHooks hooks;
+  hooks.defer = host_.defer;
+  hooks.start_game = [this] { FinishSuits(false); };
+  hooks.start_import = [this] { StartImport(); };
+  suits_import::DrawSuitImport(*host_.suits, hooks);
+  if (host_.suits->stage() == suits_import::Stage::kChoose) {
+    ImGui::Spacing();
+    if (ImGui::Button("Start without swimsuits")) FinishSuits(true);
+  }
+}
+
 // The scripted run: choose, (for an image) change the target, extract. Stops
 // at the first refusal; the log says why.
 void SetupDialog::RunTestScript() {
+  // The DOAX2 part first: in the first-run screen the source must be chosen before the DOA4 part ends (its done callback
+  // starts the import when a source is chosen).
+  if (host_.suits && test_.doax2_active()) {
+    suits_import::Flow& suits = *host_.suits;
+    if (suits.stage() == suits_import::Stage::kResult) {
+      if (test_.doax2 && !test_doax2_done_) {
+        test_doax2_done_ = true;
+        if (host_.log) host_.log("test: suits result screen: Start the game");
+        FinishSuits(false);
+      }
+    } else if (suits.stage() == suits_import::Stage::kChoose && !test_doax2_chosen_) {
+      test_doax2_chosen_ = true;
+      if (test_.doax2_skip) {
+        if (host_.log) {
+          host_.log(host_.mode == SetupHost::Mode::kSuitsOffer ? "test: doax2=skip: Start without swimsuits"
+                                                               : "test: doax2=skip: the swimsuit section is left alone");
+        }
+        if (host_.mode == SetupHost::Mode::kSuitsOffer) FinishSuits(true);
+      } else {
+        host_.defer([this] {
+          const fs::path source = *test_.doax2;
+          std::error_code ec;
+          const bool folder = fs::is_directory(source, ec);
+          if (host_.log) host_.log(std::string("test: doax2 source (") + (folder ? "folder" : "image") + "): " + Utf8(source));
+          if (folder) {
+            host_.suits->ChooseFolder();
+          } else {
+            host_.suits->ChooseImage();
+          }
+          if (host_.mode == SetupHost::Mode::kSuitsOffer) StartImport();
+        });
+      }
+    }
+  }
   if (!test_.active()) return;
   if (flow_.stage() == Stage::kChoose && !test_started_) {
     test_started_ = true;
@@ -150,6 +215,17 @@ void SetupDialog::RunTestScript() {
 
 void SetupDialog::OnDraw(ImGuiIO& io) {
   LogStage();
+  if (host_.suits) {  // every result is logged once (the live runs grep for it)
+    const bool has_result = host_.suits->stage() == suits_import::Stage::kResult && host_.suits->result();
+    if (has_result && !suits_result_logged_ && host_.log) {
+      host_.log("suits: " + std::string(suits_import::OutcomeName(host_.suits->result()->outcome)));
+    }
+    suits_result_logged_ = has_result;
+    if (host_.mode == SetupHost::Mode::kFirstRun && flow_.stage() == Stage::kFinished &&
+        host_.suits->stage() != suits_import::Stage::kChoose) {
+      suits_seen_ = true;
+    }
+  }
   RunTestScript();
 
   const ImVec4 red(1.0f, 0.45f, 0.4f, 1.0f), amber(1.0f, 0.8f, 0.4f, 1.0f);
@@ -160,7 +236,16 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
   const ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_AlwaysAutoResize;
-  if (ImGui::Begin("Dead or Alive 4 - game files##doa4_setup", nullptr, flags)) {
+  const bool offer = host_.mode == SetupHost::Mode::kSuitsOffer && host_.suits;
+  const char* title = offer ? "Dead or Alive 4 - swimsuits##doa4_setup" : "Dead or Alive 4 - game files##doa4_setup";
+  if (offer) {
+    if (ImGui::Begin(title, nullptr, flags)) DrawSuitsScreen(true);
+    ImGui::End();
+    return;
+  }
+  // The DOAX2 section under the DOA4 buttons (kFirstRun only; the import itself starts after the DOA4 part).
+  const bool section = host_.mode == SetupHost::Mode::kFirstRun && host_.suits;
+  if (ImGui::Begin(title, nullptr, flags)) {
     Wrapped(nullptr,
             "Choose your own " + std::string(gamefiles::kSupportedDisc) +
                 " disc image, or the folder you extracted it to.");
@@ -176,6 +261,12 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
         if (ImGui::Button("Choose disc image (.iso)...")) host_.defer([this] { flow_.ChooseImage(); });
         ImGui::SameLine();
         if (ImGui::Button("Choose extracted folder...")) host_.defer([this] { flow_.ChooseFolder(); });
+        if (section) {
+          ImGui::Separator();
+          suits_import::DrawHooks hooks;
+          hooks.defer = host_.defer;
+          suits_import::DrawSuitImport(*host_.suits, hooks);
+        }
         ImGui::Spacing();
         if (ImGui::Button(host_.mode == SetupHost::Mode::kFirstRun ? "Quit" : "Cancel")) {
           host_.defer(host_.close);
@@ -183,6 +274,7 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
         break;
       case Stage::kChecking:
         ImGui::TextUnformatted("Checking...");
+        if (section) suits_import::DrawSuitChosenLine(*host_.suits);
         break;
       case Stage::kTarget: {
         Wrapped(nullptr, "Disc image: " + Utf8(flow_.image()));
@@ -198,6 +290,12 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
         if (ImGui::Button("Change folder...")) host_.defer([this] { flow_.ChangeTarget(); });
         ImGui::SameLine();
         if (ImGui::Button("Back")) flow_.Back();
+        if (section) {
+          ImGui::Separator();
+          suits_import::DrawHooks hooks;
+          hooks.defer = host_.defer;
+          suits_import::DrawSuitImport(*host_.suits, hooks);
+        }
         break;
       }
       case Stage::kExtracting: {
@@ -207,11 +305,17 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
         ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay.c_str());
         ImGui::TextUnformatted(p.file.c_str());
         if (ImGui::Button("Cancel")) flow_.Cancel();
+        if (section) suits_import::DrawSuitChosenLine(*host_.suits);
         break;
       }
       case Stage::kFinished:
         if (host_.mode == SetupHost::Mode::kFirstRun) {
-          ImGui::TextUnformatted("Starting...");
+          // With a source chosen the import runs now (progress, then the result); otherwise the app resumes at once.
+          if (section && suits_seen_) {
+            DrawSuitsScreen(false);
+          } else {
+            ImGui::TextUnformatted("Starting...");
+          }
         } else if (save_error_.empty()) {
           ImGui::TextUnformatted("Saved. The new location is used from the next start.");
         } else {

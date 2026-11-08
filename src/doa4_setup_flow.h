@@ -102,10 +102,16 @@ class Flow {
 };
 
 // The DOA4_SETUP_TEST switch (see doa4_setup_dialog.h): "folder=<path>" or
-// "iso=<path>|target=<path>" (ASCII paths). Unset or malformed: nothing set.
+// "iso=<path>|target=<path>" (ASCII paths), each optionally with "doax2=<path>" (the
+// swimsuit source: a folder or an image) or "doax2=skip" (no swimsuits). Unset or
+// malformed: nothing set. active() means the DOA4 part is scripted; doax2_active() the
+// DOAX2 part, so "doax2=skip" alone is a valid script for the start-up offer.
 struct TestScript {
   std::optional<std::filesystem::path> folder, iso, target;
+  std::optional<std::filesystem::path> doax2;  // "doax2=<path>"
+  bool doax2_skip = false;                     // "doax2=skip"
   bool active() const { return folder.has_value() || (iso.has_value() && target.has_value()); }
+  bool doax2_active() const { return doax2.has_value() || doax2_skip; }
 };
 TestScript ParseTestScript(const char* value);
 

@@ -360,6 +360,36 @@ static void TestParseTestScript() {
   CHECK(!ParseTestScript("folder=").active());
 }
 
+// The DOAX2 part of the script: a path, or "skip" (not a path named skip), beside either DOA4 form or alone.
+static void TestScriptDoax2() {
+  TestScript t = ParseTestScript("folder=C:/a|doax2=C:/b");
+  CHECK(t.active() && t.folder == fs::path("C:/a") && t.doax2 == fs::path("C:/b") && !t.doax2_skip && t.doax2_active());
+  t = ParseTestScript("iso=C:/a.iso|target=C:/c|doax2=C:/b");
+  CHECK(t.active() && t.iso == fs::path("C:/a.iso") && t.target == fs::path("C:/c") && t.doax2 == fs::path("C:/b") &&
+        !t.doax2_skip && t.doax2_active());
+  // Alone, either form: the DOAX2 part is scripted, the DOA4 part is not.
+  t = ParseTestScript("doax2=C:/b");
+  CHECK(!t.active() && t.doax2 == fs::path("C:/b") && !t.doax2_skip && t.doax2_active());
+  // skip: no path at all, and it works alone (the offer screen) and beside a DOA4 form.
+  t = ParseTestScript("doax2=skip");
+  CHECK(!t.active() && !t.doax2.has_value() && t.doax2_skip && t.doax2_active());
+  t = ParseTestScript("folder=C:/a|doax2=skip");
+  CHECK(t.active() && t.folder == fs::path("C:/a") && !t.doax2.has_value() && t.doax2_skip && t.doax2_active());
+  // Without the key nothing of the DOAX2 part is set.
+  t = ParseTestScript("folder=C:/a");
+  CHECK(t.active() && !t.doax2.has_value() && !t.doax2_skip && !t.doax2_active());
+  // Malformed (an empty value, an unknown key beside it): everything is dropped, as for the DOA4 keys.
+  t = ParseTestScript("folder=C:/a|doax2=");
+  CHECK(!t.active() && !t.doax2_active() && !t.folder.has_value());
+  t = ParseTestScript("doax2=");
+  CHECK(!t.active() && !t.doax2_active());
+  t = ParseTestScript("doax2=C:/b|disk=C:/x");
+  CHECK(!t.active() && !t.doax2_active());
+  // Only the exact word skips: another spelling is a path.
+  t = ParseTestScript("doax2=Skip");
+  CHECK(!t.doax2_skip && t.doax2 == fs::path("Skip"));
+}
+
 int main() {
   TestImageHappyPath();
   TestImageRefusals();
@@ -373,6 +403,7 @@ int main() {
   TestFormatGB();
   TestUnusablePaths();
   TestParseTestScript();
+  TestScriptDoax2();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

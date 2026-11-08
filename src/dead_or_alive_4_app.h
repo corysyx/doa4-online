@@ -58,6 +58,7 @@
 #include "doa4_photo_win.h"
 #include "doa4_menu.h"
 #include "doa4_setup_dialog.h"
+#include "doa4_setup_win.h"
 #include "doa4_afs_overlay.h"
 #include "doa4_afs_vfs.h"
 #include "doa4_display.h"
@@ -65,6 +66,7 @@
 #include "doa4_suits.h"
 #include "doa4_suits_hooks.h"
 #include "doa4_suits_import_flow.h"
+#include "doa4_suits_import_runner.h"
 #include "doa4_suits_labels.h"
 #include "doa4_suits_picks.h"
 #include "doa4_title_word.h"
@@ -122,24 +124,92 @@ class DeadOrAlive4App : public rex::ReXApp {
                   choice.from_command_line ? "--game_data_root" : "saved by the setup");
       rex::PathConfig paths = defaults;
       paths.game_data_root = choice.path;
+      // An import that did not finish last time (and no session): the start-up offer. Plan 3, Task 5.
+      if (drawer_ && doa4::suits_import::DecideStartup(session_.has_value(),
+                                                       rex::cvar::Query<bool>("doa4_suits_import_pending"), false)
+                         .offer) {
+        REXLOG_INFO("[doa4][SETUP] setup screen: suits offer");
+        BeginStartupSuits(doa4::suits_import::Mode::kStartOffer);
+        setup_resume_ = [this, paths, resume] { resume(paths); };
+        OpenSetup(doa4::SetupHost::Mode::kSuitsOffer, "", nullptr);
+        return std::nullopt;
+      }
       return paths;
     }
     REXLOG_INFO("[doa4][SETUP] setup screen: {}",
                 choice.reason.empty() ? std::string("no game files configured") : choice.reason);
     if (!drawer_) return defaults;  // no window to ask in: the SDK reports the missing path
+    first_run_shown_ = true;  // SetUpSuits: no second offer in this process (DecideStartup)
+    BeginStartupSuits(doa4::suits_import::Mode::kFirstRun);
     OpenSetup(doa4::SetupHost::Mode::kFirstRun, choice.reason,
               [this, defaults, resume](const std::filesystem::path& folder) {
+                // The game files are saved first, so a kill in the middle of the import leaves them saved and the next
+                // start can offer the import.
                 std::string error = SaveGameFiles(folder);
                 game_files_ = folder;
                 rex::PathConfig paths = defaults;
                 paths.game_data_root = folder;
-                app_context().CallInUIThreadDeferred([this, paths, resume] {
-                  CloseSetup();
-                  resume(paths);
-                });
+                setup_resume_ = [this, paths, resume] { resume(paths); };
+                if (suits_flow_ && !suits_flow_->source().empty()) {
+                  // The dialog now shows the progress and, at the end, the result; its buttons (or an automatic start)
+                  // call ResumeFromSetup.
+                  REXLOG_INFO("[doa4][SETUP] swimsuit import: starting");
+                  suits_flow_->Start(folder, UserData(), 0);
+                } else {
+                  app_context().CallInUIThreadDeferred([this] { ResumeFromSetup(); });
+                }
                 return error;
               });
     return std::nullopt;
+  }
+
+  // ---- The start-up swimsuit section (Plan 3, Task 5) ----------------------------------------------------------------
+  // The app owns the import flow and the one worker thread its run_async uses. Both die on the UI thread, in this order: the
+  // flow (its destructor cancels a running import once), then the worker (joined; never from the worker itself). That happens
+  // when the section ends (ResumeFromSetup) and at shutdown (OnShutdown), whichever comes first.
+  void* SetupHwnd() {
+    auto* win32 = dynamic_cast<rex::ui::Win32Window*>(window());
+    return win32 ? win32->hwnd() : nullptr;
+  }
+
+  void BeginStartupSuits(doa4::suits_import::Mode mode) {
+    EndStartupSuits();
+    // The test script's DOAX2 source (DOA4_SETUP_TEST doax2=<path>): the pick effects return it without a dialog.
+    const doa4::setup::TestScript script = doa4::setup::ParseTestScript(std::getenv("DOA4_SETUP_TEST"));
+    doa4::suits_import::Effects fx;
+    fx.pick_iso = [this, script](const std::filesystem::path& start) -> std::optional<std::filesystem::path> {
+      if (script.doax2) return script.doax2;
+      return doa4::setup::PickIsoFile(SetupHwnd(), start);
+    };
+    fx.pick_folder = [this, script](const std::filesystem::path& start) -> std::optional<std::filesystem::path> {
+      if (script.doax2) return script.doax2;
+      return doa4::photo::PickFolder(SetupHwnd(), start, L"Dead or Alive 4 - choose the extracted DOAX2 folder");
+    };
+    fx.start = [](doa4::suitconv::ImportRequest request) {
+      return doa4::suits_import::StartJobRunner(std::move(request));
+    };
+    fx.run_async = [this](std::function<void()> work) {
+      if (suits_worker_.joinable()) suits_worker_.join();  // the previous waiter has posted its result
+      suits_worker_ = std::thread(std::move(work));
+    };
+    fx.post = [this](std::function<void()> fn) { app_context().CallInUIThread(std::move(fn)); };
+    fx.save_pending = [this](bool pending) { return SaveSuitsImportPending(pending); };
+    fx.log = [](const std::string& line) { REXLOG_INFO("[doa4][SETUP] {}", line); };
+    suits_flow_ = std::make_unique<doa4::suits_import::Flow>(mode, std::move(fx));
+  }
+
+  void EndStartupSuits() {
+    suits_flow_.reset();  // a running import is cancelled once, here
+    if (suits_worker_.joinable()) suits_worker_.join();
+  }
+
+  // The start-up section is over (UI thread, after a frame): close the screen, end the import flow, resume the start.
+  void ResumeFromSetup() {
+    std::function<void()> resume = std::move(setup_resume_);
+    setup_resume_ = nullptr;
+    CloseSetup();
+    EndStartupSuits();
+    if (resume) resume();
   }
 
   // The save and shader-cache folder: --user_data_root, else doa4_user_data,
@@ -234,6 +304,15 @@ class DeadOrAlive4App : public rex::ReXApp {
       }
     };
     host.log = [](const std::string& line) { REXLOG_INFO("[doa4][SETUP] {}", line); };
+    if (mode != doa4::SetupHost::Mode::kChange) {  // the start-up screens carry the swimsuit section (borrowed pointer)
+      host.suits = suits_flow_.get();
+      host.user_data = UserData();
+      host.suits_finish = [this] { ResumeFromSetup(); };
+      host.suits_skip = [this] {  // "Start without swimsuits": the import is not offered again
+        SaveSuitsImportPending(false);
+        ResumeFromSetup();
+      };
+    }
     setup_open_.store(true, std::memory_order_release);
     setup_ = std::make_unique<doa4::SetupDialog>(drawer_, std::move(host));
   }
@@ -259,7 +338,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     return error;
   }
 
-  // The offer-again setting: saved like doa4_game_files. Unused until Task 5 wires it as the import Flow's save_pending effect.
+  // The offer-again setting: saved like doa4_game_files. The start-up import Flow's save_pending effect (BeginStartupSuits).
   std::string SaveSuitsImportPending(bool pending) {
     const std::string error =
         doa4::SaveTomlKey(ConfigPath(), "doa4_suits_import_pending", pending ? "true" : "false");
@@ -1050,6 +1129,7 @@ class DeadOrAlive4App : public rex::ReXApp {
       REXLOG_INFO("[doa4][SETUP] setup screen closed at shutdown");
       CloseSetup();
     }
+    EndStartupSuits();  // quit while the setup screen runs an import: cancel it once, then join its waiter
     photo_notice_.reset();  // before the base app destroys the ImGui drawer
     net_overlay_.reset();   // likewise
     menu_.reset();  // before the base app destroys the ImGui drawer
@@ -1481,6 +1561,11 @@ class DeadOrAlive4App : public rex::ReXApp {
   // First-run setup (doa4_setup_dialog.h): the screen while it is open, and
   // the folder the game started from.
   std::unique_ptr<doa4::SetupDialog> setup_;
+  // The start-up swimsuit section (BeginStartupSuits..EndStartupSuits): the flow, its one worker thread, and the rest of
+  // OnFinalizePaths that runs when the section ends.
+  std::unique_ptr<doa4::suits_import::Flow> suits_flow_;
+  std::thread suits_worker_;
+  std::function<void()> setup_resume_;
   std::atomic<bool> setup_open_{false};  // read by the guest's input polls
   std::filesystem::path game_files_;
   std::filesystem::path user_data_;  // the resolved save folder (WithUserData)

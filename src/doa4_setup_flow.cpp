@@ -44,6 +44,12 @@ TestScript ParseTestScript(const char* value) {
       script.iso = path;
     } else if (key == "target") {
       script.target = path;
+    } else if (key == "doax2") {
+      if (item.substr(eq + 1) == "skip") {
+        script.doax2_skip = true;
+      } else {
+        script.doax2 = path;
+      }
     } else {
       return {};
     }
