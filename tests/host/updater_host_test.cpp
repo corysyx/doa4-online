@@ -424,9 +424,14 @@ static void TestChoose() {
     CHECK(!c.update);
     CHECK_EQ(c.message, "Already on the latest netplay release (netplay-v1.0.9)");
   }
-  for (const char* dev : {"dev", "netplay-v1.0.0", ""}) {  // a self-built game: any release replaces it
+  for (const char* dev : {"dev", ""}) {  // a self-built game (an unparsable tag): any release replaces it
     const up::Choice c = up::Choose(json, "netplay", dev);
     CHECK(c.update && c.replaces_dev);
+    CHECK_EQ(c.tag, "netplay-v1.0.6");
+  }
+  {  // P3D-2: x.y.0 is a real release now, not a self-built game: it updates, but nothing is kept as .dev
+    const up::Choice c = up::Choose(json, "netplay", "netplay-v1.0.0");
+    CHECK(c.update && !c.replaces_dev);
     CHECK_EQ(c.tag, "netplay-v1.0.6");
   }
   {
@@ -444,6 +449,48 @@ static void TestChoose() {
            "Updated to netplay-v1.0.6 (your self-built files are kept as .dev). Restart the game to use it.");
   CHECK_EQ(up::OfferText("netplay-v1.0.6"),
            "Release netplay-v1.0.6 replaces your self-built game. Press again to install.");
+}
+
+// P3D / the bridge: what the DEPLOYED updaters (netplay-v1.0.7, np1-v109 = v1.0.9) do is the code of Choose/PickRelease at
+// those refs (np_rules.cpp identical in ParseVersion, CompareVersions, IsDevBuild, PickRelease), so these run today's code on
+// their behalf; and the new alpha channel's own picks.
+static void TestChannels() {
+  const std::string json = "[" + Release("netplay-v1.0.9", kAll) + "," + Release("netplay-v1.0.10", kAll) + "," +
+                           Release("alpha-v0.3.0", kAll) + "]";
+  for (const char* cur : {"netplay-v1.0.9", "netplay-v1.0.7"}) {  // old copies on the old channel take the bridge
+    const up::Choice c = up::Choose(json, "netplay", cur);
+    CHECK(c.update && !c.replaces_dev);
+    CHECK_EQ(c.tag, "netplay-v1.0.10");
+    CHECK(c.urls.size() == 4);
+  }
+  {  // ... and, once on the bridge's build, nothing newer is on their channel (alpha-v0.3.0 is invisible to them)
+    const up::Choice c = up::Choose(json, "netplay", "netplay-v1.0.10");
+    CHECK(!c.update);
+    CHECK_EQ(c.message, "Already on the latest netplay release (netplay-v1.0.10)");
+  }
+  const std::string alpha = "[" + Release("netplay-v1.0.9", kAll) + "," + Release("netplay-v1.0.10", kAll) + "," +
+                            Release("alpha-v0.3.0", kAll) + "," + Release("alpha-v0.3.1", kAll) + "]";
+  {  // the alpha channel ignores every netplay-v1.0.x and takes the higher alpha number
+    const up::Choice c = up::Choose(alpha, "alpha", "alpha-v0.3.0");
+    CHECK(c.update && !c.replaces_dev);
+    CHECK_EQ(c.tag, "alpha-v0.3.1");
+  }
+  {
+    const up::Choice c = up::Choose(alpha, "alpha", "alpha-v0.3.1");
+    CHECK(!c.update);
+    CHECK_EQ(c.message, "Already on the latest alpha release (alpha-v0.3.1)");
+  }
+  {  // only old-channel releases: the alpha channel has none
+    const std::string only_old = "[" + Release("netplay-v1.0.9", kAll) + "," + Release("netplay-v1.0.10", kAll) + "]";
+    const up::Choice c = up::Choose(only_old, "alpha", "alpha-v0.3.0");
+    CHECK(!c.update);
+    CHECK_EQ(c.message, "No alpha release found yet");
+  }
+  {  // a local build ("dev") on the alpha channel is offered alpha-v0.3.1, never a netplay tag
+    const up::Choice c = up::Choose(alpha, "alpha", "dev");
+    CHECK(c.update && c.replaces_dev);
+    CHECK_EQ(c.tag, "alpha-v0.3.1");
+  }
 }
 
 static void TestMessages() {
@@ -897,6 +944,7 @@ int main() {
   TestMissingOriginal();
   TestDeleteOldFiles();
   TestChoose();
+  TestChannels();
   TestMessages();
   TestExeDir();
   TestDevBackup();

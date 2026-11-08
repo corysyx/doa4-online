@@ -686,7 +686,7 @@ int main() {
   TestDrawFollowsTheLogo();
   TestRealFiles();
   if (g_failures) {
-    std::printf("%d check(s) failed\n", g_failures);
+    std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
     return 1;
   }
   std::printf("PASSED: %d checks, 0 failures\n", g_checks);

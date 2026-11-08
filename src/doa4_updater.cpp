@@ -24,7 +24,7 @@
 // calls GameEnv, so it never uses them)
 #define DOA4_RELEASE_TAG "dev"
 #define DOA4_RELEASE_REPO "none/none"
-#define DOA4_RELEASE_CHANNEL "netplay"
+#define DOA4_RELEASE_CHANNEL "alpha"
 #endif
 #if !defined(DOA4_RELEASE_TAG) || !defined(DOA4_RELEASE_REPO) || !defined(DOA4_RELEASE_CHANNEL)
 #error "doa4_updater.cpp needs DOA4_RELEASE_TAG, DOA4_RELEASE_REPO and DOA4_RELEASE_CHANNEL (CMakeLists.txt)"

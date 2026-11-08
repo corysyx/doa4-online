@@ -1,6 +1,6 @@
 @echo off
-rem Builds the netplay worktree this script lives in (README section 6), with the SDK from DOA4_SDK
-rem (default: sdk-np1 beside this worktree, in forward slashes as README section 6 asks).
+rem Builds the netplay worktree this script lives in (docs/BUILDING.md section 6), with the SDK from DOA4_SDK
+rem (default: sdk-np1 beside this worktree, in forward slashes as docs/BUILDING.md section 6 asks).
 rem Usage: np_build.bat configure | build [snapshot-tag]
 rem With a tag, the exe and its two DLLs are copied to out\build\win-amd64-release\np_bin\<tag>\.
 rem No errorlevel variable is read inside a parenthesised block: cmd expands it when the block is read.

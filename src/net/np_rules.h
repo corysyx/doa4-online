@@ -85,7 +85,7 @@ int PacerExtraUs(float frames_ahead);
 // A tag is "<channel>-v<a.b.c>"; each number has at most 9 digits.
 bool ParseVersion(std::string_view tag, std::array<int, 3>* out);  // "netplay-v1.2.3", "v1.2.3", "1.2.3"
 int CompareVersions(std::string_view a, std::string_view b);       // <0, 0, >0; an unparsable tag sorts lowest
-bool IsDevBuild(std::string_view tag);                             // unparsable ("dev") or build number 0
+bool IsDevBuild(std::string_view tag);                             // a self-built game: an unparsable tag ("dev"); 0.3.0 is a release
 struct ReleasePick { std::string tag; std::map<std::string, std::string> asset_urls; };
 // From GitHub's GET /repos/<owner>/<repo>/releases JSON (any order): the highest non-draft release whose tag is
 // "<channel>-v<a.b.c>" and which has every required asset (by exact name). The pick's asset_urls holds exactly the
@@ -94,7 +94,8 @@ struct ReleasePick { std::string tag; std::map<std::string, std::string> asset_u
 bool PickRelease(std::string_view json, std::string_view channel, std::span<const std::string_view> required,
                  ReleasePick* out);
 // Who is older, who updates, where. `theirs` may be "" (a game that sent no release tag); a tag that is not a
-// version ("dev", a local build) is a self-built game.
+// version ("dev", a local build) is a self-built game. Tags of two channels (alpha-v0.3.0 / netplay-v1.0.9): the one on
+// the retired "netplay" channel is the older game whatever its numbers, and both full tags are shown.
 std::string MismatchAdvice(std::string_view mine, std::string_view theirs);
 
 // ---- Handshake verdict (host side) ----

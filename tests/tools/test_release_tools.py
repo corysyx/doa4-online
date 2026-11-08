@@ -37,8 +37,8 @@ RUN_HOST = os.path.join(TOOLS, "run_host_tests.py")
 GAME_FILES = ["dead_or_alive_4.exe", "rexruntime.dll", "TracyClient.dll"]
 PORT = "0123456789abcdef0123456789abcdef01234567"
 SDK = "b643ea14b38f8475382840a5eb360b0d4090ae5e"
-TAG = "netplay-v1.0.7"
-ZIP = "DOA4-netplay-v1.0.7-win64.zip"
+TAG = "alpha-v0.3.0"
+ZIP = "DOA4-alpha-v0.3.0-win64.zip"
 NOTICES = "THIRD_PARTY_NOTICES.md"
 checks = 0
 failures = 0
@@ -145,12 +145,19 @@ def test_stage_exact_set(root):
     check(len(notices) > 100, f"stage: the repository's {NOTICES} is a real file ({len(notices)} bytes)")
     check(os.path.isfile(os.path.join(out, NOTICES)) and read(os.path.join(out, NOTICES)) == notices, f"stage: staged {NOTICES} is the repository's file")
     check(members.get(NOTICES) == notices, f"stage: zip member {NOTICES} is the repository's file")
+    # the notices of the ported code (P3D-12): numpy (BSD-3), CPython (PSF-2.0) and the libm of Plan 2 (musl), each by name
+    for needle in ("numpy", "Python Software Foundation", "musl"):
+        check(needle in notices.decode("utf-8", "replace"), f"stage: {NOTICES} names {needle!r}")
     readme = members.get("README-netplay.txt", b"").decode("utf-8", "replace")
     # R4-1: the firewall advice (both players, Private AND Public, Alt+Tab, UPnP or forward UDP 7200) and the R1-2 line
     for needle in ("first time you host or join", "both players", "Private", "Public", "Alt+Tab", "UPnP", "UDP 7200"):
         check(needle in readme, f"stage: README-netplay.txt says {needle!r}\n{readme}")
     for needle in (TAG, PORT, SDK, "SHA256SUMS.txt", "no game data"):
         check(needle.lower() in readme.lower(), f"stage: README-netplay.txt names {needle!r}\n{readme}")
+    # P3D-6 / Task 7 step 5: the build's public name first, and the optional swimsuit line (no DOAX2 data in the release)
+    check(readme.startswith(f"Dead or Alive 4 Online {TAG}"), f"stage: README-netplay.txt starts with the build's name and tag: {readme[:60]!r}")
+    check("USA copy of Dead or Alive Xtreme 2" in readme and "No DOAX2 data is in this release." in readme,
+          f"stage: README-netplay.txt has the optional swimsuit line: {readme}")
     lp = os.path.join(out, "DOA4-launcher.zip")
     check(os.path.isfile(lp) and read(lp) == b"PK launcher stand-in", "stage: DOA4-launcher.zip is a copy of --launcher-zip")
 
@@ -316,13 +323,34 @@ def test_runner_timeout(root):
     check(code == 0 and line_for(text, "zok") == "zok: passed 3", f"run_host_tests, within the limit: exit {code}\n{text}")
 
 
+def shape_found(source, alternatives):
+    """The first alternative (a list of literals) of which every literal is in `source`, or None."""
+    for alt in alternatives:
+        if all(w in source for w in alt):
+            return alt
+    return None
+
+
+def test_shape_found(root):
+    # the "default" shape is printed in one of two source forms; each form needs BOTH of its literals
+    two = [['"%s: %d checks, %d failures', '"FAILED" : "PASSED"'], ['"FAILED: %d checks, %d failures', '"PASSED: %d checks, 0 failures']]
+    ternary = 'printf("%s: %d checks, %d failures\n", f ? "FAILED" : "PASSED", a, b);'
+    split = 'printf("FAILED: %d checks, %d failures\n", a, b); printf("PASSED: %d checks, 0 failures\n", a);'
+    check(shape_found(ternary, two) == two[0] and shape_found(split, two) == two[1], "shape_found: both real source forms are accepted")
+    check(shape_found('printf("PASSED: %d checks, 0 failures\n", a);', two) is None, "shape_found: a source with only the PASSED line is refused")
+    check(shape_found('printf("FAILED: %d checks, %d failures\n", a, b);', two) is None, "shape_found: a source with only the FAILED line is refused")
+    check(shape_found('printf("%s: %d checks, %d failures\n", a, b, c);', two) is None, "shape_found: a source that never says FAILED / PASSED is refused")
+    check(shape_found("", two) is None, "shape_found: an empty source is refused")
+
+
 def test_table_matches_sources(root):
     # every real runner: the summary shape run_host_tests.py expects is the one its test source prints
     rht = load("run_host_tests")
     literals = {
-        "default": ['"%s: %d checks, %d failures', '"FAILED" : "PASSED"'],
-        "speakers": ['"all speakers checks passed', '"%d FAILED'],
-        "dpps": ['the redirect agrees with the SDK function: %s', '"yes" : "NO"'],
+        "default": [['"%s: %d checks, %d failures', '"FAILED" : "PASSED"'],
+                    ['"FAILED: %d checks, %d failures', '"PASSED: %d checks, 0 failures']],
+        "speakers": [['"all speakers checks passed', '"%d FAILED']],
+        "dpps": [['the redirect agrees with the SDK function: %s', '"yes" : "NO"']],
     }
     bats = sorted(f for f in os.listdir(HOST) if re.fullmatch(r"run_\w+_test\.bat", f))
     check(len(bats) >= 30, f"table: the real runners are found: {len(bats)}")
@@ -333,9 +361,9 @@ def test_table_matches_sources(root):
         src = os.path.join(HOST, exe[0] + ".cpp") if exe else ""
         source = read(src).decode("utf-8", "replace") if src and os.path.isfile(src) else ""
         kind = rht.shape_kind(name)
-        want = literals.get(kind) or [f'"{name}: all checks passed', '"%d check(s) failed']
-        check(bool(source) and all(w in source for w in want),
-              f"table: {bat} ({kind}) prints {want} in {os.path.basename(src) or '?'}")
+        want = literals.get(kind) or [[f'"{name}: all checks passed', '"%d check(s) failed']]
+        check(bool(source) and shape_found(source, want) is not None,
+              f"table: {bat} ({kind}) prints one of {want} in {os.path.basename(src) or '?'}")
 
 
 def main():

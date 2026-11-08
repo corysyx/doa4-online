@@ -222,10 +222,10 @@ def my_build_id():
 
 def refusal_text(kind, group=""):
     """The lobby's real texts. build: MismatchAdvice, np_rules.cpp:551-566 (the "self-built exe" variant; the others: "...they need
-    the newest netplay release...", "...the other player runs a self-built exe...", "You have an older release (...)", "The other
+    the newest release...", "...the other player runs a self-built exe...", "You have an older release (...)", "The other
     player has an older release (...)", "Both games say the same version (...) but the builds differ: ..."); files: Judge,
     np_rules.cpp:612-617; busy: Judge, np_rules.cpp:591."""
-    return {"build": "You run a self-built exe: both of you should use the latest netplay release (press Check for Updates).",
+    return {"build": "You run a self-built exe: both of you should use the latest release (press Check for Updates).",
             "files": f"The game files differ ({group or 'disc'}): both players need the same game files.",
             "busy": "The host is already in an online session."}[kind]
 

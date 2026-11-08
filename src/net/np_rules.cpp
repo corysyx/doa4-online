@@ -231,6 +231,13 @@ bool ReadString(std::string_view s, size_t v, std::string* out) {
   return true;
 }
 
+constexpr std::string_view kRetiredChannel = "netplay";  // the tags before the alpha channel: netplay-v1.0.x
+
+std::string_view Channel(std::string_view version) {  // "alpha-v0.3.0" -> "alpha"; "v1.2.3" and "1.2.3" -> ""
+  const size_t d = version.rfind('-');
+  return d == kNpos ? std::string_view() : version.substr(0, d);
+}
+
 std::string Bare(std::string_view version) {  // "netplay-v1.0.14" -> "v1.0.14"
   const size_t d = version.rfind('-');
   return std::string(d == kNpos ? version : version.substr(d + 1));
@@ -497,7 +504,7 @@ int CompareVersions(std::string_view a, std::string_view b) {
 
 bool IsDevBuild(std::string_view tag) {
   std::array<int, 3> v{};
-  return !ParseVersion(tag, &v) || v[2] == 0;
+  return !ParseVersion(tag, &v);  // 0.3.0 is a real release: only an unparsable tag ("dev", a local build) is self-built
 }
 
 bool PickRelease(std::string_view json, std::string_view channel, std::span<const std::string_view> required,
@@ -559,20 +566,28 @@ bool PickRelease(std::string_view json, std::string_view channel, std::span<cons
 }
 
 std::string MismatchAdvice(std::string_view mine, std::string_view theirs) {
-  if (theirs.empty())  // its own updater cannot fetch netplay releases
-    return "The other player has an older game: they need the newest netplay release from the GitHub Releases page.";
+  if (theirs.empty())  // its own updater cannot fetch releases
+    return "The other player has an older game: they need the newest release from the GitHub Releases page.";
   if (IsDevBuild(mine))
-    return "You run a self-built exe: both of you should use the latest netplay release (press Check for Updates).";
+    return "You run a self-built exe: both of you should use the latest release (press Check for Updates).";
   if (IsDevBuild(theirs))
-    return "The other player runs a self-built exe: both of you should use the latest netplay release (Check for Updates).";
-  const int c = CompareVersions(mine, theirs);
+    return "The other player runs a self-built exe: both of you should use the latest release (Check for Updates).";
+  // Two release schemes: the retired "netplay" channel (netplay-v1.0.x) is the older game whatever its numbers, since
+  // the alpha channel restarted the numbering. Any other pair of differing channels: the numbers decide.
+  const bool cross = Channel(mine) != Channel(theirs);
+  int c = CompareVersions(mine, theirs);
+  if (cross) {
+    if (Channel(mine) == kRetiredChannel) c = -1;
+    else if (Channel(theirs) == kRetiredChannel) c = 1;
+  }
+  // Across channels both full tags are shown (the channel is the information); within one, the bare version.
+  const std::string m = cross ? std::string(mine) : Bare(mine), t = cross ? std::string(theirs) : Bare(theirs);
   if (c < 0)
-    return "You have an older release (" + Bare(mine) + ", the other player " + Bare(theirs) +
+    return "You have an older release (" + m + ", the other player " + t +
            "): press Check for Updates, then restart the game.";
   if (c > 0)
-    return "The other player has an older release (" + Bare(theirs) + ", you " + Bare(mine) +
-           "): they need to press Check for Updates.";
-  return "Both games say the same version (" + Bare(mine) +
+    return "The other player has an older release (" + t + ", you " + m + "): they need to press Check for Updates.";
+  return "Both games say the same version (" + (cross ? m + ", " + t : m) +
          ") but the builds differ: both download it again from the GitHub Releases page.";
 }
 

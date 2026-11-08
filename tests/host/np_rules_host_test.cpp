@@ -940,10 +940,14 @@ static void TestVersions() {
   CHECK(rules::CompareVersions("garbage", "dev") == 0);    // two unparsable tags are equal
   CHECK(rules::CompareVersions("", "") == 0);
 
-  Group("release: a dev build is an unparsable tag (\"dev\") or build number 0");
-  CHECK(rules::IsDevBuild("netplay-v1.0.0"));
-  CHECK(rules::IsDevBuild("v2.7.0"));
-  CHECK(rules::IsDevBuild("0.0.0"));
+  Group("release: a self-built game is an unparsable tag (\"dev\"); a build number of 0 is a real release (0.3.0)");
+  CHECK(!rules::IsDevBuild("netplay-v1.0.0"));    // P3D-2: was dev (patch 0); now a release
+  CHECK(!rules::IsDevBuild("v2.7.0"));
+  CHECK(!rules::IsDevBuild("0.0.0"));
+  CHECK(!rules::IsDevBuild("alpha-v0.3.0"));      // the first alpha release is not self-built
+  CHECK(!rules::IsDevBuild("alpha-v0.3.1"));
+  CHECK(rules::CompareVersions("alpha-v0.3.1", "alpha-v0.3.0") > 0);  // the third number is set by hand and counts
+  CHECK(rules::CompareVersions("alpha-v0.3.0", "alpha-v0.3.1") < 0);
   CHECK(!rules::IsDevBuild("netplay-v1.0.4"));
   CHECK(!rules::IsDevBuild("netplay-v1.0.10"));   // ends in 0, but the number is 10
   CHECK(!rules::IsDevBuild("netplay-v1.0.100"));
@@ -1237,8 +1241,8 @@ static void TestAdvice() {
   Group("MismatchAdvice: who is older, who updates, where");
   const std::string older_me = rules::MismatchAdvice("netplay-v1.0.12", "netplay-v1.0.14");
   const std::string older_them = rules::MismatchAdvice("netplay-v1.0.14", "netplay-v1.0.12");
-  const std::string self_me = rules::MismatchAdvice("netplay-v1.0.0", "netplay-v1.0.14");
-  const std::string self_them = rules::MismatchAdvice("netplay-v1.0.14", "netplay-v1.0.0");
+  const std::string self_me = rules::MismatchAdvice("dev", "netplay-v1.0.14");   // P3D-2: was "netplay-v1.0.0"
+  const std::string self_them = rules::MismatchAdvice("netplay-v1.0.14", "dev");
   const std::string no_tag = rules::MismatchAdvice("netplay-v1.0.14", "");
   const std::string same = rules::MismatchAdvice("netplay-v1.0.14", "netplay-v1.0.14");
   CHECK(Has(older_me, "You have an older release") && Has(older_me, "v1.0.14") && Has(older_me, "v1.0.12") && Has(older_me, "Check for Updates"));
@@ -1251,6 +1255,33 @@ static void TestAdvice() {
   CHECK(Has(no_tag, "older game") && Has(no_tag, "Releases page") && !Has(no_tag, "Check for Updates"));
   // the same version with different builds: the updater refuses an equal tag, so the page again
   CHECK(Has(same, "same version") && Has(same, "Releases page") && Has(same, "v1.0.14"));
+
+  Group("MismatchAdvice: two channels (P3D-3): the retired netplay channel is the older game whatever its numbers");
+  {
+    const std::string alpha_me = rules::MismatchAdvice("alpha-v0.3.0", "netplay-v1.0.9");
+    const std::string alpha_them = rules::MismatchAdvice("netplay-v1.0.9", "alpha-v0.3.0");
+    CHECK(alpha_me == "The other player has an older release (netplay-v1.0.9, you alpha-v0.3.0): they need to press Check for Updates.");
+    CHECK(alpha_them == "You have an older release (netplay-v1.0.9, the other player alpha-v0.3.0): press Check for Updates, then restart the game.");
+    CHECK(!Has(alpha_me, "self-built") && !Has(alpha_them, "self-built"));
+    CHECK(!Has(alpha_me, "You have an older") && !Has(alpha_me, "press Check for Updates, then restart"));  // the alpha player is never told to update
+    CHECK(!Has(alpha_them, "The other player has an older"));
+    // a high old number does not make it newer
+    CHECK(Has(rules::MismatchAdvice("alpha-v0.3.0", "netplay-v7.9.9"), "The other player has an older release (netplay-v7.9.9, you alpha-v0.3.0)"));
+    CHECK(Has(rules::MismatchAdvice("netplay-v7.9.9", "alpha-v0.3.0"), "You have an older release (netplay-v7.9.9, the other player alpha-v0.3.0)"));
+    // within one channel the numbers decide, as before (the tag is shown without its channel)
+    const std::string a_me = rules::MismatchAdvice("alpha-v0.3.0", "alpha-v0.3.1");
+    const std::string a_them = rules::MismatchAdvice("alpha-v0.3.1", "alpha-v0.3.0");
+    CHECK(Has(a_me, "You have an older release (v0.3.0, the other player v0.3.1)") && Has(a_me, "Check for Updates"));
+    CHECK(Has(a_them, "The other player has an older release (v0.3.0, you v0.3.1)"));
+    CHECK(!Has(a_me, "alpha-v") && !Has(a_them, "alpha-v"));
+    // two channels neither of which is the retired one: the numbers decide, both full tags shown
+    CHECK(Has(rules::MismatchAdvice("alpha-v0.3.0", "beta-v0.4.0"), "You have an older release (alpha-v0.3.0, the other player beta-v0.4.0)"));
+    CHECK(Has(rules::MismatchAdvice("beta-v0.4.0", "alpha-v0.3.0"), "The other player has an older release (alpha-v0.3.0, you beta-v0.4.0)"));
+  }
+  Group("MismatchAdvice: the build was renamed, the texts say \"release\" (P3D-3)");
+  CHECK(rules::MismatchAdvice("alpha-v0.3.0", "") == "The other player has an older game: they need the newest release from the GitHub Releases page.");
+  CHECK(rules::MismatchAdvice("dev", "alpha-v0.3.0") == "You run a self-built exe: both of you should use the latest release (press Check for Updates).");
+  CHECK(rules::MismatchAdvice("alpha-v0.3.0", "dev") == "The other player runs a self-built exe: both of you should use the latest release (Check for Updates).");
 
   Group("MismatchAdvice: a local build is \"dev\" (DOA4_RELEASE_TAG), which is not a version");
   CHECK(Has(rules::MismatchAdvice("dev", "netplay-v1.0.5"), "You run a self-built exe"));

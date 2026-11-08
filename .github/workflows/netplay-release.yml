@@ -1,11 +1,12 @@
 name: Netplay release
-# Builds the netplay branch and publishes a pre-release netplay-v<major>.<minor>.<run> that both online players
+# Builds the netplay branch and publishes a pre-release alpha-v<x.y.z> (the version is DOA4_NETPLAY_VERSION in
+# CMakeLists.txt, set by hand; a version whose release exists fails the Version step) that both online players
 # download: the online handshake compares the compiled code, so players need the same exe.
 # PUBLISH RULE (the user's decision): a push to netplay publishes a release only when the GAME changes, so the paths
 # below are the game's inputs only (src, generated, third_party, the CMake files, hints, the manifest, the SDK pin).
 # A change to the launcher, the tests, the tools, the README or this workflow publishes nothing, so players are not
 # made to update for it. Such a change reaches players only by pushing a tag netplay-publish-<n> (after the user's
-# yes), which also publishes the same code again under a new run number.
+# yes), which publishes the same code again, provided DOA4_NETPLAY_VERSION was raised (the tag is alpha-v<x.y.z>).
 on:
   push:
     branches: [netplay]
@@ -29,11 +30,16 @@ jobs:
       - name: Version
         id: version
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $text = Get-Content -Raw doa4-recomp/CMakeLists.txt
-          $m = [regex]::Match($text, 'set\(DOA4_NETPLAY_VERSION "([0-9]+\.[0-9]+)"')
-          if (-not $m.Success) { throw 'DOA4_NETPLAY_VERSION not found in CMakeLists.txt' }
-          $tag = "netplay-v$($m.Groups[1].Value).$env:GITHUB_RUN_NUMBER"
+          $m = [regex]::Match($text, 'set\(DOA4_NETPLAY_VERSION "([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $m.Success) { throw 'DOA4_NETPLAY_VERSION (three numbers, x.y.z) not found in CMakeLists.txt' }
+          $tag = "alpha-v$($m.Groups[1].Value)"
+          # a release of this version exists: the version was not raised, and nothing is overwritten or duplicated
+          gh release view $tag --repo $env:GITHUB_REPOSITORY > $null 2>&1
+          if ($LASTEXITCODE -eq 0) { throw "The release $tag already exists: raise DOA4_NETPLAY_VERSION in CMakeLists.txt before publishing again." }
           "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "tag $tag"
       - name: SDK at the pinned commit
@@ -76,7 +82,7 @@ jobs:
           call "%DOA4_VSDEVCMD%" -arch=amd64 -host_arch=amd64
           set "PATH=%DOA4_LLVM_BIN%;%PATH%"
           cd doa4-recomp
-          cmake --preset win-amd64-release -DREXSDK_DIR=%GITHUB_WORKSPACE:\=/%/rexglue-sdk "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3" -DDOA4_RELEASE_TAG=${{ steps.version.outputs.tag }} -DDOA4_RELEASE_REPO=${{ github.repository }} -DDOA4_RELEASE_CHANNEL=netplay
+          cmake --preset win-amd64-release -DREXSDK_DIR=%GITHUB_WORKSPACE:\=/%/rexglue-sdk "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3" -DDOA4_RELEASE_TAG=${{ steps.version.outputs.tag }} -DDOA4_RELEASE_REPO=${{ github.repository }} -DDOA4_RELEASE_CHANNEL=alpha
           if errorlevel 1 exit /b 1
           cmake --build --preset win-amd64-release -- -j 2
           if errorlevel 1 exit /b 1
@@ -84,19 +90,6 @@ jobs:
           set "DOA4_CI=1"
           python -I tools/run_host_tests.py
           if errorlevel 1 exit /b 1
-      - name: Launcher tests (Pester)
-        # Windows PowerShell 5.1 ships Pester 3.4, the version the launcher's tests are written for
-        shell: powershell
-        run: |
-          # the runner image also has a newer Pester whose syntax the 3.4 tests do not use: load the inbox 3.4.0 explicitly
-          Import-Module Pester -RequiredVersion 3.4.0 -Force
-          # Tag SymlinkStubs: the source-build path's symlink-stub tests. They need git to check symlinks out as stub files
-          # (a player's Windows without Developer Mode); the runner's git makes real symlinks even with core.symlinks=false.
-          # They run on a developer PC only; the release channel does not use that path.
-          Write-Host 'Skipped here (run locally): tests tagged SymlinkStubs'
-          $r = Invoke-Pester -Path doa4-recomp/launcher/tests -ExcludeTag SymlinkStubs -PassThru
-          Write-Host "Pester: $($r.PassedCount) passed, $($r.FailedCount) failed, $($r.PendingCount) pending, $($r.SkippedCount) skipped"
-          if ($r.FailedCount -gt 0 -or $r.PassedCount -lt 1) { throw 'launcher tests failed' }
       - name: Release tool tests
         shell: cmd
         run: |
@@ -111,16 +104,12 @@ jobs:
           cd doa4-recomp
           python -I tests/tools/test_np_tools.py
           if errorlevel 1 exit /b 1
-      - name: Launcher zip
-        shell: pwsh
-        run: ./doa4-recomp/launcher/make_zip.ps1 -Destination launcher_pkg -ZipPath DOA4-launcher.zip
       - name: Stage
         shell: pwsh
         run: |
           $pin = Get-Content doa4-recomp/netplay_sdk.txt | ConvertFrom-StringData
           python -I doa4-recomp/tools/release_stage.py --build doa4-recomp/out/build/win-amd64-release --out staging `
-            --tag ${{ steps.version.outputs.tag }} --port-commit $env:GITHUB_SHA --sdk-commit $pin.commit `
-            --launcher-zip DOA4-launcher.zip
+            --tag ${{ steps.version.outputs.tag }} --port-commit $env:GITHUB_SHA --sdk-commit $pin.commit
           if ($LASTEXITCODE -ne 0) { throw 'staging refused' }
           Get-ChildItem staging | ForEach-Object { "$($_.Name)  $($_.Length) bytes" }
       - name: Publish
@@ -130,13 +119,16 @@ jobs:
         run: |
           $pin = Get-Content doa4-recomp/netplay_sdk.txt | ConvertFrom-StringData
           $notes = @"
-          DOA4 netplay build from commit $env:GITHUB_SHA (SDK $($pin.repo) $($pin.commit), LLVM 23.1.4).
+          Dead or Alive 4 Online, built from commit $env:GITHUB_SHA (SDK $($pin.repo) $($pin.commit), LLVM 23.1.4).
 
-          Both players need this same release. Download the zip (or use the DOA4 launcher, or Check for Updates in the game's Online tab). No game data is included: you need your own Dead or Alive 4 (USA, Europe) (Rev 1) files.
+          Both players need this same release. Download the zip (or use Check for Updates in the game's Online tab). No game data is included: you need your own Dead or Alive 4 (USA, Europe) (Rev 1) files.
+          Optional: the DOAX2 swimsuits, built on your PC from your own USA copy of Dead or Alive Xtreme 2 (on the first start, or Esc menu, Extras tab). No DOAX2 data is in this release.
           Needs Windows 10/11 64-bit, a CPU with AVX2 and at least two cores, and the Microsoft Visual C++ 2015-2022 x64 runtime.
           Firewall: the first time you host or join, Windows asks whether to allow the game through the firewall, on both players' PCs. Tick both Private and Public networks (Public is unticked by default, and a Public network then blocks the connection), then Allow. The prompt can hide behind the fullscreen game: press Alt+Tab. If the other player still cannot connect, turn on UPnP in the host's router, or forward UDP 7200 to the host PC.
+
+          Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate of the raised cloth budget on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc).
           "@
           Set-Content notes.md $notes -Encoding utf8
           gh release create ${{ steps.version.outputs.tag }} (Get-ChildItem staging).FullName --repo $env:GITHUB_REPOSITORY `
-            --prerelease --target $env:GITHUB_SHA --title "DOA4 netplay ${{ steps.version.outputs.tag }}" --notes-file notes.md
+            --prerelease --target $env:GITHUB_SHA --title "Dead or Alive 4 Online ${{ steps.version.outputs.tag }}" --notes-file notes.md
           if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }

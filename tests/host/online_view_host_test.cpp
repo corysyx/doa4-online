@@ -260,8 +260,13 @@ static void TestVersionLine() {
   CHECK(Has(v.version_line, "dev, self-built"));
   CHECK(Has(v.version_line, "only the same build can join"));
   CHECK(Has(v.version_line, "0123456789abcdef"));
-  // a release tag whose build number is 0 is a dev build too
+  // P3D-2: a release whose last number is 0 (alpha 0.3.0) is a release, shown as one; only an unparsable tag is self-built
   in.release = "netplay-v1.2.0";
+  CHECK(!Has(Describe(in).version_line, "self-built"));
+  CHECK(Has(Describe(in).version_line, "netplay-v1.2.0 (build "));
+  in.release = "alpha-v0.3.0";
+  CHECK_EQ(Describe(in).version_line, "alpha-v0.3.0 (build 0123456789abcdef)");
+  in.release = "dev";
   CHECK(Has(Describe(in).version_line, "self-built"));
   // an unreadable build id
   in.release = "netplay-v1.2.3";

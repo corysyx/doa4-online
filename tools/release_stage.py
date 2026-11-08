@@ -1,7 +1,7 @@
 """Stages a netplay release's assets (plan 1b Task 2): the three game files, their checksums, one zip for a manual
-download and, when given, the launcher zip. The release workflow publishes every file of the staging folder.
+download and, when given, the launcher zip (the release workflow does not give one while the launcher is retired). The release workflow publishes every file of the staging folder.
 
-  py -3 -I tools/release_stage.py --build <out/build/win-amd64-release> --out <staging> --tag <netplay-vX.Y.Z>
+  py -3 -I tools/release_stage.py --build <out/build/win-amd64-release> --out <staging> --tag <alpha-vX.Y.Z>
       --port-commit <sha> --sdk-commit <sha> [--launcher-zip <path>] [--extra <name>]
 
 <staging> then holds exactly:
@@ -13,7 +13,7 @@ download and, when given, the launcher zip. The release workflow publishes every
   DOA4-launcher.zip                                       a copy of --launcher-zip (only when given)
 Never game data. Refused (exit 1, the message names the file; nothing is staged): a missing game file; a name under
 a folder or matching *.xex, *.afs, *.sfd, *.dat (game data); a name that is not one of the three; a name given
-twice; a staging folder that is not empty; a tag that is not <channel>-v<major>.<minor>.<run>; a commit that is not
+twice; a staging folder that is not empty; a tag that is not <channel>-v<major>.<minor>.<patch>; a commit that is not
 hex. --extra NAME (tests only) adds one more name, relative to --build, so the refusal rules can be exercised.
 """
 import argparse
@@ -58,7 +58,7 @@ def sha256(path):
 
 def readme_text(tag, port_commit, sdk_commit):
     lines = [
-        f"DOA4 netplay {tag}",
+        f"Dead or Alive 4 Online {tag}",
         f"Built from the port commit {port_commit} with the SDK commit {sdk_commit} (LLVM 23.1.4).",
         "",
         "Both players need this same release: the online handshake compares the compiled code.",
@@ -66,6 +66,8 @@ def readme_text(tag, port_commit, sdk_commit):
         "copies) and start dead_or_alive_4.exe. There is no game data in this release: on the first start the game asks",
         "for your own Dead or Alive 4 (USA, Europe) (Rev 1) disc image or extracted folder.",
         "SHA256SUMS.txt holds the SHA-256 of the three files.",
+        "Optional: the DOAX2 swimsuits, built on your PC from your own USA copy of Dead or Alive Xtreme 2 (on the first",
+        "start, or Esc menu, Extras tab). No DOAX2 data is in this release.",
         "",
         "Needs Windows 10/11 64-bit, a CPU with AVX2 and at least two cores, and the Microsoft Visual C++ 2015-2022 x64",
         "runtime. Online play: Esc menu, Online tab (Host, or Join with the other player's code).",
@@ -81,7 +83,7 @@ def readme_text(tag, port_commit, sdk_commit):
 
 def check_args(a):
     if not TAG.fullmatch(a.tag or ""):
-        raise Refused(f"--tag {a.tag!r}: not <channel>-v<major>.<minor>.<run> (for example netplay-v1.0.7)")
+        raise Refused(f"--tag {a.tag!r}: not <channel>-v<major>.<minor>.<patch> (for example alpha-v0.3.0)")
     for opt, value in (("--port-commit", a.port_commit), ("--sdk-commit", a.sdk_commit)):
         if not COMMIT.fullmatch(value or ""):
             raise Refused(f"{opt} {value!r}: not a commit id (7 to 40 lower-case hex digits)")
