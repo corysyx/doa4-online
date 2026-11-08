@@ -39,6 +39,7 @@
 #include "doa4_suits_import_view.h"
 #include "doa4_speakers.h"
 #include "doa4_utf8.h"
+#include "net/np_session.h"
 #include "doa4_unlocks.h"
 
 namespace doa4 {
@@ -693,7 +694,7 @@ void MenuDialog::TestAction(std::string_view action) {
   } else if (action == "suits_import") {
     // What a click does: the source is set through the flow's pick effects (the app's return DOA4_SUITS_IMPORT_TEST without a
     // dialog), then the button's own work. Refused exactly when the button is disabled.
-    const char* env = std::getenv("DOA4_SUITS_IMPORT_TEST");
+    const char* env = np::TestSwitch("DOA4_SUITS_IMPORT_TEST");  // starts an import that changes doax2_suits: guarded like the other test switches
     std::string why;
     if (!env || !env[0]) {
       REXLOG_INFO("[doa4][SUITS] test action suits_import: refused: DOA4_SUITS_IMPORT_TEST is not set");

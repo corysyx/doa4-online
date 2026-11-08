@@ -2149,7 +2149,7 @@ static void TestSdkNames(const std::string& sdk_src, const std::string& port_src
   // by a bare getenv must be on the list of switches that only log or take a picture.
   {
     static const std::set<std::string> kGuarded = {"DOA4_SUITS_NATIVE_CLOTH_BUDGET", "DOA4_SUITS_NO_FUR_GUARD", "DOA4_SUITS_SCENE",
-                                                   "DOA4_SUITS_BUST_FLIP_S"};
+                                                   "DOA4_SUITS_BUST_FLIP_S", "DOA4_SUITS_IMPORT_TEST"};
     static const std::set<std::string> kHarmless = {"DOA4_SUITS_COUNT_TRACE", "DOA4_SUITS_LABEL_TRACE", "DOA4_SUITS_TATAMI_TRACE",
                                                     "DOA4_SUITS_COMPLETE_TRACE", "DOA4_SUITS_PIN_TRACE", "DOA4_SUITS_CLOTH_TRACE",
                                                     "DOA4_SUITS_PHOTOS"};

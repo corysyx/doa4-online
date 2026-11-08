@@ -214,7 +214,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     if (menu_suits_flow_) return menu_suits_flow_.get();
     // DOA4_SUITS_IMPORT_TEST (ASCII path): the pick effects return it without a dialog, as a test action's click would.
     static const auto test_source = []() -> std::optional<std::filesystem::path> {
-      const char* env = std::getenv("DOA4_SUITS_IMPORT_TEST");
+      const char* env = doa4::np::TestSwitch("DOA4_SUITS_IMPORT_TEST");
       if (!env || !env[0]) return std::nullopt;
       return std::filesystem::path(env);
     };
