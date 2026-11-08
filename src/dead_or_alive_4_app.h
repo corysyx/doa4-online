@@ -285,7 +285,31 @@ class DeadOrAlive4App : public rex::ReXApp {
 
   void CloseSetup() {
     setup_open_.store(false, std::memory_order_release);
+    StopSetupTestTick();  // joined before the dialog dies; the timer only posts (never waits for the UI thread), so this cannot deadlock
     setup_.reset();
+  }
+
+  // DOA4_SETUP_TEST only: a minimized window never paints, so the dialog's scripted steps also run from this timer (every
+  // 100 ms, posted to the UI thread). The posted call checks setup_ on the UI thread, so one that runs after CloseSetup does nothing.
+  void StartSetupTestTick() {
+    static const bool switch_set = std::getenv("DOA4_SETUP_TEST") != nullptr;  // read once
+    if (!switch_set || setup_test_tick_.joinable()) return;
+    setup_test_tick_stop_.store(false, std::memory_order_release);
+    setup_test_tick_ = std::thread([this] {
+      using namespace std::chrono_literals;
+      while (!setup_test_tick_stop_.load(std::memory_order_acquire)) {
+        app_context().CallInUIThreadDeferred([this] {
+          if (setup_) setup_->TestTick();
+        });
+        for (int i = 0; i < 4 && !setup_test_tick_stop_.load(std::memory_order_acquire); ++i) {
+          std::this_thread::sleep_for(25ms);
+        }
+      }
+    });
+  }
+  void StopSetupTestTick() {
+    setup_test_tick_stop_.store(true, std::memory_order_release);
+    if (setup_test_tick_.joinable()) setup_test_tick_.join();
   }
 
   void OpenSetup(doa4::SetupHost::Mode mode, std::string reason,
@@ -322,6 +346,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     }
     setup_open_.store(true, std::memory_order_release);
     setup_ = std::make_unique<doa4::SetupDialog>(drawer_, std::move(host));
+    StartSetupTestTick();
   }
 
   // Saves the chosen folder as doa4_game_files (the file, then the cvar the
@@ -1136,6 +1161,7 @@ class DeadOrAlive4App : public rex::ReXApp {
       REXLOG_INFO("[doa4][SETUP] setup screen closed at shutdown");
       CloseSetup();
     }
+    StopSetupTestTick();  // before the dialog dies (CloseSetup stops it too; this covers a path with no dialog)
     EndStartupSuits();  // quit while the setup screen runs an import: cancel it once, then join its waiter
     photo_notice_.reset();  // before the base app destroys the ImGui drawer
     net_overlay_.reset();   // likewise
@@ -1573,6 +1599,8 @@ class DeadOrAlive4App : public rex::ReXApp {
   std::unique_ptr<doa4::suits_import::Flow> suits_flow_;
   std::thread suits_worker_;
   std::function<void()> setup_resume_;
+  std::thread setup_test_tick_;  // DOA4_SETUP_TEST only (StartSetupTestTick)
+  std::atomic<bool> setup_test_tick_stop_{false};
   std::atomic<bool> setup_open_{false};  // read by the guest's input polls
   std::filesystem::path game_files_;
   std::filesystem::path user_data_;  // the resolved save folder (WithUserData)

@@ -226,7 +226,10 @@ void SetupDialog::RunTestScript() {
   }
 }
 
-void SetupDialog::OnDraw(ImGuiIO& io) {
+// Everything the scripted runs and the logs depend on that is not drawing. OnDraw calls it once per frame; the app's test
+// timer calls it too while DOA4_SETUP_TEST is set, because a minimized window never paints. Idempotent: each step is guarded
+// by the state it already keeps (logged stage and message, the result-logged flag, the script's own flags, finish_requested_).
+void SetupDialog::TestTick() {
   LogStage();
   if (host_.suits) {  // every result is logged once (the live runs grep for it)
     const bool has_result = host_.suits->stage() == suits_import::Stage::kResult && host_.suits->result();
@@ -238,8 +241,14 @@ void SetupDialog::OnDraw(ImGuiIO& io) {
         host_.suits->stage() != suits_import::Stage::kChoose) {
       suits_seen_ = true;
     }
+    // The automatic start after a clean import (the view does this when it paints).
+    if (has_result && host_.suits->auto_start()) FinishSuits(false);
   }
   RunTestScript();
+}
+
+void SetupDialog::OnDraw(ImGuiIO& io) {
+  TestTick();
 
   const ImVec4 red(1.0f, 0.45f, 0.4f, 1.0f), amber(1.0f, 0.8f, 0.4f, 1.0f);
   const float width = std::min(io.DisplaySize.x - 32.0f, 760.0f);

@@ -60,6 +60,9 @@ struct SetupHost {
 class SetupDialog : public rex::ui::ImGuiDialog {
  public:
   SetupDialog(rex::ui::ImGuiDrawer* drawer, SetupHost host);
+  // The scripted steps and logs that do not need a painted frame (OnDraw calls it every frame; the app's test timer calls it
+  // while DOA4_SETUP_TEST is set, since a minimized window never paints). UI thread; safe to call twice in a frame.
+  void TestTick();
   ~SetupDialog();  // cancels a running copy and joins the worker (held as SetupDialog)
 
  protected:
