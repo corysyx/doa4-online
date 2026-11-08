@@ -1,7 +1,7 @@
 // Host test for src/doa4_costumes.cpp on the image's real costume tables, read from your own image (DOA4_TEST_IMAGE,
-// doa4_test_image.h; no game byte is in this repository). Without the image the checks that need the tables print
-// SKIPPED and the rest run: the guard and model-set checks and the image reader's own checks. Built and run by
-// run_costumes_test.bat.
+// doa4_test_image.h; no game byte is in this repository). With the variable unset the checks that need the tables
+// print SKIPPED and the rest run: the guard and model-set checks and the image reader's own checks; set but unreadable or
+// failing a pin, they FAIL. Built and run by run_costumes_test.bat.
 
 #include "../../src/doa4_costumes.h"
 #include "../../src/doa4_suits_picks.h"
@@ -274,7 +274,7 @@ static void AllBoxesOn(FakeGuest& g, doa4::tweaks::TweakPatcher& patcher) {
   }
 }
 
-// Kokoro's and Kasumi's suits as the import names them (doax2_work/physics_spike/imports/all34_r14/manifest.txt).
+// Kokoro's and Kasumi's suits as the import names them (the manifest of the 34-suit import the author converted, not in this repository).
 static std::vector<Suit> KokoroSuits() {
   return {MakeSuit(10, 2, 321, 322, 569, 570, "vco_cs_i"), MakeSuit(10, -1, 319, 320, 569, 570, "vco_sk_c"),
           MakeSuit(10, 9, 335, 336, 569, 570, "vhe_on_c"), MakeSuit(10, 13, 343, 344, 569, 570, "vco_ch_f")};

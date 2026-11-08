@@ -637,28 +637,109 @@ static void TestImportKeepsTatami() {
   SetSuitCostumes({});
 }
 
-// "Unlock all costumes" is an explicit act and writes the whole maximum, suits included. Taking the import away after it
-// must not leave a save the program refuses: the clamp brings the counts to the game's own maximum, and then the
-// Extras tab works again.
+// "Unlock all costumes" is an explicit act, yet it writes each girl's own maximum and never the imported suits: they are
+// offered on the select screen without the save's count, so the unlock note "Your save isn't changed" stays true. Taking the
+// import away afterwards leaves a save the program accepts and a clamp with nothing to do.
 static void TestUnlockAllThenImportRemoved() {
   FakeGuest g;
   Setup(g, g_fresh);
   Import(g);
   CHECK(ApplyUnlock(g.guest, kP, Unlock::kCostumes).costumes > 0);
-  CHECK(At(g, kCostumeCount, KasumiIndex()) == BaseMax(KasumiIndex()) + kSuitsPerGirl &&
-        At(g, kCostumeCount, KokoroIndex()) == BaseMax(KokoroIndex()) + kBoxCostumes + kSuitsPerGirl);  // the explicit act
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == BaseMax(KasumiIndex()) &&
+        At(g, kCostumeCount, KokoroIndex()) == BaseMax(KokoroIndex()) + kBoxCostumes);  // her own, box included, no suits
   CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
   Removed(g);  // the import folder is gone: the tables are the game's again
-  CHECK(!FindProfile(g.guest));  // before the clamp: refused, as the brief's removal case describes
-  CHECK(FindLoadedRecord(g.guest) == std::optional<uint32_t>(kP));
-  Tick(g, true);
-  CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
-  CHECK(At(g, kCostumeCount, KasumiIndex()) == BaseMax(KasumiIndex()));                     // her own maximum
-  CHECK(At(g, kCostumeCount, KokoroIndex()) == BaseMax(KokoroIndex()) + kBoxCostumes);  // the box's
-  CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes));
+  CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));  // never refused: nothing was written past the game's maximum
+  const std::vector<uint8_t> before = Profile(g);
   g.writes = 0;
   Tick(g, true);
-  CHECK(g.writes == 0);
+  CHECK(g.writes == 0 && Profile(g) == before);  // the clamp has nothing to correct
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes));
+}
+
+// Girl A (charId 5) has four suits: her table maximum is her own + 4. Unlock all costumes writes her own.
+static void TestUnlockCostumesWritesOwnMax() {
+  FakeGuest g;
+  Setup(g, g_fresh);
+  Import(g, false);
+  const int own = BaseMax(KasumiIndex());
+  CHECK(g.Get(kMaxCostumes + kCharA) == own + kSuitsPerGirl && own != own + kSuitsPerGirl);  // the table says more
+  const UnlockResult r = ApplyUnlock(g.guest, kP, Unlock::kCostumes);
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == own);
+  CHECK(At(g, kCostumeCount, KasumiIndex()) != own + kSuitsPerGirl);
+  CHECK(At(g, kCostumeCount, KokoroIndex()) == BaseMax(KokoroIndex()));  // girl B, four suits too
+  CHECK(At(g, kCostumeCount, g_index_c) == BaseMax(g_index_c));          // a girl with none
+  CHECK(r.costumes == TotalExtras());                                    // counted against the own maxima
+  // A count already between her own maximum and the table's is kept, not lowered.
+  g.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(own + 2);
+  ApplyUnlock(g.guest, kP, Unlock::kCostumes);
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == own + 2);
+  SetSuitCostumes({});
+}
+
+// Unlocked means at the own maximum: true there, false one below, with the suits in the table. A save that has everything
+// else makes kEverything and kStages follow the costume rule alone.
+static void TestIsUnlockedAtOwnMax() {
+  FakeGuest g;
+  Setup(g, g_full);
+  Import(g, false);
+  const int own = BaseMax(KasumiIndex());
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == own);  // the full save holds her own maximum
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes));
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kStages) && IsUnlocked(g.guest, kP, Unlock::kEverything));
+  g.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(own - 1);
+  CHECK(!IsUnlocked(g.guest, kP, Unlock::kCostumes));
+  CHECK(!IsUnlocked(g.guest, kP, Unlock::kStages) && !IsUnlocked(g.guest, kP, Unlock::kEverything));
+  g.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(own);
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes));
+  SetSuitCostumes({});
+}
+
+// Unlock everything on a new save with suits: every girl at her own maximum, nothing of the suits, and a second click
+// changes nothing.
+static void TestUnlockEverythingLeavesSuitsOut() {
+  FakeGuest g;
+  Setup(g, g_fresh);
+  Import(g, false);
+  CHECK(!IsUnlocked(g.guest, kP, Unlock::kEverything));
+  ApplyUnlock(g.guest, kP, Unlock::kEverything);
+  for (int i = 0; i < kCharacterCount; ++i) CHECK(At(g, kCostumeCount, i) == BaseMax(i));
+  CHECK(At(g, kCostumeCount, KasumiIndex()) < g.Get(kMaxCostumes + kCharA));
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kEverything));
+  g.writes = 0;
+  const UnlockResult again = ApplyUnlock(g.guest, kP, Unlock::kEverything);
+  CHECK(g.writes == 0 && again.costumes == 0);
+  SetSuitCostumes({});
+}
+
+// No suits told: the counts equal the table's maximum, as before.
+static void TestNoSuitsUnchanged() {
+  FakeGuest g;
+  Setup(g, g_fresh);
+  SetSuitCostumes({});
+  const UnlockResult r = ApplyUnlock(g.guest, kP, Unlock::kCostumes);
+  for (int i = 0; i < kCharacterCount; ++i) CHECK(At(g, kCostumeCount, i) == g.Get(kMaxCostumes + g_t.index_to_char[size_t(i)]));
+  CHECK(r.costumes == TotalExtras());
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes));
+}
+
+// The clamp still uses the table's whole maximum: a count of her own + 2 (inside the table's, past her own) is not lowered,
+// and one past the table's is.
+static void TestClampKeepsWholeMax() {
+  FakeGuest g;
+  Setup(g, g_full);
+  Import(g, false);
+  const int own = BaseMax(KasumiIndex());
+  g.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(own + 2);
+  g.writes = 0;
+  CHECK(ClampCostumeCounts(g.guest, kP) == 0 && g.writes == 0);
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == own + 2);
+  CHECK(FindProfile(g.guest) == std::optional<uint32_t>(kP));
+  g.bytes[kP + kCostumeCount + KasumiIndex()] = uint8_t(own + kSuitsPerGirl + 1);
+  CHECK(!FindProfile(g.guest));
+  CHECK(ClampCostumeCounts(g.guest, kP) == 1);
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == own + kSuitsPerGirl);
+  SetSuitCostumes({});
 }
 
 // Fix round 1: sub_82408398(charId) = "her count >= her maximum" (the Story-clear unlock sub_824082F0 and the award
@@ -782,6 +863,11 @@ static void RunAll() {
   TestImportLeavesTheCounts();
   TestImportKeepsTatami();
   TestUnlockAllThenImportRemoved();
+  TestUnlockCostumesWritesOwnMax();
+  TestIsUnlockedAtOwnMax();
+  TestUnlockEverythingLeavesSuitsOut();
+  TestNoSuitsUnchanged();
+  TestClampKeepsWholeMax();
   TestCostumesComplete();
 }
 

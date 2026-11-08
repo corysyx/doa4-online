@@ -42,8 +42,10 @@ inline constexpr uint32_t kCharCount = 25;
 inline constexpr uint32_t kFileCount = 1640;
 inline constexpr uint64_t kWholeTpr = 0x1400000;  // per player
 inline constexpr uint64_t kWholeCat = 0x400000;
-inline constexpr uint32_t kImageStart = 0x82000000;  // the XEX's sections. A record block out here is one Apply moved; a list
-inline constexpr uint32_t kImageEnd = 0x83000000;    // pointer out here may be a box's or Apply's block (CheckSuit)
+// The XEX image's sections. RecordCount reads a record block only inside them (one Apply moved lies outside: no count); a
+// list pointer is a table when inside them, or outside the XEX heap (a box's or Apply's block): IsCostumeTable.
+inline constexpr uint32_t kImageStart = 0x82000000;
+inline constexpr uint32_t kImageEnd = 0x83000000;
 // From Task 1 (notes/research/swimsuit_table_readers.md): sub_8249A710 indexes a 15-entry
 // threshold table by the unlock count, so a character keeps at most 17 costumes; a costume
 // number at or above max makes the lookup read variant bytes past the array, so the list and

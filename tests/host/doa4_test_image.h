@@ -2,8 +2,9 @@
 // game's real tables. No game byte is in this repository: each range below is named by its guest address, its length and
 // the SHA-1 of the bytes expected there, and the bytes come from the file named by the environment variable
 // DOA4_TEST_IMAGE (the whole decrypted image, loaded at 0x82000000, so a guest address maps to file offset
-// address - 0x82000000). Without the variable, or with a file whose bytes differ from the pins, a test section prints
-// "SKIPPED (<why>)" and the synthetic checks still run.
+// address - 0x82000000). Without the variable a test section prints "SKIPPED (DOA4_TEST_IMAGE unset)" and the synthetic
+// checks still run. With the variable set and a file that cannot be read or whose bytes differ from the pins, the section
+// FAILS (ReportNoImage).
 //
 // Header-only, namespace doa4_test. Windows: the variable is read as UTF-16 (_wgetenv), so the path may hold any character.
 

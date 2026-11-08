@@ -169,7 +169,7 @@ std::array<Record, kNewLabels> NewRecords(bool art);
 
 // Xenos tiling of a k_8 texture (one byte per texel): the byte offset of texel (x, y) in a texture
 // `width` texels wide. tex_png.py's tiled_offset(x, y, width, log_bpp = 0)
-// (doax2_work/stage1d/scripts/tex_png.py, the XDK's XGAddress2DTiledOffset).
+// (the stage-1d texture script, Python, not in this repository; the XDK's XGAddress2DTiledOffset).
 uint32_t TiledOffset8(uint32_t x, uint32_t y, uint32_t width);
 // The whole texture row-major / back to tiled. Width and height are multiples of 32 (then the tiled
 // texture is exactly width * height bytes); `tiled` holds that many bytes.

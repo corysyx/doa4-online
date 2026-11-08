@@ -1255,7 +1255,7 @@ static void TestMarkAppliedTables() {
 
 // The 34 picks' body pairs: file numbers, and where the image's file table puts them (archive
 // and the .tpr's entry; the .cat is the next entry). From the slot strings in
-// doax2_work/catalogue/picks.json; numbers only, no game bytes.
+// the author's picks catalogue (a JSON file, not in this repository); numbers only, no game bytes.
 struct Pick {
   uint16_t tpr, cat;
   const char* archive;

@@ -57,7 +57,7 @@ int UnlockCostumes(const GuestBytes& guest, uint32_t profile) {
   for (int i = 0; i < kCharacterCount; ++i) {
     const uint32_t address = profile + kCostumeCount + uint32_t(i);
     const uint8_t count = guest.Read(address);
-    const uint8_t max = MaxCostumes(guest, i);
+    const uint8_t max = OwnMaxCostumes(guest, i);
     if (count < max) {
       guest.Write(address, max);
       changed += max - count;
@@ -219,7 +219,7 @@ bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what) {
       return true;
     case Unlock::kCostumes:
       for (int i = 0; i < kCharacterCount; ++i) {
-        if (ProfileByte(guest, profile, kCostumeCount, i) < MaxCostumes(guest, i)) return false;
+        if (ProfileByte(guest, profile, kCostumeCount, i) < OwnMaxCostumes(guest, i)) return false;
       }
       return true;
     case Unlock::kVoices:

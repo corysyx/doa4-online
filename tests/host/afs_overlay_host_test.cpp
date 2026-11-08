@@ -1,7 +1,7 @@
 // Host test for src/doa4_afs_overlay.cpp. Built and run by run_afs_overlay_test.bat.
 // Optional real-archive check: DOA4_AFS_REAL=<config file> with lines
 //   original <path>   golden <path>   replace <entry> <path>
-// (golden = doax2_work/stage0/scripts/afs_rebuild.py's output for the same replacements).
+// (golden = the stage-0 archive rebuild script's output (Python, not in this repository) for the same replacements).
 
 #include "../../src/doa4_afs_overlay.h"
 

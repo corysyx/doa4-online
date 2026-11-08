@@ -416,6 +416,41 @@ static void TestWipeWithBackup() {
   fs::remove_all(root);
 }
 
+// With imported suits the backup-and-unlock path writes each girl's own maximum, never the suits, and the save the game
+// then writes counts as "saved" (PollSaved reads the same rule from the file). Girl A is charId 5 with four suits.
+static void TestUnlockWithBackupWritesOwnMax() {
+  constexpr uint8_t kGirl = 5;
+  constexpr int kSuits = 4;
+  int index = -1;
+  for (int i = 0; i < kCharacterCount; ++i) {
+    if (g_t.index_to_char[size_t(i)] == kGirl) index = i;
+  }
+  CHECK(index >= 0);
+  const fs::path root = fs::temp_directory_path() / "doa4_extras_ownmax_test_data";
+  fs::remove_all(root);
+  const fs::path save = root / "00000001" / "ups.dat";
+  fs::create_directories(save);
+  FakeGuest g;
+  const int own = g_t.max[kGirl];
+  g.bytes[kMaxCostumes + kGirl] = uint8_t(own + kSuits);  // the import raised her table maximum
+  std::array<uint8_t, kCharIdCount> suits{};
+  suits[kGirl] = kSuits;
+  SetSuitCostumes(suits);
+  WriteFile(save / "ups.dat", SaveFileFrom(g));
+  doa4::ExtrasState state;
+  std::string error;
+  CHECK(doa4::UnlockWithBackup(g.guest, kP, Unlock::kEverything, save, root / "backups", "o1", &state, &error));
+  CHECK(g.guest.Read(kP + kCostumeCount + uint32_t(index)) == own);
+  CHECK(g.guest.Read(kP + kCostumeCount + uint32_t(index)) != own + kSuits);
+  CHECK(state.waiting_for_save && IsUnlocked(g.guest, kP, Unlock::kEverything));
+  WriteFile(save / "ups.dat", SaveFileFrom(g));
+  Touch(save / "ups.dat");
+  doa4::PollSaved(g.guest, save, &state);
+  CHECK(state.saved && !state.waiting_for_save);
+  SetSuitCostumes({});
+  fs::remove_all(root);
+}
+
 // A costume box writes to the save (the character's count), so it takes the same first backup as an unlock.
 static void TestBackupBeforeCostumeBox() {
   const fs::path root = fs::temp_directory_path() / "doa4_extras_box_test_data";
@@ -468,6 +503,7 @@ static void RunAll() {
   try {
     TestUnlockWithBackup();
     TestUnsavedWarning();
+    TestUnlockWithBackupWritesOwnMax();
   } catch (const std::exception& e) {
     std::printf("FAIL [%s] TestUnlockWithBackup threw: %s\n", g_tables_name, e.what());
     ++g_failures;

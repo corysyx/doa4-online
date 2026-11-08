@@ -76,8 +76,9 @@ bool RaiseCostumes(const GuestBytes& guest, uint32_t profile, uint8_t char_id);
 
 // How many imported swimsuits each character has (by charId): the table's maximum includes them, the save's count does
 // not. Called once at start-up, after the suits are in the tables and before any guest code runs; all zero by default.
-// RaiseCostumes and TatamiOpen leave the suits out of the maximum. ClampCostumeCounts and FindProfile keep the table's
-// whole maximum (a count above it is what they correct), and ApplyUnlock, the explicit "Unlock all" act, writes it.
+// RaiseCostumes, TatamiOpen, ApplyUnlock and IsUnlocked leave the suits out of the maximum: the "Unlock all" act writes each girl's
+// own maximum, so the import never changes the save. ClampCostumeCounts and FindProfile keep the table's whole maximum (a
+// count above it is what they correct).
 void SetSuitCostumes(const std::array<uint8_t, kCharIdCount>& by_char);
 
 // The Tatami stage's rule (the game's sub_82537350): every costume but Alpha-152's at the game's own maximum, every
@@ -103,7 +104,7 @@ int OpenStageCount(const GuestBytes& guest, uint32_t profile);
 
 // Writes the unlock. kStages (and kEverything) also unlocks characters,
 // costumes and voices, and records one Story clear per Story character: the
-// stages have no flags of their own.
+// stages have no flags of their own. The costume counts go to each girl's own maximum (SetSuitCostumes), never the suits.
 UnlockResult ApplyUnlock(const GuestBytes& guest, uint32_t profile, Unlock what);
 
 }  // namespace doa4::unlocks

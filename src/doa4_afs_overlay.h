@@ -8,7 +8,7 @@
 // name table (48 bytes per entry) after the last entry, padded to 2048; name record i's last u32
 // holds TOC word i (word 0 = the entry count), as in the game's archives. With no replacements
 // the combined archive is byte-identical to the original: the rule
-// doax2_work/stage0/scripts/afs_rebuild.py checked on the game's own archives.
+// the stage-0 archive rebuild script (Python, not in this repository) checked on the game's own archives.
 // Pure C++ apart from FileSource (Win32 reads), so host tests build it.
 
 #pragma once

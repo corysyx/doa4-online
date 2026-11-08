@@ -1578,7 +1578,7 @@ class DeadOrAlive4App : public rex::ReXApp {
         std::vector<std::string> refused;
         table_suits = doa4::costumes::Fitting(guest_, doa4::suits::PickSuits(), &refused);
         for (const std::string& r : refused) REXLOG_ERROR("[doa4][SUITS] session: pick refused: {}", r);
-        REXLOG_INFO("[doa4][SUITS] session: {} picks go in the tables, this PC holds the files of {} (import {})", table_suits.size(),
+        REXLOG_INFO("[doa4][SUITS] session: {} picks go in the tables, this PC holds the files of {} (online checksum {})", table_suits.size(),
                     suits_status_.suits.size(), suits_checksum_.empty() ? std::string("none") : suits_checksum_);
       }
     } else {
@@ -1638,7 +1638,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     if (any_applied) SetUpLabels(memory, game_root);
     REXLOG_INFO("[doa4][SUITS] {}{}", suits_status_.Summary(),
                 suits_status_.fingerprint.empty() ? std::string()
-                                                  : " (import " + suits_status_.fingerprint + ")");
+                                                  : " (manifest " + suits_status_.fingerprint + ")");
     for (const std::string& s : suits_status_.skipped) REXLOG_WARN("[doa4][SUITS] skipped {}", s);
   }
 

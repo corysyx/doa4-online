@@ -86,7 +86,7 @@ struct FakeGuest {
 
 // The game's pointer word and sheet 6's table address, written here on their own (not taken from
 // the module) so a changed constant in the module is a failure, not a shared mistake. From the
-// image (doax2_work/xex_dump/doa4.bin): the word at 0x82C77D20 holds 0x82C706B8; sheet 7's table
+// image (the author's dump of the game's XEX, not in this repository): the word at 0x82C77D20 holds 0x82C706B8; sheet 7's table
 // starts at 0x82C70FF4 = 0x82C706B8 + 197 * 12.
 static constexpr uint32_t kWord = 0x82C77D20;
 static constexpr uint32_t kTable = 0x82C706B8;

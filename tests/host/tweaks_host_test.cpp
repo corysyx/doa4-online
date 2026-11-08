@@ -1,8 +1,8 @@
 // Host test for src/doa4_tweaks.cpp, against the Xenia patch file's bytes (doa4_tweak_fixtures.h) and the bytes the game
 // holds at the patch sites ("originals"): the test's own, each different from its patch byte, always; and with
-// DOA4_TEST_IMAGE set (doa4_test_image.h) the real ones too, read from your own image and checked by one SHA-1. The costume tweaks are checked on the game's real costume tables, read
-// from your own image (DOA4_TEST_IMAGE, doa4_test_image.h); without it that section prints SKIPPED. Built and run by
-// run_tweaks_test.bat.
+// DOA4_TEST_IMAGE set (doa4_test_image.h) the real ones too, read from your own image and checked by one SHA-1. The costume
+// tweaks are checked on the game's real costume tables, read from your own image the same way. With the variable unset those
+// sections print SKIPPED; set but unreadable or failing a pin, they FAIL. Built and run by run_tweaks_test.bat.
 
 #include "../../src/doa4_costumes.h"
 #include "../../src/doa4_tweaks.h"
