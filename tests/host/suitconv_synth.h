@@ -470,6 +470,11 @@ struct Inputs {
   std::vector<uint8_t> waist_tpr, waist_cat;  // the waist template (hel05's role): see MakeWaistTemplate
 };
 
+// 0.1f * sin(a) and 0.1f * cos(a) for a = 3.14159f * m / 5, m = 0 .. 5, as fixed float literals. The converter's golden inputs
+// are pure IEEE arithmetic: the C runtime's sin and cos take a CPU-dependent FMA3 path, so they never build an input here.
+inline constexpr float kWaistSin[6] = {0.0f, 0x1.e1836ap-5f, 0x1.858d78p-4f, 0x1.858d8ep-4f, 0x1.e183dap-5f, 0x1.29d026p-22f};
+inline constexpr float kWaistCos[6] = {0x1.99999ap-4f, 0x1.4b5f9ep-4f, 0x1.fa4b8ap-6f, -0x1.fa4a86p-6f, -0x1.4b5f74p-4f, -0x1.99999ap-4f};
+
 // The waist template: nodes with ids 2 (chest, the root), 3 (pelvis) and 5 (the waist object's joint, at y = 1.0), and
 // object 5 with palette [2, 3] and one FLOAT16_4 decl of 24 seeded vertices whose heights span only `span` metres
 // (y 0 .. span above the joint) and whose angles round the body vary. A band cannot be longer than the template's span,
@@ -484,9 +489,8 @@ inline std::vector<uint8_t> MakeWaistTemplateTpr(float span) {
     return float((x >> 8) / double(1 << 24));
   };
   for (int j = 0; j < 24; ++j) {
-    const float ang = 3.14159f * float(j % 6) / 5.0f;
     const float w0 = 0.5f * next(), w1 = 0.5f * next();
-    d.verts.push_back({0.1f * std::sin(ang), span * float(j) / 23.0f, 0.1f * std::cos(ang) , w0, w1});
+    d.verts.push_back({kWaistSin[j % 6], span * float(j) / 23.0f, kWaistCos[j % 6], w0, w1});
   }
   return BuildModel({{2, 0, 0, 0}, {3, 0, -0.1f, 0, 0}, {5, 0, 1.0f, 0, 0}}, {{5, {2, 3}, {d}}}, 6);
 }

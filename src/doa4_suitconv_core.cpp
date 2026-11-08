@@ -1099,8 +1099,8 @@ std::vector<std::pair<Part*, size_t>> SnapSuitWeights(const std::vector<Part*>& 
           }
       if (!have) continue;
       // diff = sum(abs(w4.get(b, 0.0) - bw.get(b, 0.0)) for b in set(w4) | set(bw)). The set's iteration order is
-      // CPython's hash order; here the union is taken as w4's keys then bw's other keys (see the report: the sum
-      // only meets a 1e-6 threshold).
+      // CPython's hash order; here the union is taken as w4's keys then bw's other keys (the sum is only compared
+      // with a 1e-6 threshold).
       const Weights& w4 = p->verts[k].w4;
       num::PySum diff;
       for (const auto& [b, w] : w4.items()) diff.Add(std::fabs(w - bw->Get(b, 0.0)));

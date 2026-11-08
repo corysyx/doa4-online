@@ -1,7 +1,7 @@
-// Suit converter (Plan 2): the stage trace, version 1. The C++ side of the oracle harness's trace_m1.py: the same lines,
-// in the same order, from the same values, so a C++ conversion can be compared with the Python's line by line. The
-// specification is the harness README's "TRACE V1 CONTENTS" (doax2_work/plan2_oracle/README.txt); this file follows
-// trace_m1.py's Tracer name for name (S, K, B, P, Vline -> V, part_full, part_fixed, state, geos, ser, verts_bytes).
+// Suit converter (Plan 2): the stage trace, version 1. The C++ side of the reference converter's stage trace (a
+// Python Tracer whose format is local to the reference harness and not published): the same lines, in the same order, from
+// the same values, so a C++ conversion can be compared with the Python's line by line. This file follows that Tracer name
+// for name (S, K, B, P, Vline -> V, part_full, part_fixed, state, geos, ser, verts_bytes).
 //
 // With a null Trace* nothing is formatted: every Tracer method returns at once, and callers guard any work done only
 // for the trace with on(). Pure C++ plus gamefiles::Sha1Hex (Windows CNG).

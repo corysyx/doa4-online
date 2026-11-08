@@ -4,8 +4,8 @@
 //
 // NpArgsort is a line-by-line port of aquicksort_<npy::double_tag> (numpy v1.26.3 numpy/core/src/npysort/
 // quicksort.cpp lines 222-307, called by aquicksort_double at lines 942-950; the AVX512 dispatch at lines 72-84 is off
-// on Windows) with its heapsort fallback aheapsort_ (npysort_heapsort.h lines 69-117). Copies of the sources are in
-// notes/plans/2026-11-07-public-importer-plan2-converter/ref_src/. Pinned against the real interpreter by
+// on Windows) with its heapsort fallback aheapsort_ (npysort_heapsort.h lines 69-117). The line numbers are those of the
+// upstream sources at that tag. Pinned against the real interpreter by
 // tests/host/suitconv_sort_host_test.cpp (pins from tests/host/make_suitconv_pins.py). Pure C++ (no SDK). The sort
 // only compares (no arithmetic), so it needs no floating-point environment of its own.
 

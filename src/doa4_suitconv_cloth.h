@@ -1,7 +1,7 @@
 // Suit converter (Plan 2): the suit's own authored cloth, a port of physics_port.py's find_cloth, prep_cloth,
 // band_motion, _vertex_mapper, _mapper, build_cloth, _port_cloth, _move_bust_colliders, pin_rows, weld_chest_cloth,
 // _shapes, _inside, fit_leg_colliders, sink_hamstrings, _push_out, unstick_nodes, back_margin and fit_cloth_chunk
-// (physics_spike/recipe_m1/physics_port.py lines 178-463 and 985-1306, SHA-1 b8b69003c5ae388868ed8e5fff5f50a91263f98a).
+// (the Python recipe's physics_port.py lines 178-463 and 985-1306, SHA-1 b8b69003c5ae388868ed8e5fff5f50a91263f98a).
 // Python's name -> C++ name: snake_case -> CamelCase. The report text (`report.append`) is not ported; values computed only
 // for it are not computed, except where the Python's computation can raise (then the raise is kept).
 //

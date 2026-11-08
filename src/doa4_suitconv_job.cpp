@@ -32,6 +32,7 @@ namespace dsuits = doa4::suits;
 namespace {
 
 constexpr wchar_t kMarkerName[] = L".doa4-suitconv";
+constexpr wchar_t kMarkerTmpName[] = L".doa4-suitconv.tmp";  // the marker's own temporary file (WriteChecked)
 constexpr char kMarkerText[] = "doa4 suit importer\n";
 constexpr uint64_t kManifestLimit = uint64_t(1) << 20;
 constexpr uint64_t kReserve = uint64_t(64) << 20;  // headroom on top of the outputs
@@ -62,10 +63,47 @@ fs::path Old(const fs::path& ud) { return ud / L"doax2_suits.old"; }
 
 bool HasMarker(const fs::path& dir) { return Exists(dir / kMarkerName); }
 
+// A folder that lost its marker is still ours when nothing is in it, or when its only entry is the marker's own temporary file:
+// the marker is written first and deleted last, so these are the only marker-less states this job's writer and deleter leave.
+bool IsOwnerless(const fs::path& dir) {
+  std::error_code ec;
+  if (!fs::is_directory(dir, ec)) return false;
+  int n = 0;
+  for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+    ++n;
+    if (n > 1 || it->path().filename() != kMarkerTmpName) return false;
+    std::error_code e2;
+    if (!it->is_regular_file(e2)) return false;
+  }
+  return !ec;
+}
+
+// Deletes an owner-less folder of ours (see IsOwnerless): the temporary file, then the (now empty) folder. Never recursive.
+bool RemoveOwnerless(const fs::path& dir, std::string* why) {
+  std::error_code ec;
+  fs::remove(dir / kMarkerTmpName, ec);
+  fs::remove(dir, ec);
+  if (Exists(dir)) {
+    if (why) *why = "cannot delete " + Utf8(dir);
+    return false;
+  }
+  return true;
+}
+
+// Puts the marker back (best effort) into a folder that could not be deleted after its marker went.
+void RestoreMarker(const fs::path& dir) {
+  HANDLE h = CreateFileW((dir / kMarkerName).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return;
+  DWORD put = 0;
+  WriteFile(h, kMarkerText, DWORD(sizeof(kMarkerText) - 1), &put, nullptr);
+  CloseHandle(h);
+}
+
 // Deletes a folder of ours: every entry except the marker first, and if any of them cannot be deleted (a file held open) it
 // stops there, the marker kept and *why saying what failed, so the next import or CompletePendingSwap still recognises the
-// folder as ours and finishes the job; the marker, then the folder, go last. A folder without the marker is not ours and is
-// never touched (false, with *why).
+// folder as ours and finishes the job; the marker, then the folder, go last (and if the folder itself cannot go, the marker is
+// put back). A folder without the marker is not ours and is never touched (false, with *why), except an owner-less one
+// (empty, or only the marker's temporary file), which is ours and goes.
 bool RemoveOurs(const fs::path& dir, std::string* why = nullptr) {
   const auto fail = [&](const std::string& what) {
     if (why) *why = what;
@@ -73,7 +111,10 @@ bool RemoveOurs(const fs::path& dir, std::string* why = nullptr) {
   };
   std::error_code ec;
   if (!fs::exists(dir, ec)) return true;
-  if (!HasMarker(dir)) return fail(Utf8(dir) + " has no .doa4-suitconv marker, so it is not ours to delete");
+  if (!HasMarker(dir)) {
+    if (IsOwnerless(dir)) return RemoveOwnerless(dir, why);
+    return fail(Utf8(dir) + " has no .doa4-suitconv marker, so it is not ours to delete");
+  }
   std::vector<fs::path> entries;
   for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) entries.push_back(it->path());
   if (ec) return fail("cannot list " + Utf8(dir));
@@ -86,7 +127,10 @@ bool RemoveOurs(const fs::path& dir, std::string* why = nullptr) {
   fs::remove(dir / kMarkerName, ec);
   if (Exists(dir / kMarkerName)) return fail("cannot delete the marker in " + Utf8(dir));
   fs::remove(dir, ec);
-  if (Exists(dir)) return fail("cannot delete " + Utf8(dir));
+  if (Exists(dir)) {
+    RestoreMarker(dir);  // the folder stays, so it stays recognisable as ours
+    return fail("cannot delete " + Utf8(dir));
+  }
   return true;
 }
 
@@ -109,6 +153,25 @@ bool Rename(const fs::path& from, const fs::path& to, DWORD* err) {
   if (MoveFileExW(from.c_str(), to.c_str(), 0)) return true;
   *err = GetLastError();
   return false;
+}
+
+enum class RenameResult { kOk, kFailed, kCancelled };
+
+// A rename that fails as blocked (a scanner or the game holding a file for a moment) is retried: 10 tries over about a second,
+// each wait longer than the last, the token looked at (every 10 ms) between tries when one is given. Any other failure, and the
+// last blocked one, is returned at once with *err.
+constexpr int kRenameTries = 10;
+constexpr int kRenameBackoffMs = 22;  // the wait after try k is k * 22 ms: 990 ms in all
+RenameResult RenameRetrying(const fs::path& from, const fs::path& to, DWORD* err, const CancelToken* cancel) {
+  for (int attempt = 1;; ++attempt) {
+    if (Rename(from, to, err)) return RenameResult::kOk;
+    if (!IsBlocked(*err) || attempt >= kRenameTries) return RenameResult::kFailed;
+    for (int waited = 0; waited < kRenameBackoffMs * attempt; waited += 10) {
+      if (cancel && cancel->cancelled()) return RenameResult::kCancelled;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (cancel && cancel->cancelled()) return RenameResult::kCancelled;
+  }
 }
 
 // ---- the manifest and its verification ---------------------------------------------------------------------------
@@ -211,12 +274,12 @@ std::string VerifyImpl(const fs::path& folder, const CancelToken* cancel) {
 
 // ---- the swap ----------------------------------------------------------------------------------------------------
 
-enum class SwapStatus { kDone, kBlocked, kFailed };
+enum class SwapStatus { kDone, kBlocked, kFailed, kCancelled };
 
-// The old rule: an old import that is ours is deleted; one that is not (a kept Python import) stays.
+// The old rule: an old import that is ours (marked, or owner-less) is deleted; one that is not (a kept Python import) stays.
 void ApplyOldRule(const fs::path& old, const Logger& log) {
   if (!Exists(old)) return;
-  if (HasMarker(old)) {
+  if (HasMarker(old) || IsOwnerless(old)) {
     if (RemoveOurs(old)) log("old import removed: " + Utf8(old));
     else log("old import could not be removed (files open?): " + Utf8(old));
   } else {
@@ -224,9 +287,10 @@ void ApplyOldRule(const fs::path& old, const Logger& log) {
   }
 }
 
-// .new (verified) becomes the current import.
-SwapStatus SwapNewIn(const fs::path& ud, const Logger& log, std::string* why,
-                     const std::function<void()>* between = nullptr) {
+// .new (verified) becomes the current import. `cancel` is looked at only while nothing has been moved (between the tries of
+// the first rename); once the first rename is made the swap runs to its end.
+SwapStatus SwapNewIn(const fs::path& ud, const Logger& log, std::string* why, const std::function<void()>* between = nullptr,
+                     const CancelToken* cancel = nullptr) {
   const fs::path cur = Cur(ud), nw = New(ud), old = Old(ud);
   const auto fail = [&](const std::string& what, DWORD e) {
     *why = what + ": " + WinError(e);
@@ -236,7 +300,7 @@ SwapStatus SwapNewIn(const fs::path& ud, const Logger& log, std::string* why,
   const bool had_cur = Exists(cur);
   if (had_cur) {
     if (Exists(old)) {
-      if (HasMarker(old)) {
+      if (HasMarker(old) || IsOwnerless(old)) {
         if (!RemoveOurs(old)) {
           *why = "cannot clear " + Utf8(old) + " (files open?)";
           return SwapStatus::kBlocked;
@@ -248,17 +312,21 @@ SwapStatus SwapNewIn(const fs::path& ud, const Logger& log, std::string* why,
           kept = ud / (L"doax2_suits.old-" + std::to_wstring(n));
           if (!Exists(kept)) break;
         }
-        if (!Rename(old, kept, &err)) return fail("cannot rename " + Utf8(old) + " to " + Utf8(kept), err);
+        const RenameResult moved = RenameRetrying(old, kept, &err, cancel);
+        if (moved == RenameResult::kCancelled) return SwapStatus::kCancelled;
+        if (moved != RenameResult::kOk) return fail("cannot rename " + Utf8(old) + " to " + Utf8(kept), err);
         log("old import kept (not ours): " + Utf8(old) + " moved to " + Utf8(kept));
       }
     }
-    if (!Rename(cur, old, &err)) return fail("cannot rename " + Utf8(cur) + " to " + Utf8(old), err);
+    const RenameResult first_move = RenameRetrying(cur, old, &err, cancel);
+    if (first_move == RenameResult::kCancelled) return SwapStatus::kCancelled;
+    if (first_move != RenameResult::kOk) return fail("cannot rename " + Utf8(cur) + " to " + Utf8(old), err);
     if (between && *between) (*between)();
   }
-  if (!Rename(nw, cur, &err)) {
+  if (RenameRetrying(nw, cur, &err, nullptr) != RenameResult::kOk) {
     const DWORD first = err;
     std::string what = "cannot rename " + Utf8(nw) + " to " + Utf8(cur);
-    if (had_cur && !Rename(old, cur, &err)) {
+    if (had_cur && RenameRetrying(old, cur, &err, nullptr) != RenameResult::kOk) {
       *why = what + ": " + WinError(first) + "; and the first rename could not be undone: " + WinError(err);
       return SwapStatus::kFailed;
     }
@@ -280,54 +348,68 @@ Recovery RecoverSwapState(const fs::path& ud, const Logger& log, bool delete_blo
   Recovery r;
   const fs::path cur = Cur(ud), nw = New(ud), old = Old(ud);
   if (Exists(nw)) {
-    if (!HasMarker(nw)) {
+    if (!HasMarker(nw) && IsOwnerless(nw)) {  // ours, but it lost its marker (empty, or only the marker's temporary file)
+      log("swap recovery: deleted an empty import folder (" + Utf8(nw) + ")");
+      std::string del_why;
+      if (!RemoveOwnerless(nw, &del_why)) {
+        r.kind = RecoverKind::kFailed;
+        r.why = del_why;
+        return r;
+      }
+      r.kind = RecoverKind::kRecovered;
+    } else if (!HasMarker(nw)) {
       r.kind = RecoverKind::kNotOurs;
       r.why = Utf8(nw) + " is not an import of ours (it has no " + "\".doa4-suitconv\" marker); it is left alone";
       return r;
-    }
-    std::string damaged;
-    bool interrupted = !Exists(nw / L"manifest.txt");
-    if (!interrupted) damaged = VerifyImpl(nw, cancel);
-    if (cancel && cancel->cancelled()) {  // a cancelled hash says nothing about the folder: no delete, no rename
-      r.kind = RecoverKind::kCancelled;
-      return r;
-    }
-    if (interrupted || !damaged.empty()) {
-      log(interrupted ? "swap recovery: deleted an interrupted import (" + Utf8(nw) + ")"
-                      : "swap recovery: deleted a damaged import (" + Utf8(nw) + "): " + damaged);
-      std::string del_why;
-      if (!RemoveOurs(nw, &del_why)) {
-        r.kind = RecoverKind::kFailed;
-        r.why = del_why;
-        return r;
-      }
-      r.kind = RecoverKind::kRecovered;
     } else {
-      std::string why;
-      const SwapStatus st = SwapNewIn(ud, log, &why);
-      if (st == SwapStatus::kDone) {
-        log("swap recovery: completed a pending swap");
+      std::string damaged;
+      bool interrupted = !Exists(nw / L"manifest.txt");
+      if (!interrupted) damaged = VerifyImpl(nw, cancel);
+      if (cancel && cancel->cancelled()) {  // a cancelled hash says nothing about the folder: no delete, no rename
+        r.kind = RecoverKind::kCancelled;
+        return r;
+      }
+      if (interrupted || !damaged.empty()) {
+        log(interrupted ? "swap recovery: deleted an interrupted import (" + Utf8(nw) + ")"
+                        : "swap recovery: deleted a damaged import (" + Utf8(nw) + "): " + damaged);
+        std::string del_why;
+        if (!RemoveOurs(nw, &del_why)) {
+          r.kind = RecoverKind::kFailed;
+          r.why = del_why;
+          return r;
+        }
         r.kind = RecoverKind::kRecovered;
-        return r;
+      } else {
+        std::string why;
+        const SwapStatus st = SwapNewIn(ud, log, &why, nullptr, cancel);
+        if (st == SwapStatus::kDone) {
+          log("swap recovery: completed a pending swap");
+          r.kind = RecoverKind::kRecovered;
+          return r;
+        }
+        if (st == SwapStatus::kCancelled) {
+          r.kind = RecoverKind::kCancelled;
+          return r;
+        }
+        if (st == SwapStatus::kFailed) {
+          r.kind = RecoverKind::kFailed;
+          r.why = why;
+          return r;
+        }
+        if (!delete_blocked) {
+          r.kind = RecoverKind::kPending;
+          r.why = "swap blocked by open files: " + why;
+          return r;
+        }
+        log("swap recovery: swap blocked by open files; deleted the leftover import (" + Utf8(nw) + ")");
+        std::string del_why;
+        if (!RemoveOurs(nw, &del_why)) {
+          r.kind = RecoverKind::kFailed;
+          r.why = del_why;
+          return r;
+        }
+        r.kind = RecoverKind::kRecovered;
       }
-      if (st == SwapStatus::kFailed) {
-        r.kind = RecoverKind::kFailed;
-        r.why = why;
-        return r;
-      }
-      if (!delete_blocked) {
-        r.kind = RecoverKind::kPending;
-        r.why = "swap blocked by open files: " + why;
-        return r;
-      }
-      log("swap recovery: swap blocked by open files; deleted the leftover import (" + Utf8(nw) + ")");
-      std::string del_why;
-      if (!RemoveOurs(nw, &del_why)) {
-        r.kind = RecoverKind::kFailed;
-        r.why = del_why;
-        return r;
-      }
-      r.kind = RecoverKind::kRecovered;
     }
   }
   if (Exists(cur) && Exists(old)) {
@@ -350,6 +432,22 @@ uint64_t DefaultFreeBytes(const fs::path& path) {
   ULARGE_INTEGER avail{};
   if (p.empty() || !GetDiskFreeSpaceExW(p.c_str(), &avail, nullptr, nullptr)) return 0;
   return avail.QuadPart;
+}
+
+// The bytes a leftover .new gives back when the recovery deletes it: the file sizes in it, when it is ours (marked, or
+// owner-less); 0 for a folder that is not ours or does not exist.
+uint64_t ReclaimableBytes(const fs::path& nw) {
+  if (!Exists(nw) || !(HasMarker(nw) || IsOwnerless(nw))) return 0;
+  uint64_t total = 0;
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(nw, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    if (it->is_regular_file(e2)) {
+      const uintmax_t n = it->file_size(e2);
+      if (!e2) total += n;
+    }
+  }
+  return total;
 }
 
 // A probe file created and deleted in the user data folder (the folder is created when it does not exist).
@@ -384,6 +482,67 @@ struct IoThread {
   std::atomic<bool> in_read{false};
 };
 
+// The user data folders where an import (or CompletePendingSwap) is working in this process, by canonical path (case folded).
+// A second one on the same folder is refused: both would run the swap-state recovery, which deletes the other's .new.
+std::mutex g_active_mu;
+std::set<std::wstring>& ActiveFolders() {
+  static std::set<std::wstring> folders;
+  return folders;
+}
+
+std::wstring FolderKey(const fs::path& ud) {
+  std::error_code ec;
+  fs::path c = fs::weakly_canonical(ud, ec);
+  if (ec) c = ud.lexically_normal();
+  std::wstring k = c.wstring();
+  while (!k.empty() && (k.back() == L'\\' || k.back() == L'/')) k.pop_back();
+  if (!k.empty()) {  // case folded: NTFS folders are case-insensitive
+    std::wstring low(k.size(), L'\0');
+    const int n = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, k.data(), int(k.size()), low.data(), int(low.size()),
+                                nullptr, nullptr, 0);
+    if (n == int(k.size())) k = std::move(low);
+  }
+  return k;
+}
+
+class FolderClaim {
+ public:
+  FolderClaim() = default;
+  FolderClaim(const FolderClaim&) = delete;
+  FolderClaim& operator=(const FolderClaim&) = delete;
+  ~FolderClaim() { Release(); }
+  // False when the folder is taken (by another claim in this process).
+  bool Take(const fs::path& ud) {
+    key_ = FolderKey(ud);
+    std::lock_guard<std::mutex> lk(g_active_mu);
+    held_ = ActiveFolders().insert(key_).second;
+    return held_;
+  }
+  void Release() {
+    if (!held_) return;
+    std::lock_guard<std::mutex> lk(g_active_mu);
+    ActiveFolders().erase(key_);
+    held_ = false;
+  }
+
+ private:
+  std::wstring key_;
+  bool held_ = false;
+};
+
+// The ImportJob whose threads the current thread belongs to (the job's thread, a worker): set at the top of each thread body.
+// ~ImportJob uses it to see a destruction from inside the job's own callbacks.
+thread_local const void* t_job_of_thread = nullptr;
+
+// Runs f and swallows whatever it throws: for the places that must not let an exception out (a handler, a thread's last lines).
+template <class F>
+void Safely(F&& f) noexcept {
+  try {
+    f();
+  } catch (...) {
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -414,11 +573,15 @@ struct ImportJob::Impl {
   std::atomic<bool> abort_all{false}, crashed{false};
   int fail_kind = 0;  // under mu: 0 none, 1 an input could not be read or changed, 2 a write failed
   std::string fail_detail;
+  std::atomic<const char*> fail_preset{nullptr};  // a failure recorded without allocating (kind 2), when Fail itself could not
+  FolderClaim claim;  // this job's hold on its user data folder, released when the job's thread is done
 
   // A thread that reads registers itself (a duplicate of its own handle) so Cancel can reach its blocked read.
   class Registration {
    public:
-    explicit Registration(Impl* impl) : impl_(impl) {
+    // Never throws: `io` was reserved before any thread started, so the push_back does not allocate; anything that does
+    // go wrong is "not registered" and the caller ends the job.
+    explicit Registration(Impl* impl) noexcept : impl_(impl) {
       const int n = ++impl->reg_count;
       if (impl->hooks.fail_register_at == n ||
           !DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &t_.handle, 0, FALSE,
@@ -426,9 +589,14 @@ struct ImportJob::Impl {
         t_.handle = nullptr;  // Cancel could not reach this thread's reads: the caller ends the job
         return;
       }
-      ok_ = true;
-      std::lock_guard<std::mutex> lk(impl_->io_mu);
-      impl_->io.push_back(&t_);
+      try {
+        std::lock_guard<std::mutex> lk(impl_->io_mu);
+        impl_->io.push_back(&t_);
+        ok_ = true;
+      } catch (...) {
+        CloseHandle(t_.handle);
+        t_.handle = nullptr;
+      }
     }
     ~Registration() {
       if (!ok_) return;
@@ -453,9 +621,13 @@ struct ImportJob::Impl {
     IoThread& t_;
   };
 
-  void Log(const std::string& line) {
-    std::lock_guard<std::mutex> lk(log_mu);
-    if (req.log) req.log(line);
+  // The callback is Plan 3's, and runs on worker threads: whatever it throws stays inside this function.
+  void Log(const std::string& line) noexcept {
+    try {
+      std::lock_guard<std::mutex> lk(log_mu);
+      if (req.log) req.log(line);
+    } catch (...) {
+    }
   }
   Logger Logging() {
     return [this](const std::string& s) { Log(s); };
@@ -532,14 +704,26 @@ struct ImportJob::Impl {
   }
 
   void Fail(int kind, const std::string& detail) {
-    {
-      std::lock_guard<std::mutex> lk(mu);
-      if (fail_kind == 0) {
-        fail_kind = kind;
-        fail_detail = detail;
-      }
+    abort_all = true;  // first: even if recording the detail fails, the job stops
+    std::lock_guard<std::mutex> lk(mu);
+    if (fail_kind == 0) {
+      fail_detail = detail;  // before the kind: a detail that could not be stored leaves no half-recorded failure
+      fail_kind = kind;
     }
+  }
+  // Fail without allocating (a preset text that outlives the job): the last resort of a thread body's outer handler.
+  void FailPreset(const char* text) noexcept {
     abort_all = true;
+    const char* none = nullptr;
+    fail_preset.compare_exchange_strong(none, text);
+  }
+  // A thread body's outermost handler: records kFailed whatever happens, never throws.
+  void RecordFailure(const char* what) noexcept {  // what: the exception's text, or null
+    try {
+      Fail(2, what ? std::string("worker failed: ") + what : std::string("worker failed"));
+    } catch (...) {
+      FailPreset("worker failed");
+    }
   }
 
   struct Slot {
@@ -646,7 +830,7 @@ struct ImportJob::Impl {
   // the marker, so the next import finishes it.
   void Discard(const fs::path& nw) {
     std::string why;
-    if (!RemoveCreated(nw, &why)) Log("cleanup of " + Utf8(nw) + " is unfinished: " + why);
+    if (!RemoveCreated(nw, &why)) Safely([&] { Log("cleanup of " + Utf8(nw) + " is unfinished: " + why); });
     else new_created = false;
   }
 
@@ -680,7 +864,8 @@ struct ImportJob::Impl {
     if (cancel.cancelled()) return fin(Outcome::kCancelled);
     r.bytes_needed = BytesNeeded(hooks.suits);
     r.bytes_free = hooks.free_bytes ? hooks.free_bytes(ud) : DefaultFreeBytes(ud);
-    if (r.bytes_free < r.bytes_needed)
+    // A leftover .new that the recovery below deletes or replaces (ours, marked or owner-less) gives its bytes back first.
+    if (r.bytes_free + ReclaimableBytes(nw) < r.bytes_needed)
       return fin(Outcome::kNoSpace, "an import needs " + std::to_string(r.bytes_needed) + " bytes free in " + Utf8(ud) +
                                         ", " + std::to_string(r.bytes_free) + " are");
     {
@@ -752,37 +937,53 @@ struct ImportJob::Impl {
     if (workers <= 0) workers = int(std::clamp<int>(int(std::thread::hardware_concurrency()) - 1, 1, 4));
     workers = std::min(workers, n_suits);
     std::vector<std::thread> pool;
+    pool.reserve(size_t(workers));  // before any thread exists: the emplace_backs below cannot allocate
+    // Whatever leaves this function, the workers are stopped and joined first (a joinable std::thread destroyed ends the process).
+    struct JoinPool {
+      Impl* impl;
+      std::vector<std::thread>& pool;
+      ~JoinPool() {
+        impl->abort_all = true;
+        for (std::thread& t : pool)
+          if (t.joinable()) t.join();
+      }
+    } join_pool{this, pool};
     std::string start_failure;
     try {
       for (int w = 0; w < workers; ++w) {
         if (hooks.fail_worker_start_at == w + 1) throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
         pool.emplace_back([this, &set, &next, &slots, &picks, n_suits] {
-        Registration reg(this);
-        if (!reg.ok()) {
-          const std::string msg = "cannot register a worker thread, so that Cancel could reach its reads (DuplicateHandle failed)";
-          Log(msg);
-          Fail(2, msg);
-          return;
-        }
-        try {
-          while (!abort_all.load() && !cancel.cancelled()) {
-            const size_t i = next++;
-            if (i >= picks.size()) break;
-            ProcessSuit(reg.thread(), *set, i, picks[i], slots[i], n_suits);
+          t_job_of_thread = this;
+          try {
+            Registration reg(this);
+            if (!reg.ok()) {
+              const char* msg = "cannot register a worker thread, so that Cancel could reach its reads (DuplicateHandle failed)";
+              try {
+                Log(msg);
+                Fail(2, msg);
+              } catch (...) {
+                FailPreset(msg);
+              }
+              return;
+            }
+            while (!abort_all.load() && !cancel.cancelled()) {
+              const size_t i = next++;
+              if (i >= picks.size()) break;
+              ProcessSuit(reg.thread(), *set, i, picks[i], slots[i], n_suits);
+            }
+          } catch (const SimulatedCrash&) {
+            crashed = true;
+            abort_all = true;
+          } catch (const std::exception& e) {
+            RecordFailure(e.what());
+          } catch (...) {
+            RecordFailure(nullptr);
           }
-        } catch (const SimulatedCrash&) {
-          crashed = true;
-          abort_all = true;
-        } catch (const std::exception& e) {
-          Fail(2, std::string("worker failed: ") + e.what());
-        } catch (...) {
-          Fail(2, "worker failed");
-        }
         });
       }
     } catch (const std::exception& e) {
-      start_failure = e.what();
       abort_all = true;  // the workers already running stop at their next suit
+      start_failure = e.what();
     }
     for (std::thread& t : pool) t.join();
     if (!start_failure.empty()) {
@@ -797,6 +998,12 @@ struct ImportJob::Impl {
       std::lock_guard<std::mutex> lk(mu);
       kind = fail_kind;
       detail = fail_detail;
+    }
+    if (kind == 0) {
+      if (const char* preset = fail_preset.load()) {
+        kind = 2;
+        detail = preset;
+      }
     }
     const auto abandon = [&](Outcome o, std::string d) {
       Discard(nw);
@@ -850,9 +1057,10 @@ struct ImportJob::Impl {
     SetPhase(Phase::kSwapping);
     if (cancel.cancelled()) return abandon(Outcome::kCancelled, "cancelled");
     in_swap = true;
-    const SwapStatus st = SwapNewIn(ud, Logging(), &why, &hooks.between_renames);
+    const SwapStatus st = SwapNewIn(ud, Logging(), &why, &hooks.between_renames, &cancel);
     in_swap = false;
     if (st == SwapStatus::kDone) new_created = false;
+    if (st == SwapStatus::kCancelled) return abandon(Outcome::kCancelled, "cancelled");  // nothing had been moved
     if (st == SwapStatus::kBlocked) return fin(Outcome::kSwapPending, why);
     if (st == SwapStatus::kFailed) return fin(Outcome::kFailed, why);
     return fin(r.skipped.empty() ? Outcome::kImported : Outcome::kImportedWithSkips);
@@ -860,51 +1068,77 @@ struct ImportJob::Impl {
 
   // What an exception that escaped Execute leaves behind: the .new this run created, deleted through the marker-checked helper,
   // unless the swap was between its renames (that state is left for the recovery); nothing else is ever deleted here.
-  void CleanAfterThrow() {
-    if (new_created.load() && !in_swap.load()) Discard(New(req.user_data));
+  void CleanAfterThrow() noexcept {
+    Safely([this] {
+      if (new_created.load() && !in_swap.load()) Discard(New(req.user_data));
+    });
   }
 
-  void Run() {
-    Registration reg(this);
+  // The job's work, as a result. Nothing in here lets an exception out: every handler is itself guarded.
+  ImportResult RunInner() noexcept {
     ImportResult r;
+    Registration reg(this);
     if (!reg.ok()) {
-      const std::string msg = "cannot register the import thread, so that Cancel could reach its reads (DuplicateHandle failed)";
-      Log(msg);
+      const char* msg = "cannot register the import thread, so that Cancel could reach its reads (DuplicateHandle failed)";
       r.outcome = Outcome::kFailed;
-      r.detail = msg;
-    } else {
-      try {
-        r = Execute(reg.thread());
-      } catch (const SimulatedCrash&) {
-        r.outcome = Outcome::kFailed;
-        r.detail = "simulated crash";
-      } catch (const std::exception& e) {
-        CleanAfterThrow();
-        r.outcome = Outcome::kFailed;
-        r.detail = std::string("the import failed: ") + e.what();
-      } catch (...) {
-        CleanAfterThrow();
-        r.outcome = Outcome::kFailed;
-        r.detail = "the import failed: an exception that is not a standard exception";
-      }
+      Safely([&] {
+        Log(msg);
+        r.detail = msg;
+      });
+      return r;
     }
-    {
+    try {
+      r = Execute(reg.thread());
+    } catch (const SimulatedCrash&) {
+      r.outcome = Outcome::kFailed;
+      Safely([&] { r.detail = "simulated crash"; });
+    } catch (const std::exception& e) {
+      CleanAfterThrow();
+      r.outcome = Outcome::kFailed;
+      Safely([&] { r.detail = std::string("the import failed: ") + e.what(); });
+    } catch (...) {
+      CleanAfterThrow();
+      r.outcome = Outcome::kFailed;
+      Safely([&] { r.detail = "the import failed: an exception that is not a standard exception"; });
+    }
+    return r;
+  }
+
+  void Run() noexcept {
+    t_job_of_thread = this;
+    ImportResult r;
+    try {
+      r = RunInner();
+    } catch (...) {  // not reachable (RunInner is noexcept); the thread must still end with a result
+      r = ImportResult{};
+      r.outcome = Outcome::kFailed;
+    }
+    Safely([&] {
       std::lock_guard<std::mutex> lk(mu);
       res = std::move(r);
       prog.phase = Phase::kDone;
       prog.fraction = 1.0;
-    }
+    });
+    claim.Release();  // before done(): a caller that sees the job done may start the next one at once
     done.store(true);
     finished.store(true);
     wd_cv.notify_all();
   }
 };
 
-ImportJob::ImportJob(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+ImportJob::ImportJob(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
 ImportJob::~ImportJob() {
   if (!impl_) return;
   Cancel();
+  if (t_job_of_thread == impl_.get()) {
+    // Destroyed from inside the job's own callbacks (the log callback, a hook), on one of its threads: joining would wait for
+    // the thread that is running this destructor. The threads end by themselves, cancelled, and keep the state alive until
+    // they have; this ImportJob is gone at once.
+    if (impl_->job_thread.joinable()) impl_->job_thread.detach();
+    if (impl_->watchdog.joinable()) impl_->watchdog.detach();
+    return;
+  }
   if (impl_->job_thread.joinable()) impl_->job_thread.join();
   impl_->finished.store(true);
   impl_->wd_cv.notify_all();
@@ -914,25 +1148,41 @@ ImportJob::~ImportJob() {
 std::unique_ptr<ImportJob> ImportJob::Start(ImportRequest request) { return StartForTest(std::move(request), Hooks{}); }
 
 std::unique_ptr<ImportJob> ImportJob::StartForTest(ImportRequest request, Hooks hooks) {
-  auto impl = std::make_unique<Impl>();
+  auto impl = std::make_shared<Impl>();
   impl->req = std::move(request);
   impl->hooks = std::move(hooks);
-  Impl* raw = impl.get();
+  impl->io.reserve(64);  // the job's thread and at most 34 workers register without allocating
+  std::shared_ptr<Impl> self = impl;
   std::unique_ptr<ImportJob> job(new ImportJob(std::move(impl)));
-  try {
-    raw->watchdog = std::thread([raw] { raw->Watchdog(); });
-    if (raw->hooks.fail_job_thread_start)
-      throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
-    raw->job_thread = std::thread([raw] { raw->Run(); });
-  } catch (const std::exception& e) {
-    // No thread runs the import: the failure is its result (the watchdog, if it started, is stopped by the destructor).
-    raw->cancel.Cancel();
+  Impl* raw = self.get();
+  const auto finish_without_threads = [raw](const std::string& detail) {
     std::lock_guard<std::mutex> lk(raw->mu);
     raw->res.outcome = Outcome::kFailed;
-    raw->res.detail = std::string("cannot start the import thread: ") + e.what();
+    raw->res.detail = detail;
     raw->prog.phase = Phase::kDone;
     raw->prog.fraction = 1.0;
     raw->done.store(true);
+  };
+  if (!raw->claim.Take(raw->req.user_data)) {
+    // An import is already working on this folder (in this process): nothing is started and nothing is touched.
+    finish_without_threads("an import is already running in " + Utf8(raw->req.user_data) + "; this one was not started");
+    return job;
+  }
+  try {
+    raw->watchdog = std::thread([self] {
+      try {
+        self->Watchdog();
+      } catch (...) {
+      }
+    });
+    if (raw->hooks.fail_job_thread_start)
+      throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+    raw->job_thread = std::thread([self] { self->Run(); });
+  } catch (const std::exception& e) {
+    // No thread runs the import: the failure is its result (the watchdog, if it started, is stopped by the destructor).
+    raw->cancel.Cancel();
+    raw->claim.Release();
+    finish_without_threads(std::string("cannot start the import thread: ") + e.what());
   }
   return job;
 }
@@ -960,8 +1210,14 @@ uint64_t BytesNeeded(std::span<const SuitRecipe> suits) {
 uint64_t BytesNeeded() { return BytesNeeded(Suits()); }
 
 std::string CompletePendingSwap(const fs::path& user_data, const std::function<void(std::string_view)>& log) {
+  FolderClaim claim;  // held while it works: an import started meanwhile on this folder is refused
+  if (!claim.Take(user_data))
+    return "an import is running in " + Utf8(user_data) + "; nothing was changed";
   const Logger logger = [&log](const std::string& s) {
-    if (log) log(s);
+    try {
+      if (log) log(s);
+    } catch (...) {  // the caller's callback must not unsettle a swap in progress
+    }
   };
   const Recovery r = RecoverSwapState(user_data, logger, false);
   switch (r.kind) {

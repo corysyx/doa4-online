@@ -6,7 +6,8 @@ rem suitconv_fp_scan.py scans them before the test runs; the test's own object a
 rem (afs overlay, xdvdfs, gamefiles) go to ...\testobj\.
 rem DOA4_SUITCONV_OUT, if set, replaces that output folder (the mutation probes build their copies elsewhere).
 rem Environment variables read by the test (all optional, all read-only): DOA4_SUITCONV_DISC (the DOAX2 ISO or an
-rem extracted folder), DOA4_SUITCONV_GAME_DIR (the DOA4 game folder), DOA4_SUITCONV_ORACLE_DIR (all34_m1).
+rem extracted folder), DOA4_SUITCONV_GAME_DIR (the DOA4 game folder), DOA4_SUITCONV_ORACLE_DIR (the reference converter's output folder), and optionally
+rem DOA4_SUITCONV_BUST_FILE (its bust strengths, a JSON file).
 rem Prints "skipped sections: K" and "PASSED: N checks, 0 failures" (or FAILED) as its last lines.
 setlocal
 if not defined DOA4_VSDEVCMD set "DOA4_VSDEVCMD=C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools\VsDevCmd.bat"

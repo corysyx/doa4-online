@@ -6,8 +6,9 @@
 // gated by environment variables (each prints "<group>: SKIPPED (<VAR> unset)" when its variable is unset):
 //   real_disc    DOA4_SUITCONV_DISC      one path: the DOAX2 USA ISO, or the folder it was extracted to; 86/86 entries
 //   real_game    DOA4_SUITCONV_GAME_DIR  the DOA4 game folder (chrone.afs, chrtwo.afs, chrthree.afs); 21/21 entries
-//   real_oracle  DOA4_SUITCONV_ORACLE_DIR  physics_spike/imports/all34_m1: the strengths equal recipe_m1/bust_match.json
-//                                          and the reference sizes and SHA-1s equal manifest.txt
+//   real_oracle  DOA4_SUITCONV_ORACLE_DIR  the reference converter's output folder (its manifest.txt): the reference sizes and
+//                                          SHA-1s equal it; with DOA4_SUITCONV_BUST_FILE (the reference converter's bust
+//                                          strengths, a JSON file of design -> [down, up]) also the bust strengths equal it
 // The synthetic images and folders are made from seeded bytes under %TEMP%\doa4_suitconv_inputs\a b (c), <u umlaut>\ and
 // deleted at the end. The real inputs are only read. Last lines: "skipped sections: K", then
 // "PASSED: N checks, 0 failures" or "FAILED: N checks, M failures".
@@ -874,7 +875,7 @@ static bool ReadText(const fs::path& p, std::string* out) {
   return true;
 }
 
-// Just enough JSON for bust_match.json: an object of "name": [number, number].
+// Just enough JSON for the bust strengths file: an object of "name": [number, number].
 static bool ParseBust(const std::string& text, std::map<std::string, std::pair<double, double>>* out) {
   size_t i = 0;
   const auto skip = [&] {
@@ -918,24 +919,28 @@ static void TestRealOracle() {
   Group("real_oracle");
   std::printf("oracle: %s\n", dir);
   const fs::path oracle(dir);
-  std::string bust_text, manifest;
-  const fs::path bust_path = oracle / ".." / ".." / "recipe_m1" / "bust_match.json";
-  CKF(ReadText(bust_path, &bust_text), "cannot read %s", Narrow(bust_path).c_str());
+  std::string manifest;
   CKF(ReadText(oracle / "manifest.txt", &manifest), "cannot read manifest.txt");
-  std::map<std::string, std::pair<double, double>> bust;
-  CK(ParseBust(bust_text, &bust));
-  CKF(bust.size() == 34, "bust_match.json holds %zu designs", bust.size());
-  int matched = 0;
-  for (const SuitRecipe& s : Suits()) {
-    const auto it = bust.find(s.design);
-    CKF(it != bust.end(), "%s missing from bust_match.json", s.design);
-    if (it == bust.end()) continue;
-    const bool same = SameBits(it->second.first, s.bust_down) && SameBits(it->second.second, s.bust_up);
-    CKF(same, "%s strengths: json [%.17g, %.17g] vs table [%.17g, %.17g]", s.design, it->second.first, it->second.second,
-        s.bust_down, s.bust_up);
-    matched += same;
+  if (const char* bust_file = Env("DOA4_SUITCONV_BUST_FILE")) {
+    std::string bust_text;
+    CKF(ReadText(fs::path(bust_file), &bust_text), "cannot read %s", bust_file);
+    std::map<std::string, std::pair<double, double>> bust;
+    CK(ParseBust(bust_text, &bust));
+    CKF(bust.size() == 34, "the bust file holds %zu designs", bust.size());
+    int matched = 0;
+    for (const SuitRecipe& s : Suits()) {
+      const auto it = bust.find(s.design);
+      CKF(it != bust.end(), "%s missing from the bust file", s.design);
+      if (it == bust.end()) continue;
+      const bool same = SameBits(it->second.first, s.bust_down) && SameBits(it->second.second, s.bust_up);
+      CKF(same, "%s strengths: json [%.17g, %.17g] vs table [%.17g, %.17g]", s.design, it->second.first, it->second.second,
+          s.bust_down, s.bust_up);
+      matched += same;
+    }
+    CK(matched == 34);
+  } else {
+    std::printf("real_oracle: bust strengths SKIPPED (DOA4_SUITCONV_BUST_FILE unset)\n");
   }
-  CK(matched == 34);
   // The manifest: header, then 34 suit lines; the reference sizes and SHA-1s of the Python converter's outputs.
   std::istringstream in(manifest);
   std::string line;

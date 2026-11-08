@@ -1,5 +1,5 @@
 // Suit converter (Plan 2): the waist fit, a port of physics_port.py's _waist_samples and prep_waist_fit
-// (physics_spike/recipe_m1/physics_port.py lines 585-609 and 610-704, SHA-1 b8b69003c5ae388868ed8e5fff5f50a91263f98a).
+// (the Python recipe's physics_port.py lines 585-609 and 610-704, SHA-1 b8b69003c5ae388868ed8e5fff5f50a91263f98a).
 // Python's name -> C++ name: snake_case -> CamelCase. The report text (`report.append`) is not ported.
 //
 // PrepWaistFit runs after the bust stage and before encode_objects: it finds the one object whose palette is

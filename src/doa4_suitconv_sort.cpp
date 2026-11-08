@@ -1,8 +1,8 @@
 #include "doa4_suitconv_fp.h"
 
 // Suit converter (Plan 2): numpy 1.26.3's default argsort and its argmin for float64; see doa4_suitconv_sort.h.
-// A line-by-line port of numpy v1.26.3, citing file:line in the copies in
-// notes/plans/2026-11-07-public-importer-plan2-converter/ref_src/ (numpy_quicksort_1263.cpp is numpy/core/src/npysort/
+// A line-by-line port of numpy v1.26.3, citing file:line under short names
+// (numpy_quicksort_1263.cpp is numpy/core/src/npysort/
 // quicksort.cpp, numpy_npysort_heapsort.h is npysort/npysort_heapsort.h, numpy_npysort_common.h is
 // npysort/npysort_common.h, numpy_npy_sort.h.src is common/npy_sort.h.src). Pointers stay pointers, as in numpy, so
 // every comparison and swap happens in numpy's order. numpy is BSD-3-Clause, Copyright (c) 2005-2023, NumPy Developers.
@@ -187,7 +187,7 @@ std::vector<int64_t> NpArgsort(std::span<const double> v) {
 }
 
 // numpy 1.26.3's float argmin (numpy/core/src/multiarray/arraytypes.c.src @fname@_argmin, whose result the SIMD
-// version in argfunc.dispatch.c.src keeps; neither file is in ref_src, the pins hold the behaviour): the first NaN
+// version in argfunc.dispatch.c.src keeps; the pins hold the behaviour): the first NaN
 // wins, otherwise the first minimum (`!(*ip >= mp)`).
 int64_t NpArgmin(std::span<const double> v) {
   if (v.empty()) throw ConvertError("attempt to get argmin of an empty sequence");

@@ -3,7 +3,7 @@
 // numpy 1.26.3). Built and run by run_suitconv_sort_test.bat with the converter's compile flags.
 //
 // Groups, in order: prng_matches_generator (the splitmix64 below gives the generator's outputs; checked first, since
-// every other pin is regenerated from it), argsort_matches_numpy_126_windows (every array's index digest, and the full
+// every other pin is rebuilt from it), argsort_matches_numpy_126_windows (every array's index digest, and the full
 // index array where the header has one), heapsort_branch_reached (the port's heapsort counter rises on both killer
 // arrays), argmin_first_of_ties (np.argmin, NOT the last index of a tied minimum or the first minimum ignoring NaN;
 // the empty-input error), set_argsort_for_test_hook.

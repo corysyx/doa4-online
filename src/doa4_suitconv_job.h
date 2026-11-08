@@ -3,8 +3,9 @@
 // when it is complete and verified. Progress, cancel and the swap states are described below. Nothing in the game calls this
 // yet; plain C++ plus Win32 (threads, files, CancelSynchronousIo), no SDK.
 //
-// Order of an import: the recipe tables are checked against the picks; space and write access (free bytes against
-// BytesNeeded, then a probe file created and deleted in <user data>); CheckDisc; CheckGame; only then the swap-state recovery
+// Order of an import: the recipe tables are checked against the picks; space and write access (free bytes, plus the
+// bytes of a leftover .new that the recovery will delete, against BytesNeeded; then a probe file created and deleted in
+// <user data>); CheckDisc; CheckGame; only then the swap-state recovery
 // (below) and a fresh .new; conversion with a marker file first (<user data>/doax2_suits.new/.doa4-suitconv); the manifest,
 // re-parsed, and the verification of .new; the swap. A refusal before conversion leaves <user data>'s listing unchanged.
 //
@@ -24,8 +25,10 @@
 // the swap's renames once the first one has been made.
 //
 // Swap states (what is on disk under <user data>; cur = doax2_suits, new = doax2_suits.new, old = doax2_suits.old). A
-// folder is "ours" when it holds the marker file .doa4-suitconv.
-//   new without the marker                       not ours: never touched; Start fails (kFailed, the folder in detail)
+// folder is "ours" when it holds the marker file .doa4-suitconv, or when it has lost the marker and is empty or holds only the
+// marker's temporary file (.doa4-suitconv.tmp): the marker is written first and deleted last, so those are the only marker-less
+// states this job's writer and deleter leave, and an owner-less new or old is deleted like any folder of ours.
+//   new without the marker, not empty            not ours: never touched; Start fails (kFailed, the folder in detail)
 //   new ours, no manifest.txt                    interrupted before the end: deleted
 //   new ours, manifest fails VerifyImportFolder  damaged: deleted, cur kept
 //   new ours and verified, cur present           cur is renamed to old, new to cur; old is then deleted if it is ours, else
@@ -35,8 +38,29 @@
 // Before cur becomes old, an existing old that is ours is deleted; one that is not (a Python import) is renamed to the first
 // free doax2_suits.old-<N> (N from 2), logged, never deleted. A rename that fails with a sharing violation or access denied
 // means files are open: the swap is "blocked", new is left complete and the outcome is kSwapPending; if the first rename was
-// made and the second failed, the first is undone. Start deletes a leftover verified new that is still blocked and replaces
-// it by the new import.
+// made and the second failed, the first is undone. A blocked rename is retried first: 10 tries over about a second, Cancel
+// looked at between tries while nothing has been moved yet (then the import is abandoned, kCancelled). Start deletes a
+// leftover verified new that is still blocked and replaces it by the new import.
+//
+// For the caller (Plan 3):
+//   - Call CompletePendingSwap(<user data>) at startup, before suits::LoadImport opens the import: LoadImport keeps the current
+//     import's files open without write sharing for the whole session, and that is what blocks a swap. Mid-session (the Esc
+//     menu) every import that finds at least one suit loaded ends kSwapPending; the swap is finished at the next start.
+//   - CompletePendingSwap is synchronous and cannot be cancelled: with a verified .new waiting it hashes about 314 MB on the
+//     calling thread. Call it before the game opens the import, off the frame loop, never on a frame.
+//   - <user data> is the folder that holds doax2_suits. Never run CompletePendingSwap, or a second ImportJob, on a user data
+//     folder while an ImportJob runs there: both enter the swap-state recovery, which would delete the running job's .new under
+//     its writer. In one process this is enforced: a second Start or StartForTest on the same folder (canonical path, case
+//     folded) while a job runs there returns a job that is already done with kFailed ("an import is already running"), and
+//     CompletePendingSwap returns "an import is running ..."; both touch nothing. A folder is held from Start until the job's
+//     thread is done (done() true), and CompletePendingSwap holds it while it works. A second PROCESS is not detected: the
+//     cross-process lock is the caller's.
+//   - The log callback is called from worker threads (calls are serialised) and may throw: every exception from it is
+//     swallowed, so a failing logger cannot end the game or change an import's outcome.
+//   - The job may be destroyed from inside the log callback (or any hook): the destructor sees that it runs on the job's own
+//     thread and detaches instead of joining. The import is cancelled and finishes in the background, the folder is held until
+//     then, and nothing of the destroyed job is reachable any more. Destroying it from any other thread cancels and joins.
+//   - progress(), done(), Cancel() and result() are safe from any thread; Start returns at once.
 
 #pragma once
 
@@ -59,7 +83,7 @@ namespace doa4::suitconv {
 struct ImportRequest {
   std::filesystem::path doax2, game_root, user_data;
   int workers = 0;  // 0: clamp(hardware_concurrency - 1, 1, 4)
-  std::function<void(std::string_view)> log;  // may be empty; called from worker threads (calls are serialised)
+  std::function<void(std::string_view)> log;  // may be empty; called from worker threads (calls are serialised); may throw
 };
 
 enum class Phase { kCheckingSpace, kCheckingDisc, kCheckingGame, kConverting, kWriting, kSwapping, kDone };
@@ -132,7 +156,7 @@ class ImportJob {
   // Returns at once; the work runs on its own thread.
   static std::unique_ptr<ImportJob> Start(ImportRequest request);
   static std::unique_ptr<ImportJob> StartForTest(ImportRequest request, Hooks hooks);
-  ~ImportJob();  // cancels and joins
+  ~ImportJob();  // cancels and joins (from inside the job's own callbacks: cancels and detaches)
   ImportJob(const ImportJob&) = delete;
   ImportJob& operator=(const ImportJob&) = delete;
 
@@ -144,8 +168,8 @@ class ImportJob {
   struct Impl;
 
  private:
-  explicit ImportJob(std::unique_ptr<Impl> impl);
-  std::unique_ptr<Impl> impl_;
+  explicit ImportJob(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;  // shared with the job's threads, which outlive the object when it is destroyed from a callback
 };
 
 // The free space an import needs: the 68 reference sizes, the reference manifest's length, and 64 MiB.
@@ -153,7 +177,8 @@ uint64_t BytesNeeded();
 uint64_t BytesNeeded(std::span<const SuitRecipe> suits);
 
 // Finishes or clears what an earlier import left under <user data> (the table above). "" when there was nothing to do or the
-// swap is done, otherwise why not (blocked by open files, a folder that is not ours, a failed rename). log may be empty.
+// swap is done, otherwise why not (an import is running there, blocked by open files, a folder that is not ours, a failed
+// rename). log may be empty; it is called on the calling thread. See "For the caller" above.
 std::string CompletePendingSwap(const std::filesystem::path& user_data,
                                 const std::function<void(std::string_view)>& log = {});
 

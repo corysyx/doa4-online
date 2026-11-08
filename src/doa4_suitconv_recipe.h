@@ -1,7 +1,7 @@
 // Suit converter (Plan 2): the recipe tables. What to convert (the 34 swimsuits, in picks order), from which archive
 // entries (DOAX2 disc, DOA4 game files), with which checksums, budgets and options. Data only: every number here is
-// copied from the plan (its per-girl table, Appendix A, and the options paragraph) and from the Python converter's
-// outputs (physics_spike/imports/all34_m1/manifest.txt for the output sizes and SHA-1s, recipe_m1/bust_match.json for
+// copied from the per-suit and per-girl tables and the options, and from the Python converter's
+// outputs (its output manifest for the output sizes and SHA-1s, its bust strengths file for
 // the bust strengths, written as the shortest decimal that round-trips, Python's repr). No game bytes. Pure C++.
 //
 // "Entry" means the AFS entry index; a .cat is the entry after its .tpr. The Python file names are in comments in
@@ -69,7 +69,7 @@ struct EntryRef {
 // The stable label of an entry in reports: "<arc> <index>", e.g. "werone 283".
 std::string EntryLabel(const EntryRef& e);
 
-// One girl's recipe (the plan's per-girl table). `character` is her charId in the picks table (doa4_suits_picks.h).
+// One girl's recipe (the per-girl table). `character` is her charId in the picks table (doa4_suits_picks.h).
 // body_index is her DOAX2 body .tpr in chr.afs (the .cat follows). ref_* is the reference model and hand_* the hand
 // donor (the same entry except Tina's hands). budget_*: a converted file larger than its budget fails R7.
 struct GirlRecipe {
@@ -99,7 +99,7 @@ struct SuitRecipe {
   const char* out_cat_sha1;
 };
 
-std::span<const GirlRecipe> Girls();         // 9, in the plan's table order
+std::span<const GirlRecipe> Girls();         // 9, in the per-girl table's order
 std::span<const SuitRecipe> Suits();         // 34, picks order
 std::span<const EntryRef> DiscEntries();     // 86: 18 bodies, then the 34 suits' .tpr and .cat
 std::span<const EntryRef> GameEntries();     // 21

@@ -1,5 +1,5 @@
 // Suit converter (Plan 2): the hands, a port of physics_port.py's prep_hands, _tuck_open_edge, _tuck_arm_edge,
-// build_hands and _mpp_read (physics_spike/recipe_m1/physics_port.py lines 705-871, SHA-1
+// build_hands and _mpp_read (the Python recipe's physics_port.py lines 705-871, SHA-1
 // b8b69003c5ae388868ed8e5fff5f50a91263f98a). Python's name -> C++ name: snake_case -> CamelCase. The report text
 // (`report.append`) is not ported.
 //

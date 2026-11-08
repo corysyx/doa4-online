@@ -1,5 +1,5 @@
 // Suit converter (Plan 2): the .cat attachments, a port of the recipe's physics_port.attach, _al, with_spares and
-// prep_head_physics (physics_spike/recipe_m1/physics_port.py lines 22-24, 466-523 and 917-967, SHA-1
+// prep_head_physics (the Python recipe's physics_port.py lines 22-24, 466-523 and 917-967, SHA-1
 // b8b69003c5ae388868ed8e5fff5f50a91263f98a).
 // Attach's whole frame is here in Python's order: the donor's hand request table (_add_apa), the head physics section
 // (+8), the MPV (+0xC) and the MULTI_CLOTH (+0x14) with the relocation of the MPV's pin rows (MPP +0x40). Each block is

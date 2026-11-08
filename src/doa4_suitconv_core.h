@@ -1,4 +1,4 @@
-// Suit converter (Plan 2): the geometry core, a port of the recipe's convert.py (physics_spike/recipe_m1/convert.py,
+// Suit converter (Plan 2): the geometry core, a port of the recipe's convert.py (the Python recipe's convert.py,
 // SHA-1 05cb00536712a89d9cd4cb8f79cebe529e6db2fa). Python's name -> C++ name: snake_case -> CamelCase (fit_maps ->
 // FitMaps, snap_suit_weights -> SnapSuitWeights ...). ConvertSuit (doa4_suitconv.h) calls these in convert.main's order.
 //

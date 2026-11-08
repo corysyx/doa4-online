@@ -5,8 +5,8 @@
 // no FMA, no contraction, no fast-math, no transcendental function from the C runtime (Exp and Atan2 are ports of
 // musl v1.2.4), and every conversion runs through RunUnderConvertEnv (MXCSR 0x1F80: round to nearest, no FTZ /
 // DAZ; on arm64 FPCR 0).
-// Each function cites the source it follows by file and line at the version tag; the copies read are in
-// notes/plans/2026-11-07-public-importer-plan2-converter/ref_src/. Pinned against the real interpreter by
+// Each function cites the source it follows by file and line at the version tag; the numbers are those of the
+// upstream sources at that tag. Pinned against the real interpreter by
 // tests/host/suitconv_num_host_test.cpp (pins from tests/host/make_suitconv_pins.py). Pure C++ (no SDK).
 
 #pragma once

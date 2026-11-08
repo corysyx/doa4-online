@@ -3,7 +3,7 @@ rem Builds and runs the suit importer's job host test (src/doa4_suitconv_job.cpp
 rem the swap) with clang-cl (no CMake), under the converter's floating-point flags for every translation unit (x86-64-v3 with
 rem FMA switched off, no contraction, no fast-math, no errno). Converter objects, the job's included, go to
 rem %TEMP%\doa4_suitconv_test\obj\ (named after their source), where suitconv_fp_scan.py scans them before the test runs; the
-rem test's own object and the SDK-side sources it links (afs overlay, xdvdfs, gamefiles, manifest) go to ...\testobj\.
+rem test's own object and the SDK-side sources it links (afs overlay, xdvdfs, gamefiles, manifest, the import loader, the costume tables) go to ...\testobj\.
 rem DOA4_SUITCONV_OUT, if set, replaces that output folder (the mutation probes build their copies elsewhere).
 rem DOA4_SUITCONV_REUSE=1 (the probes): a converter object that already exists in the output folder is not rebuilt, except
 rem the job's own.
@@ -43,12 +43,12 @@ if not exist "%OUT%\obj\doa4_suitconv.obj" (
 )
 clang-cl %CXXFLAGS% /c "%SRC%\doa4_suitconv_job.cpp" /Fo"%OUT%\obj\doa4_suitconv_job.obj" >> "%LOG%" 2>&1
 if errorlevel 1 goto failed
-for %%f in (afs_overlay xdvdfs gamefiles suits_manifest) do (
+for %%f in (afs_overlay xdvdfs gamefiles suits_manifest suits costumes) do (
   clang-cl %CXXFLAGS% /c "%SRC%\doa4_%%f.cpp" /Fo"%OUT%\testobj\doa4_%%f.obj" >> "%LOG%" 2>&1 || goto failed
 )
 clang-cl %CXXFLAGS% /c "%~dp0suitconv_job_host_test.cpp" /Fo"%OUT%\testobj\suitconv_job_host_test.obj" >> "%LOG%" 2>&1
 if errorlevel 1 goto failed
-clang-cl /nologo "%OUT%\testobj\suitconv_job_host_test.obj" "%OUT%\obj\doa4_suitconv_num.obj" "%OUT%\obj\doa4_suitconv_sort.obj" "%OUT%\obj\doa4_suitconv_tpr.obj" "%OUT%\obj\doa4_suitconv_recipe.obj" "%OUT%\obj\doa4_suitconv_inputs.obj" "%OUT%\obj\doa4_suitconv_core.obj" "%OUT%\obj\doa4_suitconv_trace.obj" "%OUT%\obj\doa4_suitconv_catx.obj" "%OUT%\obj\doa4_suitconv_bust.obj" "%OUT%\obj\doa4_suitconv_waist.obj" "%OUT%\obj\doa4_suitconv_hands.obj" "%OUT%\obj\doa4_suitconv_cloth.obj" "%OUT%\obj\doa4_suitconv_gencloth.obj" "%OUT%\obj\doa4_suitconv.obj" "%OUT%\obj\doa4_suitconv_job.obj" "%OUT%\testobj\doa4_afs_overlay.obj" "%OUT%\testobj\doa4_xdvdfs.obj" "%OUT%\testobj\doa4_gamefiles.obj" "%OUT%\testobj\doa4_suits_manifest.obj" bcrypt.lib /Fe"%OUT%\suitconv_job_host_test.exe" >> "%LOG%" 2>&1
+clang-cl /nologo "%OUT%\testobj\suitconv_job_host_test.obj" "%OUT%\obj\doa4_suitconv_num.obj" "%OUT%\obj\doa4_suitconv_sort.obj" "%OUT%\obj\doa4_suitconv_tpr.obj" "%OUT%\obj\doa4_suitconv_recipe.obj" "%OUT%\obj\doa4_suitconv_inputs.obj" "%OUT%\obj\doa4_suitconv_core.obj" "%OUT%\obj\doa4_suitconv_trace.obj" "%OUT%\obj\doa4_suitconv_catx.obj" "%OUT%\obj\doa4_suitconv_bust.obj" "%OUT%\obj\doa4_suitconv_waist.obj" "%OUT%\obj\doa4_suitconv_hands.obj" "%OUT%\obj\doa4_suitconv_cloth.obj" "%OUT%\obj\doa4_suitconv_gencloth.obj" "%OUT%\obj\doa4_suitconv.obj" "%OUT%\obj\doa4_suitconv_job.obj" "%OUT%\testobj\doa4_afs_overlay.obj" "%OUT%\testobj\doa4_xdvdfs.obj" "%OUT%\testobj\doa4_gamefiles.obj" "%OUT%\testobj\doa4_suits_manifest.obj" "%OUT%\testobj\doa4_suits.obj" "%OUT%\testobj\doa4_costumes.obj" bcrypt.lib /Fe"%OUT%\suitconv_job_host_test.exe" >> "%LOG%" 2>&1
 if errorlevel 1 goto failed
 rem The FP scan of every converter object comes first: any FMA instruction or C runtime math call (or a scan that
 rem cannot run) fails the runner with the default summary shape, as one failed check, and the test does not run.

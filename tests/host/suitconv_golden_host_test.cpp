@@ -6,12 +6,18 @@
 // whose arithmetic differs on this PC (a different libm, a fused multiply-add, a changed sort order, a different rounding
 // mode) changes at least one hash.
 //
-// THE PINS COME FROM THIS CODE ON THE AUTHOR'S PC. They were written down from the first passing run, not from the Python
-// converter: they say "this PC's C++ gives the same bytes as the author's", which is the cross-PC question. That the C++
-// equals the Python interpreter is shown elsewhere, byte for byte over the real files (the disc-gated sections of the
-// convert test, the job test and the num, sort and cloth pins). A pin that no code change can move would be worthless, so
-// the author ran probes (an argsort that is stable, Exp one ulp off, a plain dot product in place of the fused one, Gemv3
-// adding in another order, a naive sum in place of Python's) and each changed at least one hash below.
+// WHERE THE PINS COME FROM. They are written down from a run of this code on the author's PC, not from the Python converter:
+// they say "this PC's C++ gives the same bytes as the author's", which is the cross-PC question. That the C++ equals the
+// Python interpreter is shown elsewhere, byte for byte over the real files (the disc-gated sections of the convert test, the
+// job test and the num, sort and cloth pins). Every input is built from seeds and fixed IEEE arithmetic only: the few values
+// that were once the C runtime's sin and cos (the waist template's ring, the cloth fixture's nodes) are literal tables now,
+// because the C runtime takes a CPU-dependent FMA3 path for them and would build different inputs on another PC. The pins
+// were re-taken from this PC's run after that change; only waist.trace and waist.h4_doubles moved.
+// A pin that no code change can move would be worthless, so probes were run (an argsort that is stable, Exp one ulp off, a
+// plain dot product in place of the fused one, Gemv3 adding in another order, a naive sum in place of Python's). Each changed
+// at least one hash below, but ONLY the numeric case catches the last three (g3 to g5): the small pipeline cases end in
+// float32 or half bytes, which hide a last-bit difference of a double, so the pipeline cases below do not reach NpDotFused,
+// Gemv3 or PySum at the byte level. Only the argsort (g1) and Exp (g2) probes also move a pipeline case.
 //
 // Cases and what they reach:
 //   numeric             the numeric primitives on seeded random inputs (thousands of values each, so a last-bit difference shows):
@@ -94,6 +100,28 @@ static void Check(bool ok, const char* file, int line, const char* expr, const c
 #define CK(cond) Check((cond), __FILE__, __LINE__, #cond)
 #define CKF(cond, ...) Check((cond), __FILE__, __LINE__, #cond, __VA_ARGS__)
 
+// 0.03 * cos(k) and 0.03 * sin(k), k = 0 .. 23, as fixed double literals (no C runtime call builds a golden input).
+static constexpr double kCos03[24] = {
+    0x1.eb851eb851eb8p-6, 0x1.0991c3809f1cep-6, -0x1.9916c7ccafcd1p-7,
+    -0x1.e699e278ac825p-6, -0x1.414766cfb567cp-6, 0x1.16d9ed252854bp-7,
+    0x1.d7f161d920d14p-6, 0x1.728edb736d72p-6, -0x1.1e10909a6e5ffp-8,
+    -0x1.bfd6b81434b9ap-6, -0x1.9c6ba1d2aa446p-6, 0x1.1670dafeee647p-13,
+    0x1.9ec566aa48ac5p-6, 0x1.be073ade71672p-6, 0x1.0cd6186913e54p-8,
+    -0x1.7566dc8e84c6ep-6, -0x1.d6b5731d7dba2p-6, -0x1.0e7f1f11e17e8p-7,
+    0x1.448f120077f24p-6, 0x1.e5f7d500fd94ap-6, 0x1.912936a4c26a3p-7,
+    -0x1.0d384a72ac47ep-6, -0x1.eb8030d98f7dbp-6, -0x1.05e5e8f965963p-6
+};
+static constexpr double kSin03[24] = {
+    0.0, 0x1.9d998db3be374p-6, 0x1.bef018544322ep-6,
+    0x1.1574069535c2ep-8, -0x1.73fbcac0683dap-6, -0x1.d75498fe1dacp-6,
+    -0x1.12ad3666c215cp-7, 0x1.42ec0baa61e1cp-6, 0x1.e64a13d97d16cp-6,
+    0x1.9521033e2bd06p-7, -0x1.0b65b298d6adep-6, -0x1.eb83e3403c133p-6,
+    -0x1.07bc7f82af0fp-6, 0x1.9d0a7f3afc762p-7, 0x1.e6e740781a22dp-6,
+    0x1.3fa1258c67dabp-6, -0x1.1b053df13a4c5p-7, -0x1.d88bcce5459c3p-6,
+    -0x1.7120107c06edep-6, 0x1.26abab6ae420ep-8, 0x1.c0bb18f63bf8fp-6,
+    0x1.9b3ba48a9c50cp-6, -0x1.16702849341ep-12, -0x1.9fef2b3563a91p-6
+};
+
 // ---------------------------------------------------------------------------------------------------------------
 // The pins: this PC's first passing run (see the header). A case with no pin fails and prints its hash.
 // ---------------------------------------------------------------------------------------------------------------
@@ -122,8 +150,8 @@ static const Pin kGolden[] = {
     {"geometry_nan_accessory.trace", "9a41d3132df29520ec79c2d1a0ea7b37461e8463"},
     {"waist.tpr", "0e30d54774b74f06bb5fceb39cb7d8015364ef0a"},
     {"waist.cat", "3364fe4086bf39991584456fd2fe3a905268da23"},
-    {"waist.trace", "9abdfdb3bf2d5c41b3021e5322b2d686ba098ef0"},
-    {"waist.h4_doubles", "b7acffed69c9112ee74dcbbad02386df03194b9e"},
+    {"waist.trace", "737cd05a9f097fbb8c4ea60086ed80a33e98bea6"},
+    {"waist.h4_doubles", "5cc9f1f3889fd08bc3e891d892e3be9741952d3f"},
     {"bust.prep", "4ab3abec064c2e1d603ab3d12e0bc5eb93525788"},
     {"bust.prep_cloth_fade", "0bca379f3eebc02f4297ffcd77982b39944f6e66"},
     {"bust.mpv", "36ba287ba409cc7779baab229cd4e88f21ebb063"},
@@ -392,8 +420,7 @@ static void CaseClothFitCapsule() {
   std::vector<std::array<float, 3>> nodes;
   for (int k = 0; k < 24; ++k) {
     const double t = (double(k) + 0.5) / 24.0;
-    nodes.push_back({float(0.09 + 0.02 * t + 0.03 * std::cos(double(k))), float(-0.6 - 0.4 * t),
-                     float(0.01 * t + 0.03 * std::sin(double(k)))});
+    nodes.push_back({float(0.09 + 0.02 * t + kCos03[k]), float(-0.6 - 0.4 * t), float(0.01 * t + kSin03[k])});
   }
   nodes[0] = {1.0f, 1.0f, 1.0f};  // the pinned node, far from every shape
   const std::vector<uint8_t> chunk = synth::conv::ClothChunk(nodes, 0, {cap6, cap12});

@@ -1,5 +1,5 @@
 // Suit converter (Plan 2): the XPR2 container, the chunk tables and the .cat directory readers and writers. A name-for-name
-// port of the recipe's tpr.py (physics_spike/recipe_m1/tpr.py, SHA-1 9d11ca4827cbc781c8833bd55045e43fb30d14c7) plus the
+// port of the recipe's tpr.py (the Python recipe's tpr.py, SHA-1 9d11ca4827cbc781c8833bd55045e43fb30d14c7) plus the
 // three .cat helpers of convert.py (cat_dir, parse_t2, t4_records, lines 125-165). Python's name -> C++ name:
 // snake_case -> CamelCase (Xpr.parse -> Xpr::Parse, world_mats -> WorldMats, dec_hend3n -> DecHend3n ...). The Python's
 // asserts are ConvertError with the assert's text; every read goes through be::Reader, so a malformed file throws

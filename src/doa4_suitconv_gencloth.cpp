@@ -1,5 +1,5 @@
 // Suit converter (Plan 2): the generated cloth. See doa4_suitconv_gencloth.h. Line numbers in the comments are cloth_gen.py's
-// (physics_spike/recipe_m1/cloth_gen.py, SHA-1 b86ca95f6b19adf68f9e2caa9850fdf496e7d422).
+// (the Python recipe's cloth_gen.py, SHA-1 b86ca95f6b19adf68f9e2caa9850fdf496e7d422).
 //
 // Numeric paths, each chosen by a census against the recipe's interpreter on the two generated-cloth suits' real inputs
 // (numpy 1.26.3, OpenBLAS 0.3.23 Cooperlake kernels, CPython 3.12.1):

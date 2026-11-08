@@ -1,7 +1,7 @@
 // Suit converter (Plan 2) numeric kit; see doa4_suitconv_num.h. Every function follows the cited source line for line
 // (operation order included: under the rules of doa4_suitconv_fp.h the compiler keeps it), so the results are the
-// Python original's bits. Sources, at the version tags: CPython v3.12.1, numpy v1.26.3, musl v1.2.4 (copies in
-// notes/plans/2026-11-07-public-importer-plan2-converter/ref_src/).
+// Python original's bits. Sources, at the version tags: CPython v3.12.1, numpy v1.26.3, musl v1.2.4 (the files and line numbers
+// cited are those of the upstream sources at those tags).
 //
 // Exp and Atan2 are ports of musl v1.2.4. musl's licence (COPYRIGHT):
 //
@@ -708,7 +708,7 @@ double PairwiseSum(const double* a, size_t n) {
 // PyUFunc_ReduceWrapper, lines 295-361) and the reduce loop adds the pairwise sum of each inner-loop chunk to it
 // ("*((@type@*)src0) @OP@= @TYPE@_pairwise_sum(src1, len, ssrc1)", loops_arithm_fp.dispatch.c.src lines 58-75).
 // The buffered reduction iterator hands the loop at most NPY_BUFSIZE = 8192 elements at a time
-// (numpy/core/include/numpy/ndarraytypes.h; not in ref_src): measured with the reference interpreter, and pinned at
+// (numpy/core/include/numpy/ndarraytypes.h): measured with the reference interpreter, and pinned at
 // lengths 8191, 8192, 8193, 10000 and 20000.
 constexpr size_t kBufSize = 8192;
 
@@ -744,7 +744,7 @@ void NpSumAxis0(std::span<const double> rows, size_t cols, std::span<double> out
 
 double NpSum1D(std::span<const double> v) { return ReduceContiguous(v.data(), v.size()); }
 
-// numpy/core/_methods.py _mean (not in ref_src): umr_sum(arr, axis, ...) then true_divide by the count.
+// numpy/core/_methods.py _mean (behaviour pinned against the interpreter): umr_sum(arr, axis, ...) then true_divide by the count.
 double NpMean1D(std::span<const double> v) { return NpSum1D(v) / static_cast<double>(v.size()); }
 
 void NpMeanAxis0(std::span<const double> rows, size_t cols, std::span<double> out) {

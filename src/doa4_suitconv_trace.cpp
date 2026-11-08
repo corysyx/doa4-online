@@ -1,4 +1,4 @@
-// Suit converter (Plan 2): the stage trace v1. See doa4_suitconv_trace.h; the Python is plan2_oracle/trace_m1.py.
+// Suit converter (Plan 2): the stage trace v1. See doa4_suitconv_trace.h.
 #include "doa4_suitconv_fp.h"
 
 #include "doa4_suitconv_trace.h"

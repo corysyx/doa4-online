@@ -1,6 +1,6 @@
-// Suit converter (Plan 2): the recipe tables. See doa4_suitconv_recipe.h. The rows were generated from the plan's
-// Appendix A and per-girl table, from physics_spike/imports/all34_m1/manifest.txt (its SHA-1 is
-// dc0d0f8d77d2aad6b9d44372508a7c4ab0a184b8) and from recipe_m1/bust_match.json, and are checked against them again by
+// Suit converter (Plan 2): the recipe tables. See doa4_suitconv_recipe.h. The rows were built from the per-suit
+// and per-girl tables, from the reference converter's output manifest (its SHA-1 is
+// dc0d0f8d77d2aad6b9d44372508a7c4ab0a184b8) and from its bust strengths file, and are checked against them again by
 // tests/host/suitconv_inputs_host_test.cpp (DOA4_SUITCONV_ORACLE_DIR) and against the picks table
 // (doa4_suits_picks.h). Python's file names are in comments.
 
@@ -133,7 +133,7 @@ constexpr EntryRef kDiscEntries[] = {
 };
 static_assert(std::size(kDiscEntries) == 86);
 
-// The plan's per-girl table. Reference = hand donor except Tina's hands.
+// The per-girl table. Reference = hand donor except Tina's hands.
 constexpr GirlRecipe kGirls[] = {
     {"vks", 5, 2,
      {ArcId::kChrone, 51, 8574976, "4a269fd7203f6cf0be1e4ff78ad938f57ae6c88d"}, {ArcId::kChrone, 52, 840240, "5632438e49986549d1e8b54e06ba203b251234a4"},
@@ -175,8 +175,8 @@ constexpr GirlRecipe kGirls[] = {
 static_assert(std::size(kGirls) == 9);
 
 // The 34 suits in picks order: design, colour, girl, DOAX2 archive, .tpr entry, bust strengths [down, up] from
-// bust_match.json, the four cloth options, back margin, hamstring sink, strap fade, and the output .tpr and .cat
-// size and SHA-1 from all34_m1/manifest.txt.
+// the reference converter's bust strengths file, the four cloth options, back margin, hamstring sink, strap fade, and the
+// output .tpr and .cat size and SHA-1 from its output manifest.
 constexpr SuitRecipe kSuits[] = {
     {"vks_ch_d", 0, "vks", ArcId::kWertwo, 26, 0.562, 0.704, false, false, false, false, 0.0, 0.0, 0.0,
      8454144, "d9592c3d93d40660568b5c51bb4215c29c2ebb0b", 1032032, "95c9820707270260d00752860e76d5b5db519b2f"},

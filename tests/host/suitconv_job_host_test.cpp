@@ -19,13 +19,23 @@
 // (ConvertSuit over the 34 in reverse order), real_fma3_toggle (the C runtime's FMA3 switch off and on, on the converting
 // threads), real_dirty_mxcsr (FTZ, DAZ and round-up on the calling thread and on direct ConvertSuit threads),
 // real_time_and_memory (wall time, phases, each suit's conversion time against the Python converter's, the working set).
+// The final review's groups (each runs alone as DOA4_SUITCONV_ONLY=final_guard, final_destroy, final_throwing_log, final_ownerless,
+// final_held_folder, final_swap_retry or final_free_space): in_process_guard (a second job or a
+// CompletePendingSwap on a folder where a job runs is refused, nothing touched), destroy_from_log_callback (the job destroyed
+// from its own log callback, on the job's thread and on a worker), throwing_log_callback (a callback that throws on every call
+// changes no outcome and ends no thread), ownerless_folder_recovery (an empty .new or .old, or one holding only the marker's
+// temporary file, is deleted; a foreign one is refused or kept), held_folder_keeps_marker, swap_retries_blocked_rename (a file
+// held for 300 ms, for the whole window, a cancel between tries), free_space_counts_leftover.
 // DOA4_SUITCONV_ONLY=real runs only the real sections, =fake only the others, =<section name> only that section. Last lines: "skipped sections: K", "slowest
 // cancel ...", then "PASSED: N checks, 0 failures" or "FAILED: N checks, M failures".
 
 #define _CRT_SECURE_NO_WARNINGS
 #define NOMINMAX
 #include "../../src/doa4_suitconv_job.h"
+#include "../../src/doa4_costumes.h"
+#include "../../src/doa4_suits.h"
 #include "../../src/doa4_suits_manifest.h"
+#include "doa4_costume_fixtures.h"
 #include "../../src/doa4_suits_picks.h"
 #include "suitconv_synth.h"
 
@@ -1716,6 +1726,472 @@ static void TestHookThrowsNonStdException() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// the final review's fixes: the in-process guard, no terminate route, ownerless folders, the swap's retry, free space
+// ---------------------------------------------------------------------------------------------------------------
+
+static bool OnlyHas(const char* token);
+// The final-fix groups run with the fake groups, or alone by their own name (DOA4_SUITCONV_ONLY=<name>).
+static bool Want(const char* group) { return OnlyHas("fake") || OnlyHas(group); }
+
+// Blocks the job's own thread at a phase until the test lets it go (20 s at most).
+struct PhaseGate {
+  std::atomic<bool> release{false}, reached{false};
+  void Wait() {
+    reached = true;
+    const auto t0 = Clock::now();
+    while (!release.load() && MsSince(t0) < 20000) SleepMs(1);
+  }
+  bool WaitReached(int ms) const {
+    const auto t0 = Clock::now();
+    while (!reached.load() && MsSince(t0) < ms) SleepMs(1);
+    return reached.load();
+  }
+};
+
+// A second job on a user data folder where a job runs is refused at once and touches nothing; CompletePendingSwap on that
+// folder is refused too; another folder is not affected; the folder is free again once the job is done.
+static void TestInProcessGuard() {
+  Group("in_process_guard");
+  World w("guard");
+  World other("guard_other");
+  w.WriteCurrent(w.Cur(), "cur", true);
+  PhaseGate gate;
+  w.phase_hook = [&gate](Phase p) {
+    if (p == Phase::kConverting) gate.Wait();
+  };
+  auto a = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+  CK(gate.WaitReached(10000));
+  // The running job's .new holds its marker and nothing else: a recovery would call it interrupted and delete it.
+  const Snap running = SnapTree(w.ud);
+  CKF(running.count("doax2_suits.new/.doa4-suitconv") == 1, "the running job's .new has %zu entries", running.size());
+  {
+    auto b = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+    CK(b->done());
+    const ImportResult rb = b->result();
+    CKF(Is(rb, Outcome::kFailed) && Has(rb.detail, "already running"), "StartForTest: outcome %d (%s)", int(rb.outcome), rb.detail.c_str());
+    CK(b->progress().phase == Phase::kDone);
+  }
+  {
+    ImportRequest req = w.Req(2);
+    req.user_data = w.ud / ".." / "ud";  // the same folder, spelled another way
+    auto b = ImportJob::Start(std::move(req));
+    CK(b->done());
+    const ImportResult rb = b->result();
+    CKF(Is(rb, Outcome::kFailed) && Has(rb.detail, "already running"), "Start: outcome %d (%s)", int(rb.outcome), rb.detail.c_str());
+  }
+  CK_SAME(running, SnapTree(w.ud), "user data after the refused starts");
+  const std::string why = CompletePendingSwap(w.ud);
+  CKF(Has(why, "import is running"), "CompletePendingSwap: '%s'", why.c_str());
+  CK_SAME(running, SnapTree(w.ud), "user data after the refused CompletePendingSwap");
+  {
+    const ImportResult ro = RunJob(other, other.MakeHooks(), 2);  // another folder: not blocked
+    CKF(Is(ro, Outcome::kImported), "other folder: outcome %d (%s)", int(ro.outcome), ro.detail.c_str());
+  }
+  gate.release = true;
+  CK(WaitDone(*a, 30000));
+  const ImportResult ra = a->result();
+  CKF(Is(ra, Outcome::kImported), "the first job: outcome %d (%s)", int(ra.outcome), ra.detail.c_str());
+  CheckImportFolder(w, w.Cur(), {}, "the first job's import");
+  // The folder is free again as soon as the job is done (the job object is still alive).
+  CK(CompletePendingSwap(w.ud).empty());
+  w.phase_hook = nullptr;
+  const ImportResult rc = RunJob(w, w.MakeHooks(), 2);
+  CKF(Is(rc, Outcome::kImported), "a job after the first: outcome %d (%s)", int(rc.outcome), rc.detail.c_str());
+  // CompletePendingSwap holds the folder while it works: a Start from inside its log callback is refused.
+  World w2("guard_swap_callback");
+  SetupRow(w2, 1);  // an interrupted .new: the recovery logs it
+  int calls = 0, refused = 0;
+  const Snap before = SnapTree(w2.ud);
+  const std::string why2 = CompletePendingSwap(w2.ud, [&](std::string_view) {
+    ++calls;
+    auto b = ImportJob::StartForTest(w2.Req(2), w2.MakeHooks());
+    if (b->done() && Is(b->result(), Outcome::kFailed) && Has(b->result().detail, "already running")) ++refused;
+  });
+  CKF(why2.empty(), "%s", why2.c_str());
+  CKF(calls >= 1 && refused == calls, "%d log calls, %d refused starts", calls, refused);
+  CK(!Exists(w2.New()));
+}
+
+// The log callback destroys the job: on the job's own thread (a recovery line) and on a worker (a reference mismatch).
+// The destructor must not join its own thread; the job ends in the background and the folder is free for the next job.
+static void DestroyFromCallback(const char* name, bool on_worker) {
+  World w(name);
+  w.WriteCurrent(w.Cur(), "cur", true);
+  if (on_worker) {
+    w.shas.push_back(std::string(40, 'c'));
+    w.suits[4].out_cat_sha1 = w.shas.back().c_str();  // suit 4 differs from the reference: logged by a worker
+  } else {
+    SetupRow(w, 1);  // an interrupted .new: its recovery is logged by the job's thread
+  }
+  std::atomic<ImportJob*> victim{nullptr};
+  std::atomic<int> destroyed{0};
+  ImportRequest req = w.Req(2);
+  req.log = [&](std::string_view) {
+    if (destroyed.load() > 0) return;
+    const auto t0 = Clock::now();
+    while (!victim.load() && MsSince(t0) < 5000) SleepMs(1);
+    if (ImportJob* j = victim.exchange(nullptr)) {
+      delete j;  // from inside the callback
+      ++destroyed;
+    }
+  };
+  ImportJob* raw = ImportJob::StartForTest(std::move(req), w.MakeHooks()).release();
+  victim = raw;
+  {
+    const auto t_wait = Clock::now();  // the callback destroys the job: wait for it (without the fix this ends the process)
+    while (destroyed.load() == 0 && MsSince(t_wait) < 10000) SleepMs(1);
+  }
+  // The destroyed job is cancelled and ends in the background: the folder is free again soon, then a fresh job imports.
+  ImportResult r;
+  const auto t0 = Clock::now();
+  for (;;) {
+    ImportRequest req2 = w.Req(2);
+    req2.log = nullptr;
+    auto job = ImportJob::StartForTest(std::move(req2), w.MakeHooks());
+    if (job->done() && Has(job->result().detail, "already running")) {
+      if (MsSince(t0) > 20000) break;
+      SleepMs(10);
+      continue;
+    }
+    CK(WaitDone(*job, 30000));
+    r = job->result();
+    break;
+  }
+  CKF(destroyed.load() == 1, "%s: the callback destroyed the job %d times", name, destroyed.load());
+  CKF(Is(r, Outcome::kImported), "%s: the next job: outcome %d (%s)", name, int(r.outcome), r.detail.c_str());
+  CheckImportFolder(w, w.Cur(), {}, name);
+  CK(!Exists(w.New()) && !Exists(w.Old()));
+}
+
+static void TestDestroyFromLogCallback() {
+  Group("destroy_from_log_callback");
+  DestroyFromCallback("destroy_on_job_thread", false);
+  DestroyFromCallback("destroy_on_worker", true);
+}
+
+// A log callback that throws on every call: the import ends as it would with a quiet callback. Without the swallow in Log
+// the registration failures below end the process (the Log call sits outside any try on a thread's first line).
+struct LogScenario {
+  ImportResult r;
+  Snap ud;
+  int calls = 0;
+};
+
+// kind: 0 a leftover interrupted .new, a failing suit and a reference mismatch; 1 a cancel from inside the converter; 2 a write
+// fault; 3 the job thread's registration fails; 4 a worker's registration fails. throw_mode: 0 quiet, 1 throws
+// std::runtime_error, 2 throws an int.
+static LogScenario RunLogScenario(int kind, int throw_mode) {
+  World w("throwing_log_k" + std::to_string(kind));  // one name per kind: the details name the same paths in every mode
+  w.WriteCurrent(w.Cur(), "cur", true);
+  if (kind <= 2) {
+    fs::create_directories(w.New());
+    WriteText(w.New() / kMarker, "doa4 suit importer\n");
+    w.shas.push_back(std::string(40, 'd'));
+    w.suits[0].out_cat_sha1 = w.shas.back().c_str();  // a reference mismatch: a worker logs it
+  }
+  Hooks h = w.MakeHooks();
+  if (kind == 0) w.fail_suits.insert(5);
+  if (kind == 1) {
+    w.cancel_after_finishes = 10;
+    w.phase_hook = [](Phase p) {
+      if (p == Phase::kCheckingSpace) SleepMs(30);  // the test stores the job's address first
+    };
+  }
+  if (kind == 2) h.write_fault_at = 20;
+  if (kind == 3) h.fail_register_at = 1;
+  if (kind == 4) h.fail_register_at = 2;
+  LogScenario s;
+  std::atomic<int> calls{0};
+  ImportRequest req = w.Req(2);
+  req.log = [&calls, throw_mode](std::string_view) {
+    ++calls;
+    if (throw_mode == 1) throw std::runtime_error("the logger is broken");
+    if (throw_mode == 2) throw 7;
+  };
+  auto job = ImportJob::StartForTest(std::move(req), std::move(h));
+  w.job_ptr = job.get();
+  const bool ok = WaitDone(*job, 60000);
+  CK(ok);
+  if (!ok) job->Cancel();
+  WaitDone(*job, 15000);
+  s.r = job->result();
+  s.ud = SnapTree(w.ud);
+  s.calls = calls.load();
+  return s;
+}
+
+static void TestThrowingLogCallback() {
+  Group("throwing_log_callback");
+  for (int kind = 0; kind <= 4; ++kind) {
+    const LogScenario quiet = RunLogScenario(kind, 0);
+    for (int mode : {1, 2}) {
+      const LogScenario loud = RunLogScenario(kind, mode);
+      CKF(quiet.calls >= 1, "kind %d: the quiet run never logged (%d)", kind, quiet.calls);
+      CKF(loud.calls >= 1, "kind %d/%d: the throwing callback was never called", kind, mode);
+      CKF(loud.r.outcome == quiet.r.outcome, "kind %d/%d: outcome %d, quiet %d (%s)", kind, mode, int(loud.r.outcome),
+          int(quiet.r.outcome), loud.r.detail.c_str());
+      // (Which file the 20th write is depends on how the two workers interleave: the write fault's detail is compared by its
+      // number, every other detail whole.)
+      if (kind == 2) CKF(Has(loud.r.detail, "injected write fault #20"), "kind 2/%d: detail '%s'", mode, loud.r.detail.c_str());
+      else CKF(loud.r.detail == quiet.r.detail, "kind %d/%d: detail '%s', quiet '%s'", kind, mode, loud.r.detail.c_str(), quiet.r.detail.c_str());
+      CKF(loud.r.skipped.size() == quiet.r.skipped.size(), "kind %d/%d: %zu skipped, quiet %zu", kind, mode,
+          loud.r.skipped.size(), quiet.r.skipped.size());
+      CKF(loud.r.differs_from_reference == quiet.r.differs_from_reference, "kind %d/%d: differs list", kind, mode);
+      // The user data folders hold the same files (the fake bytes are seeded: the comparison is exact).
+      CKF(loud.ud == quiet.ud, "kind %d/%d: user data differs:%s", kind, mode, SnapDiff(quiet.ud, loud.ud).c_str());
+    }
+    if (kind == 0) CK(Is(quiet.r, Outcome::kImportedWithSkips) && quiet.r.skipped.size() == 1 && quiet.r.differs_from_reference.size() == 1);
+    if (kind == 1) CK(Is(quiet.r, Outcome::kCancelled));
+    if (kind == 2) CK(Is(quiet.r, Outcome::kFailed) && Has(quiet.r.detail, "#20"));
+    if (kind >= 3) CK(Is(quiet.r, Outcome::kFailed) && Has(quiet.r.detail, "Cancel"));
+  }
+  // An exception that gets past ProcessSuit's own handlers (here, a hook called after a file write) ends the worker's body: its
+  // outermost handler records the failure; the job ends kFailed, the .new is deleted, no thread ends the process.
+  for (int mode : {1, 2}) {
+    World w("worker_body_throws_" + std::to_string(mode));
+    w.WriteCurrent(w.Cur(), "cur", true);
+    Hooks h = w.MakeHooks();
+    h.on_write = [mode](int n) {
+      if (n != 10) return;
+      if (mode == 1) throw std::runtime_error("synthetic writer failure");
+      throw 7;
+    };
+    const Snap before = SnapTree(w.ud);
+    const ImportResult r = RunJob(w, std::move(h), 3);
+    CKF(Is(r, Outcome::kFailed) && Has(r.detail, "worker failed"), "mode %d: outcome %d (%s)", mode, int(r.outcome), r.detail.c_str());
+    if (mode == 1) CKF(Has(r.detail, "synthetic writer failure"), "detail: %s", r.detail.c_str());
+    CK(!Exists(w.New()));
+    CK_SAME(before, SnapTree(w.ud), "user data after a worker body threw");
+  }
+}
+
+// A folder of ours that lost its marker: empty, or holding only the marker's temporary file.
+static void MakeOwnerless(const fs::path& dir, bool tmp) {
+  fs::create_directories(dir);
+  if (tmp) synth::WriteFileBytes(dir / ".doa4-suitconv.tmp", synth::Seeded(31, 19));
+}
+
+static void TestOwnerlessFolderRecovery() {
+  Group("ownerless_folder_recovery");
+  struct Case {
+    const char* name;
+    bool on_new, tmp;
+  };
+  const Case cases[] = {{"empty_new", true, false}, {"tmp_only_new", true, true}, {"empty_old", false, false}, {"tmp_only_old", false, true}};
+  for (const Case& c : cases) {
+    // (a) CompletePendingSwap: the folder is deleted, the current import untouched.
+    {
+      World w(std::string("ownerless_") + c.name + "_complete");
+      w.WriteCurrent(w.Cur(), "cur", true);
+      MakeOwnerless(c.on_new ? w.New() : w.Old(), c.tmp);
+      const Snap cur_before = SnapTree(w.Cur());
+      const std::string why = CompletePendingSwap(w.ud);
+      CKF(why.empty(), "%s: %s", c.name, why.c_str());
+      CKF(!Exists(w.New()) && !Exists(w.Old()), "%s: a folder remains", c.name);
+      CKF(!Exists(w.ud / "doax2_suits.old-2"), "%s: renamed to .old-2", c.name);
+      CK_SAME(cur_before, SnapTree(w.Cur()), "the current import");
+    }
+    // (b) Start: the same cleanup, then the import completes.
+    {
+      World w(std::string("ownerless_") + c.name + "_start");
+      w.WriteCurrent(w.Cur(), "cur", true);
+      MakeOwnerless(c.on_new ? w.New() : w.Old(), c.tmp);
+      const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+      CKF(Is(r, Outcome::kImported), "%s: outcome %d (%s)", c.name, int(r.outcome), r.detail.c_str());
+      CheckImportFolder(w, w.Cur(), {}, c.name);
+      CKF(!Exists(w.New()) && !Exists(w.Old()) && !Exists(w.ud / "doax2_suits.old-2"), "%s: a folder remains", c.name);
+    }
+  }
+  // An owner-less .old in the way of a pending swap (a verified .new, a current import): the swap's own clearing of .old
+  // deletes it, it is not kept as .old-2.
+  for (bool tmp : {false, true}) {
+    World w(std::string("ownerless_old_pending_new") + (tmp ? "_tmp" : "_empty"));
+    SetupRow(w, 2);  // the current import and a verified .new
+    MakeOwnerless(w.Old(), tmp);
+    const Snap new_before = SnapTree(w.New());
+    const std::string why = CompletePendingSwap(w.ud);
+    CKF(why.empty(), "%s", why.c_str());
+    CK_SAME(new_before, SnapTree(w.Cur()), "the swapped-in import");
+    CKF(!Exists(w.New()) && !Exists(w.Old()) && !Exists(w.ud / "doax2_suits.old-2"), "tmp=%d: a folder remains", int(tmp));
+  }
+  // Not ours, still refused and untouched: one foreign file; the temp file plus a foreign file; only a sub-folder.
+  for (int variant = 0; variant < 3; ++variant) {
+    World w("ownerless_foreign_" + std::to_string(variant));
+    w.WriteCurrent(w.Cur(), "cur", true);
+    fs::create_directories(w.New());
+    if (variant == 0) WriteText(w.New() / "stray.txt", "someone else's folder\n");
+    if (variant == 1) {
+      synth::WriteFileBytes(w.New() / ".doa4-suitconv.tmp", synth::Seeded(32, 19));
+      WriteText(w.New() / "stray.txt", "someone else's folder\n");
+    }
+    if (variant == 2) fs::create_directories(w.New() / "sub");
+    const Snap before = SnapTree(w.ud);
+    const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+    CKF(Is(r, Outcome::kFailed) && Has(r.detail, w.New().string().c_str()), "variant %d: outcome %d (%s)", variant, int(r.outcome), r.detail.c_str());
+    CK_SAME(before, SnapTree(w.ud), "user data (a folder that is not ours)");
+    const std::string why = CompletePendingSwap(w.ud);
+    CKF(Has(why, w.New().string().c_str()), "variant %d: CompletePendingSwap: %s", variant, why.c_str());
+    CK_SAME(before, SnapTree(w.ud), "user data after CompletePendingSwap");
+  }
+  // A .old that is a foreign folder with only a sub-folder is kept (renamed .old-2), as any Python import is.
+  {
+    World w("ownerless_old_subfolder");
+    w.WriteCurrent(w.Cur(), "cur", true);
+    fs::create_directories(w.Old() / "sub");
+    const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+    CKF(Is(r, Outcome::kImported), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+    CK(Exists(w.ud / "doax2_suits.old-2" / "sub"));
+    CK(!Exists(w.Old()));
+  }
+}
+
+// RemoveOurs deletes the marker before the folder: when the folder itself cannot go (another program holds a handle on it),
+// the marker is put back, so the next try still knows the folder. (Without it the folder would be an empty stranger.)
+static void TestHeldFolderKeepsMarker() {
+  Group("held_folder_keeps_marker");
+  World w("held_folder");
+  w.WriteCurrent(w.Cur(), "cur", true);
+  fs::create_directories(w.New());
+  WriteText(w.New() / kMarker, "doa4 suit importer\n");
+  synth::WriteFileBytes(w.New() / "a_suit.tpr", synth::Seeded(3, 500));  // no manifest: an interrupted import
+  HANDLE dir = CreateFileW(w.New().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  CK(dir != INVALID_HANDLE_VALUE);
+  const std::string why1 = CompletePendingSwap(w.ud);
+  CKF(!why1.empty(), "the folder is held: a failed cleanup says why");
+  CK(Exists(w.New()));
+  CKF(Exists(w.New() / kMarker), "the folder lost its marker while it could not be deleted");
+  CK(!Exists(w.New() / "a_suit.tpr"));
+  CloseHandle(dir);
+  const std::string why2 = CompletePendingSwap(w.ud);
+  CKF(why2.empty(), "%s", why2.c_str());
+  CK(!Exists(w.New()));
+}
+
+// A swap whose rename is blocked by an open file is retried (10 tries over about a second, the token looked at between tries).
+static void TestSwapRetriesBlockedRename() {
+  Group("swap_retries_blocked_rename");
+  // (a) The game holds a file of the current import for 300 ms of the swap: the first rename waits and the import completes.
+  // (b) The same for a file of .new: the second rename waits.
+  for (int which = 0; which < 2; ++which) {
+    World w(which == 0 ? "retry_first_rename" : "retry_second_rename");
+    w.WriteCurrent(w.Cur(), "cur", true);
+    std::shared_ptr<doa4::afs::FileSource> held;
+    std::thread releaser;
+    Clock::time_point t_swap;
+    w.phase_hook = [&](Phase p) {
+      if (p != Phase::kSwapping) return;
+      t_swap = Clock::now();
+      held = doa4::afs::FileSource::Open(which == 0 ? w.Cur() / "cur_a.bin" : w.New() / "manifest.txt");
+      releaser = std::thread([&held] {
+        SleepMs(300);
+        held.reset();
+      });
+    };
+    const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+    const long long ms = MsSince(t_swap);
+    if (releaser.joinable()) releaser.join();
+    CKF(Is(r, Outcome::kImported), "%s: outcome %d (%s)", which == 0 ? "first" : "second", int(r.outcome), r.detail.c_str());
+    CKF(ms >= 250, "%s: the swap took %lld ms: it did not wait for the open file", which == 0 ? "first" : "second", ms);
+    CheckImportFolder(w, w.Cur(), {}, "the import after a short block");
+    CK(!Exists(w.New()) && !Exists(w.Old()));
+  }
+  // (c) A file held for the whole retry window: kSwapPending as before, after about a second of tries.
+  {
+    World w("retry_window_exhausted");
+    w.WriteCurrent(w.Cur(), "cur", true);
+    std::shared_ptr<doa4::afs::FileSource> held = doa4::afs::FileSource::Open(w.Cur() / "cur_a.bin");
+    CK(held != nullptr);
+    Clock::time_point t_swap;
+    w.phase_hook = [&](Phase p) {
+      if (p == Phase::kSwapping) t_swap = Clock::now();
+    };
+    const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+    const long long ms = MsSince(t_swap);
+    CKF(Is(r, Outcome::kSwapPending), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
+    CKF(ms >= 800 && ms <= 6000, "the retries took %lld ms (wanted about 1000)", ms);
+    CK(Exists(w.New()) && VerifyImportFolder(w.New()).empty());
+  }
+  // (d) A cancel during the retries is seen between tries: the import is abandoned at once (nothing was moved).
+  {
+    World w("retry_cancelled");
+    w.WriteCurrent(w.Cur(), "cur", true);
+    std::shared_ptr<doa4::afs::FileSource> held = doa4::afs::FileSource::Open(w.Cur() / "cur_a.bin");
+    CK(held != nullptr);
+    const Snap cur_before = SnapTree(w.Cur());
+    std::atomic<ImportJob*> job_ptr{nullptr};
+    std::atomic<long long> cancelled_at{0};
+    std::thread canceller;
+    Clock::time_point t0;
+    w.phase_hook = [&](Phase p) {
+      if (p == Phase::kCheckingSpace) SleepMs(30);  // the test stores the job's address first
+      if (p != Phase::kSwapping) return;
+      t0 = Clock::now();
+      canceller = std::thread([&] {
+        SleepMs(100);
+        cancelled_at = MsSince(t0);
+        if (ImportJob* j = job_ptr.load()) j->Cancel();
+      });
+    };
+    auto job = ImportJob::StartForTest(w.Req(2), w.MakeHooks());
+    job_ptr = job.get();
+    CK(WaitDone(*job, 30000));
+    const long long done_ms = MsSince(t0);
+    if (canceller.joinable()) canceller.join();
+    CKF(Is(job->result(), Outcome::kCancelled), "outcome %d (%s)", int(job->result().outcome), job->result().detail.c_str());
+    CKF(done_ms - cancelled_at.load() <= 400, "done %lld ms after the cancel", done_ms - cancelled_at.load());
+    CK(!Exists(w.New()) && !Exists(w.Old()));
+    CK_SAME(cur_before, SnapTree(w.Cur()), "the current import");
+  }
+}
+
+// The free-space check counts the bytes of a leftover .new that the recovery will delete: one with our marker, an empty one, one
+// holding only the marker's temporary file. A foreign .new frees nothing.
+static void TestFreeSpaceCountsLeftover() {
+  Group("free_space_counts_leftover");
+  const auto Sum = [](const fs::path& dir) {
+    uint64_t total = 0;
+    for (const auto& [k, v] : Sizes(dir))
+      if (v != uint64_t(-1)) total += v;
+    return total;
+  };
+  // kind: 0 marked interrupted, 1 temp-marker only, 2 foreign (no marker), 3 nothing, 4 empty
+  for (int kind = 0; kind <= 4; ++kind) {
+    for (int edge = 0; edge < 2; ++edge) {  // free = needed - leftover (proceeds), one byte less (refused)
+      if (kind >= 2 && edge > 0) continue;
+      World w("free_space_" + std::to_string(kind) + "_" + std::to_string(edge));
+      w.WriteCurrent(w.Cur(), "cur", true);
+      fs::create_directories(w.New());
+      if (kind == 0) {
+        WriteText(w.New() / kMarker, "doa4 suit importer\n");
+        WriteSparse(w.New() / "leftover.tpr", 10u << 20);
+      } else if (kind == 1) {
+        WriteSparse(w.New() / ".doa4-suitconv.tmp", 10u << 20);
+      } else if (kind == 2) {
+        WriteSparse(w.New() / "stray.bin", 10u << 20);
+      } else {
+        fs::remove_all(w.New());
+        if (kind == 4) fs::create_directories(w.New());
+      }
+      const uint64_t need = BytesNeeded(w.suits);
+      const uint64_t counted = (kind == 0 || kind == 1) ? Sum(w.New()) : 0;
+      const bool proceeds = (kind == 0 || kind == 1) ? edge == 0 : false;
+      w.free_value = need - counted - (edge == 0 ? 0 : 1);
+      if (kind >= 2) w.free_value = need - 1000;
+      const Snap before = SnapTree(w.ud);
+      const ImportResult r = RunJob(w, w.MakeHooks(), 2);
+      if (proceeds) {
+        CKF(Is(r, Outcome::kImported), "kind %d edge %d: outcome %d (%s)", kind, edge, int(r.outcome), r.detail.c_str());
+        CheckImportFolder(w, w.Cur(), {}, "the import over a leftover");
+      } else {
+        CKF(Is(r, Outcome::kNoSpace), "kind %d edge %d: outcome %d (%s)", kind, edge, int(r.outcome), r.detail.c_str());
+        CK_SAME(before, SnapTree(w.ud), "user data after kNoSpace");
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // VerifyImportFolder
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -2000,6 +2476,26 @@ static void CheckRealImport(const char* what, const RealRun& run, const Files& o
 }
 
 // real_import_equals_oracle: one production import, the folder equals the reference byte for byte.
+// The game's costume tables as the game holds them in memory (the fixture bytes the loader's own host test uses), for
+// doa4::suits::LoadImport.
+struct FixtureGuest {
+  std::map<uint32_t, uint8_t> bytes;
+  doa4::GuestBytes guest{[this](uint32_t a) {
+                           const auto it = bytes.find(a);
+                           return it == bytes.end() ? uint8_t(0) : it->second;
+                         },
+                         [this](uint32_t a, uint8_t v) { bytes[a] = v; }};
+  FixtureGuest() {
+    Load(doa4_fixtures::kTablesStart, doa4_fixtures::kTables);
+    Load(doa4_fixtures::kRecordsStart, doa4_fixtures::kRecords);
+    Load(doa4_fixtures::kFilesStart, doa4_fixtures::kFiles);
+  }
+  template <size_t N>
+  void Load(uint32_t start, const std::array<uint8_t, N>& data) {
+    for (size_t i = 0; i < N; ++i) bytes[start + uint32_t(i)] = data[i];
+  }
+};
+
 static void TestRealImportEqualsOracle() {
   RealEnv env;
   if (!GetRealEnv("real_import_equals_oracle", &env)) return;
@@ -2007,6 +2503,16 @@ static void TestRealImportEqualsOracle() {
   const RealRun run = RunRealImport(env, "equals_oracle", {});
   CheckRealImport("real import", run, oracle);
   CK(run.files.size() == 70);  // the 68 suit files, manifest.txt and the marker
+  // The folder the job wrote is accepted by the game's own loader: all 34 suits pass every check, none skipped. (The loader
+  // keeps the files open for the rest of the process.)
+  {
+    FixtureGuest guest;
+    const dsuits::ImportStatus st = dsuits::LoadImport(run.ud / "doax2_suits", fs::path(env.game), guest.guest);
+    CKF(st.problem.empty(), "LoadImport: %s", st.problem.c_str());
+    CKF(st.suits.size() == 34 && st.skipped.empty(), "LoadImport accepted %zu suits, skipped %zu (%s)", st.suits.size(),
+        st.skipped.size(), st.skipped.empty() ? "" : st.skipped[0].c_str());
+    std::printf("real_import_equals_oracle: LoadImport accepted %zu of 34\n", st.suits.size());
+  }
   std::printf("real_import_equals_oracle: outcome %d, %zu files compared with %zu of the reference, %.1f s\n",
               int(run.result.outcome), run.files.size(), oracle.size(), run.wall_s);
 }
@@ -2296,6 +2802,13 @@ int main() {
       TestThreadAndRegistrationFailures();
       TestThrowBetweenSwapRenames();
     }
+    if (Want("final_guard")) TestInProcessGuard();
+    if (Want("final_ownerless")) TestOwnerlessFolderRecovery();
+    if (Want("final_held_folder")) TestHeldFolderKeepsMarker();
+    if (Want("final_swap_retry")) TestSwapRetriesBlockedRename();
+    if (Want("final_free_space")) TestFreeSpaceCountsLeftover();
+    if (Want("final_throwing_log")) TestThrowingLogCallback();
+    if (Want("final_destroy")) TestDestroyFromLogCallback();
     if (run_real) {
       TestRealImportEqualsOracle();
       TestRealImportWorkerCounts();

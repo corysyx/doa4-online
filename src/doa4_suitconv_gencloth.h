@@ -1,4 +1,4 @@
-// Suit converter (Plan 2): the generated cloth, a port of the recipe's cloth_gen.py (physics_spike/recipe_m1/cloth_gen.py
+// Suit converter (Plan 2): the generated cloth, a port of the recipe's cloth_gen.py (the Python recipe's cloth_gen.py
 // prep, derive, straight_lines, build and walk, with GENERATED, SOFT_HEM, DONOR_PROPERTY and WELD as constants). Python's name ->
 // C++ name: snake_case -> CamelCase. The report text (`report.append`) is not ported; values computed only for it are not
 // computed.

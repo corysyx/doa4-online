@@ -1,5 +1,5 @@
 // Suit converter (Plan 2): the bust channel, a port of physics_port.py's prep_bust, build_mpv and bust_peak
-// (physics_spike/recipe_m1/physics_port.py lines 28-121, 124-174 and 971-982, SHA-1 b8b69003c5ae388868ed8e5fff5f50a91263f98a).
+// (the Python recipe's physics_port.py lines 28-121, 124-174 and 971-982, SHA-1 b8b69003c5ae388868ed8e5fff5f50a91263f98a).
 // Python's name -> C++ name: snake_case -> CamelCase. The report text (`report.append`) is not ported.
 //
 // PrepBust runs after build_objects: per chest part with a 7-buffer morph decl it computes the down and up offsets per
