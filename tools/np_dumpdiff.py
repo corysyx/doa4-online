@@ -76,7 +76,7 @@ SWEEP_MASKS = [
 ]
 # A mixed session's frame-0 compare only: the game no longer hashes these (a mixed session runs no sweep, np_digest.h), but np_pair still
 # compares the whole .data at frame 0, a check on the boot that nothing in the game makes. By then the only thing an import has changed is
-# what the guest read of the archives' sizes while booting, per PC (Task 5 report section 1, Task 6 report section 4). The task slots' fiber
+# what the guest read of the archives' sizes while booting, per PC. The task slots' fiber
 # pointers are not here: they are masked in the digest, and they still agree at frame 0.
 MIXED_MASKS = [
     (0x82C5ED18, 4),

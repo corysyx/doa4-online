@@ -12,7 +12,7 @@
 //     the host socket() fails (X_STATUS_UNSUCCESSFUL through xeRtlNtStatusToDosError, sdk-np1
 //     src/kernel/xboxkrnl/xboxkrnl_error.cpp: error_table_0xC0000001[0]), which sub_82445178 returns after
 //     WSAGetLastError.
-// Census (Task 13 report): one caller (sub_82449D48, main thread, once at boot), which hands the value back to
+// Census: one caller (sub_82449D48, main thread, once at boot), which hands the value back to
 // sub_824F4210, which drops it; the field is read only by sub_82449EA8 (skips its recvfrom loop when it is -1)
 // and the sendto wrapper sub_82445250 (Xbox Live flows only; with -1 the SDK's NetDll_sendto answers
 // WSAENOTSOCK without a host call). Offline (no session) the function runs as the game wrote it.

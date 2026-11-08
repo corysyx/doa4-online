@@ -13,8 +13,7 @@
 // not from a manifest, so both PCs build the same bytes; the overlays come from SessionFiles, the files this PC holds. A model
 // whose files this PC lacks stays an empty slot (MarkEmptySlots), and the load guard sends it to the girl's first costume.
 // What cannot be equal in kMixed: the guest reads the archives' TOCs through the overlays while it boots, before frame 0, so its
-// per-file size tables hold the suits' sizes on a PC with the files and the placeholders' on one without (the task 5 report lists
-// the ranges; masking them, in kMixed only, is the mixed sessions' check).
+// per-file size tables hold the suits' sizes on a PC with the files and the placeholders' on one without (masking them, in kMixed only, is the mixed sessions' check).
 
 #pragma once
 

@@ -707,8 +707,7 @@ REX_HOOK_RAW(sub_8279FAA8) {
 // looks free: the main thread enters and leaves it without ever signalling,
 // and the loader waits for good. The first queued load job (ring 0x830ADB0C
 // entry 0, frame 44 of a session) is never taken: a desync at frame 44
-// online, a hung replay offline (notes/plans/2026-10-30-doa4-netplay-phase1/
-// debug-loader-idle-report.md).
+// online, a hung replay offline.
 //
 // The fix keeps the order the game's code assumes: the loader thread's start
 // waits until sub_824F4560 has returned. Nothing in sub_824F4560 after the

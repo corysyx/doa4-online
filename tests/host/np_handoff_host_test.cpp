@@ -11,7 +11,7 @@
 //    layout in this file (Raw / Encode), which can also write what Pack refuses (a bad name, a lying length);
 //  - the limits are the brief's numbers (16 files, 262,144 / 300,000 bytes, 120-byte names, 6 components);
 //  - the allowed name characters are a literal string, not a predicate copied from the code;
-//  - the guest-setting names are pinned from the census (the Task 4 report: EVERY cvar the SDK's src defines, decided
+//  - the guest-setting names are pinned from the census (EVERY cvar the SDK's src defines, decided
 //    by reading its uses): the carried list, the not-carried list with a family tag each, the total, and the trust
 //    class with its defaults; the last test scans the real SDK and port sources and fails if a defined cvar is in
 //    neither list, a listed one is not defined, or a trust-class default differs from the SDK's own.

@@ -1,6 +1,6 @@
 # Imported swimsuits online: the decision record (Task 7, Task 7b)
 
-Sections 1, 3c and 6 are Task 7b's, on `public-suits` after 34d7204, snapshot `t8b` (a snapshot of the working tree before the fixes were committed as 5f00ad4, not of a commit: **every number in `t8/gsum_all.txt` and in this record's tables is from `t8b`**); section 3d is Task 7c's fix round, and section 9 is the final-commit gate, **which has not run yet**; the rest describes Task 7's runs. Task 7's build: `public-suits` at 061820b, tools/np_build.bat, SDK sdk-np1-ft, snapshot `t7b` (rebuilt from the clean tree; `git status` shows only `tools/__pycache__`). Import under test: the `all34_m1` import (the m1 recipe, per-suit bust strengths; local test data, not in this repository), copied into a test user data folder for whichever side holds it. The evidence folder and the report are not in this repository.
+Sections 1, 3c and 6 are Task 7b's, on `public-suits` after 34d7204, snapshot `t8b` (a snapshot of the working tree before the fixes were committed as 5f00ad4, not of a commit: **every number in the summary of the `t8b` runs and in this record's tables is from `t8b`**); section 3d is Task 7c's fix round, and section 9 is the final-commit gate, **which has not run yet**; the rest describes Task 7's runs. Task 7's build: `public-suits` at 061820b, tools/np_build.bat, SDK sdk-np1-ft, snapshot `t7b` (rebuilt from the clean tree; `git status` shows only `tools/__pycache__`). Import under test: the 34-suit import made with the m1 recipe (per-suit bust strengths; local test data, not in this repository), copied into a test user data folder for whichever side holds it. The evidence folder and the report are not in this repository.
 
 ## 1. Verdict
 
@@ -16,7 +16,7 @@ Sections 1, 3c and 6 are Task 7b's, on `public-suits` after 34d7204, snapshot `t
 
 ## 2. The audit: who draws from 0x8357B5C0
 
-**Method.** `DOA4_NP_TRACE=clock` (the brief's `mt8357B5C0` does not enable the trace: `np_det_trace.cpp` tests for the substring `clock`, and the trace lines it writes do carry the `mt8357B5C0` call counts by return address). Every run below was traced on both peers: 17 pairs, 34 traces, Single and Tag, through the menus, the loads, the rounds, the KO replay, the result, the post-match select (6000 frames of random pads) and a rematch into a second full match. Each return address was mapped to its containing function (`t7/callers.py`, using `asm_index.json`). A "round" frame is one with the fight state byte 0x830ACF85 equal 2.
+**Method.** `DOA4_NP_TRACE=clock` (the brief's `mt8357B5C0` does not enable the trace: `np_det_trace.cpp` tests for the substring `clock`, and the trace lines it writes do carry the `mt8357B5C0` call counts by return address). Every run below was traced on both peers: 17 pairs, 34 traces, Single and Tag, through the menus, the loads, the rounds, the KO replay, the result, the post-match select (6000 frames of random pads) and a rematch into a second full match. Each return address was mapped to its containing function (with a small script over an index of the game's disassembly). A "round" frame is one with the fight state byte 0x830ACF85 equal 2.
 
 **Reached: 114 functions** (125 function-by-thread rows; 31 functions draw on a worker thread). **53 draw inside a round, 61 only outside.**
 
@@ -26,7 +26,7 @@ Sections 1, 3c and 6 are Task 7b's, on `public-suits` after 34d7204, snapshot `t
 | F | family inferred from the address neighbourhood, the callees and the global footprint; the draw site not read | 32 | 34 |
 | U | unclassified | 2 | 23 |
 
-Full table (function, thread, sites, draws in a round, draws outside, class, level, what the draw writes to): `t7/audit_table.md`, appended in section 8.
+Full table (function, thread, sites, draws in a round, draws outside, class, level, what the draw writes to): the audit table, appended in section 8.
 
 **What the read callers do with the value (R):**
 - **Effects (12 read, plus the F ones).** `sub_8259E2A8` (180 particle slots of 80 bytes: the draw is added to the float at slot+0x44, 9.5 M draws in rounds), `sub_82596C40` (60 slots), `sub_825A4F60`, the spawners `sub_82594A88/B68/C68/DF8/F98`, `sub_8259DD48`, `sub_825AF838`. Each stores a float or a 2/3-bit sprite variant into an effect slot or a stack vector handed to a spawn call. Their callee closures (8 deep) contain no writer of the fighter table 0x83033B40..0x83033DB0 and no `sub_824061A0` (the only function that touches the main generator 0x833F7600).
@@ -158,11 +158,11 @@ Suits off in Tag would need a value that says Tag on both peers before the costu
 
 The report and its evidence folder are not in this repository; the code is a commit on this branch.
 
-**The tick hook's guard is testable.** `BeginLoaderTick` refuses a slot of `kLoadSlotCount` (4) or more itself, and the hook passes `SessionSuitsMixed()` as its `mixed` argument instead of returning early; both are pinned in `tests/host/costumes_host_test.cpp` (an empty-slot row is untouched and not swapped with `mixed` false, and at slots 4, 5 and 255). **What rests on reading only:** the hook's one argument. If it were wrong (true outside a mixed session), the request and the tick would keep the asked model in the row and swap it per tick in such a session. *Can `kEmptySlot` arise there at all? In `kSame`, yes; in `kNone`, not shown.* `DecideLoad` returns it whenever `state.empty_slot[character]` holds the model (`src/doa4_costumes.cpp:292`); `MarkEmptySlots` fills that set from the archives for every record whose body files are empty slots, whoever imported what (`src/doa4_suits.cpp:320`); and the guard is installed in every session, imports or none (`src/dead_or_alive_4_app.h:1634`). `kSame` builds its tables from the picks, so a pick this PC has no files for stays an empty slot (`src/dead_or_alive_4_app.h:1527-1529`). `kNone` applies no tables, and a model past the vanilla count takes `kPastRecords` first (`src/doa4_costumes.cpp:291`), so there it needs an empty-slot record in the vanilla image, which wasn't checked. Task 7b's report said "no empty slot is asked for in `kNone` or `kSame`": that held for the runs, not for the code. Today the request hook rewrites such a request (`RequestModel(d, false)`), so the row never holds an empty-slot model there and the tick has nothing to swap; with a wrong argument the row would keep the key and that session's digest rows would differ from today's, with both peers still alike. Not a desync: a change of behaviour, which the rule for `kNone` and `kSame` forbids. No host test reaches the hook's call site; the live `M6` and `M7` compare against Task 7's rows (section 9) is what would show it.
+**The tick hook's guard is testable.** `BeginLoaderTick` refuses a slot of `kLoadSlotCount` (4) or more itself, and the hook passes `SessionSuitsMixed()` as its `mixed` argument instead of returning early; both are pinned in `tests/host/costumes_host_test.cpp` (an empty-slot row is untouched and not swapped with `mixed` false, and at slots 4, 5 and 255). **What rests on reading only:** the hook's one argument. If it were wrong (true outside a mixed session), the request and the tick would keep the asked model in the row and swap it per tick in such a session. *Can `kEmptySlot` arise there at all? In `kSame`, yes; in `kNone`, not shown.* `DecideLoad` returns it whenever `state.empty_slot[character]` holds the model (`src/doa4_costumes.cpp:292`); `MarkEmptySlots` fills that set from the archives for every record whose body files are empty slots, whoever imported what (`src/doa4_suits.cpp:320`); and the guard is installed in every session, imports or none (`src/dead_or_alive_4_app.h:1634`). `kSame` builds its tables from the picks, so a pick this PC has no files for stays an empty slot (`src/dead_or_alive_4_app.h:1527-1529`). `kNone` applies no tables, and a model past the vanilla count takes `kPastRecords` first (`src/doa4_costumes.cpp:291`), so there it needs an empty-slot record in the vanilla image, which wasn't checked. The earlier test report said "no empty slot is asked for in `kNone` or `kSame`": that held for the runs, not for the code. Today the request hook rewrites such a request (`RequestModel(d, false)`), so the row never holds an empty-slot model there and the tick has nothing to swap; with a wrong argument the row would keep the key and that session's digest rows would differ from today's, with both peers still alike. Not a desync: a change of behaviour, which the rule for `kNone` and `kSame` forbids. No host test reaches the hook's call site; the live `M6` and `M7` compare against Task 7's rows (section 9) is what would show it.
 
 **A resync skips a frame on which the generator's lock is held.** `ResyncSceneGenerator` (`src/net/np_digest.h`) reads the lock count at `scene + 2520` first: if any of its four bytes is not 0xFF it returns false and writes nothing; the session counts true as `gen_sync_frames` and false as `gen_sync_locked`. What a skip costs: nothing is corrupted, but the two PCs then differ from that frame's first draw, the camera's included, so a skip on a tag-out frame could move a fighter and end in a desync; the next boundary makes them equal again. The test and the write aren't atomic, so this narrows the window and doesn't close it. The workers run beside main only after the wait times out or when a worker has no rank (`kFbUnranked`). Why it matters: `np_det_workers` mode 3 gives main a 2 s wait after which the workers run beside it, which on a slower PC can happen, and a write under a holder hands it a state it is halfway through using. The 7b runs found the lock free on every frame of every pair, so none of this has been seen to happen. `np_pair` still fails a pair on any held frame.
 
-**The resync must have covered every frame (`np_pair`).** Each side: frames made equal plus frames found locked must be at least that side's terminal frame plus one. Real logs: `made equal on 8049 frames`, terminal frame 8048, one more than the frame, on every pair in `t8` (controls and desync pairs included, checked by value). A resync that ran on a few frames passed a bare `\d+` before. The fake game now writes the line only when a boundary was made equal or found locked, as the game does.
+**The resync must have covered every frame (`np_pair`).** Each side: frames made equal plus frames found locked must be at least that side's terminal frame plus one. Real logs: `made equal on 8049 frames`, terminal frame 8048, one more than the frame, on every pair of the `t8b` runs (controls and desync pairs included, checked by value). A resync that ran on a few frames passed a bare `\d+` before. The fake game now writes the line only when a boundary was made equal or found locked, as the game does.
 
 **The `EndLoaderTick` case no test covered.** A cached row (character C, the real file model F in +5/+6), asked again for the suit S, takes the tick's "same files" shortcut (`sub_823FE150`, `loc_823FE240`: +0 becomes 11, +5 and +6 are not touched), so End rewrites +6 to S although the tick did not write it. Re-derived from the generated code: the matcher `sub_823FE9D0` reads +5/+6 only while +0 is 255 (`loc_823FEA24` is reached only then); the next tick sees status 11, above the dispatch table's 10, and goes to `loc_823FE83C`, which copies +3/+4 into +5/+6 and sets +0 to 255; End then puts +4 and +6 back to S, so both PCs' idle rows end (C, S). The only difference between the peers is the one frame between the two ticks, in a row the matcher does not read: the load-timing difference that already existed. Pinned by a fixture, and the header's comment says what the code does. The other reader of +5 with +0 idle, `sub_823FEA60`, reads +5 only; not changed.
 
@@ -216,11 +216,11 @@ The report and its evidence folder are not in this repository; the code is a com
 - The brief's trace switch `mt8357B5C0` does nothing; `clock` produces the same lines.
 - The Free button is not X. A and LEFT+A throw; X did not.
 - `helena_hitomi.txt` was not copied; the M3 script (Helena and Lei) at first stopped on the stage select because the load took longer than 360 frames, and was re-run with 800 (section on vacuous checks in the report).
-- The import is `all34_m1`, not the one the brief names.
+- The import is the 34-suit one made with the m1 recipe, not the one the brief names.
 
 ## 8. Audit table
 
-Written to `t7/audit_table.md`; its rows follow.
+The audit table's rows follow.
 | function | thread | sites | draws in a round | draws outside | class | level | what the draw writes to |
 |---|---|---|---|---|---|---|---|
 | sub_82318730 | main | 7 | 388101 | 2065155 | camera | R | per-frame camera update on game_obj (r31): 35 draws/frame become shake offsets stored at game_obj+0xC70/0xC74 (stfs 3184/3188(r31)); a fighter reading the camera was not traced |
@@ -340,7 +340,7 @@ Written to `t7/audit_table.md`; its rows follow.
 
 ## 9. The final-commit gate (Task 7c)
 
-Snapshot `t9`, built from commit 3ec2343, SDK `sdk-np1-ft` c276e9b. `t9/batch7.sh`, 24 pairs, 2026-11-07, 90 minutes, nothing else running. Read with `t9/summ.py` (`t9/summ_all.txt`). The rows of sections 3 and 3c are from `t8b`; this section is what a commit has run.
+Snapshot `t9`, built from commit 3ec2343, SDK `sdk-np1-ft` c276e9b. A batch script ran 24 pairs on 2026-11-07, 90 minutes, nothing else running; a summary script read them. The rows of sections 3 and 3c are from `t8b`; this section is what a commit has run.
 
 | Pairs | Script | Holder | Frames | Round frames | Result |
 |---|---|---|---|---|---|
@@ -363,7 +363,7 @@ In all of them: `verdict ok`, position, life and state rows differing 0, made-eq
 
 **After this gate,** comments, `tools/np_pair.py`, the fake, its tests, this record and the SDK pin changed (`git diff 3ec2343`); the code the game runs did not. The final commit's short run is below.
 
-**The final commit, a5d9135, snapshot `t10`, 2026-11-07 (`t9/batch8.sh`, `t9/summ_z.txt`).**
+**The final commit, a5d9135, snapshot `t10`, 2026-11-07 (a second batch script and its summary).**
 
 | Pair | Script | Holder | Frames | Round frames | Result |
 |---|---|---|---|---|---|

@@ -48,7 +48,7 @@ folder; and, only for the swimsuits, your own **USA** copy of *Dead or Alive Xtr
    - **Windows Firewall:** when Windows asks, tick **both Private and Public** and allow the game
      (both players). If the prompt is hidden behind the game, press **Alt+Tab**.
 5. **Play.** When both show *Connected*, the host presses **Start online session**. Both games
-   restart into the session (host = player 1). Pick **Versus**, your characters and a stage, and
+   restart into the session (host = player 1). At the title screen **only the host presses Start**, so the game loads the host's profile. The friend should not press anything until the menus appear: if the friend advances the title screen, the game can freeze for both players, and you then need to leave the session (**Leave online session**) and start a new one. Pick **Versus**, your characters and a stage, and
    fight. Everything is unlocked in a session and your own save is never changed.
 6. **Finish.** **Leave online session** in the Online tab; both games restart offline.
 
@@ -58,6 +58,8 @@ If the friend's game shows its own code while connecting, the host can type it u
 [Online play](#online-play-in-more-detail).
 
 ## Online play in more detail
+
+**How it works:** online play links the two games so they play as if both players sat at one console. The host is player 1 and the friend is player 2 of an ordinary offline game (pick **Versus**, characters and a stage as you would at home), and each player's controller input is sent to the other PC. The game's own online mode (its Xbox Live menus) does not work: there are no Xbox Live lobbies, matchmaking or avatars. Connect through the Esc menu's **Online** tab instead.
 
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
@@ -262,6 +264,10 @@ that need a restart, and changing the game folder.
 | Lei COS. 10 skirt: her panties go through the back in idle, the left side comes out in idle, and both sides stand up in guard and crouch. | Postponed. |
 | Hitomi's wrists; Kokoro COS. 11 elbows and wrists; Lei COS. 11 wrist seam (assumed on all her suits). | Postponed. |
 | Kasumi COS. 10 clips through her top on the bounce. | Postponed. |
+| First start with an extracted *Dead or Alive 4* folder: choosing it on the setup screen starts the game right away, before the optional DOAX2 swimsuit step. | Import the swimsuits any time from the Esc menu, **Extras** tab, **Import DOAX2 swimsuits...**. A fix is planned. |
+| The profile / storage device screen on the first start hides the mouse pointer, which makes it awkward to click through. | A fix is planned: the screen should work with a controller or keyboard, or show the pointer. |
+| The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
+| Online: if the joining player presses Start at the title screen, the session can freeze for both players. | Only the host should press Start; if it freezes, leave the session and start a new one. |
 | Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
 
 ## Roadmap

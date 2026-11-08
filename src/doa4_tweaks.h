@@ -44,7 +44,7 @@ inline constexpr size_t kKokoroKimonos = 3;
 inline constexpr size_t kChristieCostume = 4;
 const std::array<Tweak, 5>& AllTweaks();
 
-// The game's costume tables (notes/research/doa4_costume_system.md), by charId. The lookup sub_82526B78 reads the list,
+// The game's costume tables, by charId. The lookup sub_82526B78 reads the list,
 // the variants and the length; the select screen and the unlocks read the max.
 inline constexpr uint32_t kCostumeMax = costume_lists::kMax;            // u8[25]
 inline constexpr uint32_t kCostumeLength = costume_lists::kLength;      // u8[25]

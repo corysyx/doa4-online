@@ -38,11 +38,8 @@ void Section(Flow& flow, const DrawHooks& hooks) {
 }  // namespace
 
 void DrawSuitChosenLine(const Flow& flow) {
-  if (flow.source().empty()) {
-    Wrapped(std::string(kNotChosen));
-  } else {
-    Wrapped(std::string(kChosenPrefix) + Utf8(flow.source()));
-  }
+  if (flow.source().empty()) return;
+  Wrapped(std::string(kChosenPrefix) + Utf8(flow.source()));
 }
 
 void DrawSuitImport(Flow& flow, const DrawHooks& hooks) {

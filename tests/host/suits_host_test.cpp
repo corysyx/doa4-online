@@ -1629,7 +1629,7 @@ static void TestPicksTable() {
   CHECK(per[5] == 4 && per[13] == 3 && per[21] == 4 && per[10] == 4 && per[7] == 4 && per[15] == 3 && per[20] == 4 && per[12] == 4 &&
         per[1] == 4);
   // Pinned for a run with no real manifest: the SHA-1 of the table's own lines, derived by a script from the real manifest
-  // (imports/all34_r18/manifest.txt: each line's first nine words, its file names, size 0, no hash), not from this table.
+  // (a real 34-suit import's manifest: each line's first nine words, its file names, size 0, no hash), not from this table.
   std::string lines;
   for (const Suit& s : picks) lines += FormatSuitLine(s);
   CHECK(doa4::gamefiles::Sha1Hex(lines.data(), lines.size()) == "a2eff1921139fa78fb21f38a0e40b40efb2e1289");

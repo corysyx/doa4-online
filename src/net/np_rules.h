@@ -72,7 +72,7 @@ std::string ConnectTimeoutText(Nat nat, uint16_t port);
 std::string HostWaitingHint(uint16_t port);
 
 // ---- Input delay and pacing (spec 5) ----
-// retail (notes/research/doa4_own_online.md:81): no QoS -> 10; <= 33 ms -> 2; >= 266 ms -> 10; else
+// retail: no QoS -> 10; <= 33 ms -> 2; >= 266 ms -> 10; else
 // floor((rtt*2997 + 199999) / 100000) (9 at 266, 10 from 267, so retail's own 10 at 266 is a jump); then clamped 1..8,
 // which makes everything from 234 ms up 8. Here: < 0 (no measurement) -> 10; 0..33 -> 2; else the formula; clamped.
 int DelayFromRtt(int rtt_ms);

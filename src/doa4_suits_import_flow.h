@@ -36,7 +36,6 @@ inline constexpr std::string_view kSectionTitle =
     "DOAX2 swimsuits (optional): needs your own USA copy of Dead or Alive Xtreme 2";
 inline constexpr std::string_view kUnlockNote =
     "Importing the swimsuits also unlocks all the DOA4 costumes for the nine girls who have them. Your save isn't changed.";
-inline constexpr std::string_view kNotChosen = "Not chosen: the game runs with its normal costumes.";
 inline constexpr std::string_view kChosenPrefix = "Swimsuits from: ";
 inline constexpr std::string_view kOfferTitle = "The DOAX2 swimsuit import did not finish last time.";
 inline constexpr std::string_view kPhaseCheckingSpace = "Checking free space";

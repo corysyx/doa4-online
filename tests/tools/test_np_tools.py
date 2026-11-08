@@ -979,8 +979,8 @@ def test_gate_final_progress(root):
 # ======================================================================================================================
 # Task 12: the cross-PC bundle (tools/np_bundle.py with its templates in tools/np_bundle/) and the cross-check of the
 # friend's results (tools/np_crosscheck.py). Fixture files beside this test, each from a real source:
-#   dpps_canon_sample.txt       the canonical DPPS test's output on this PC (np_phase0/friend_test/dpps_canon_local_2026-10-30.txt)
-#   dpps_friend_old_sample.txt  the OLD DPPS test's output on the friend's PC (np_phase0/friend_test/dpps_friend_2026-10-29.txt)
+#   dpps_canon_sample.txt       the canonical DPPS test's output on this PC
+#   dpps_friend_old_sample.txt  the OLD DPPS test's output on the friend's PC
 #   rec_head_v2.bin             the first 353 bytes of np_runs/t11bsingle_rec/out/rec.d4r: header, meta, two frames
 #   xxh3_vectors.txt            the output of xxh3_vectors.cpp (the xxHash library's own XXH3_64bits_withSeed answers)
 # ======================================================================================================================
@@ -998,7 +998,7 @@ def attempt(fn, *args, **kw):
         return None, f"{type(e).__name__}: {e}"
 
 
-DPPS_LOCAL_CANONICAL = "9358b1f6111e7b0e"  # this PC, np_phase0/friend_test/dpps_canon_local_2026-10-30.txt (task-11b-report.md)
+DPPS_LOCAL_CANONICAL = "9358b1f6111e7b0e"  # this PC (measured 2026-10-30)
 DPPS_LOCAL_COMBINED = "2d0081405299d44a"  # the raw combined hash on this PC (the old exe printed the same)
 DPPS_FRIEND_OLD_COMBINED = "3b6dca40b68d00a6"  # the friend's i5-12400, old exe, 2026-10-29
 

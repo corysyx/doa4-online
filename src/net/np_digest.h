@@ -4,8 +4,7 @@
 // 64 KB blocks of .data, minus SweepRanges). A session with no suits, or with the same import on both PCs, hashes what v1.0.9 hashes.
 //
 // A mixed session (one player has an import the other lacks or has differently, so each PC draws a fighter from its own files) runs no
-// sweep and hashes a positive list instead. Measured over 8 whole runs (notes/plans/2026-11-06-public-importer-plan1-foundation/
-// task-6-report.md): what two such PCs differ in has no end, each new scenario added thousands of words, and Tag added 16 blocks inside its
+// sweep and hashes a positive list instead. Measured over 8 whole runs: what two such PCs differ in has no end, each new scenario added thousands of words, and Tag added 16 blocks inside its
 // rounds, so a list of what to leave out could not be finished and every miss would end a live match. The rows below never differed.
 // During a round both side records are read each frame, so a fighter's position, life and state are checked every frame where the sweep saw
 // them once in 41. Outside a round they count for nothing: previews write to the same words. What such a session gives up: anything that
@@ -25,8 +24,7 @@
 namespace doa4::np {
 
 // Host bookkeeping inside the .data sweep, hashed as zero: each range is touched only by middleware,
-// driver or lock code and never by the game's update (classification: notes/research/
-// netplay_phase0_results.md, "Sweep words"). One exception, by judgement: the vblank count is also read
+// driver or lock code and never by the game's update (classified by what touches each range). One exception, by judgement: the vblank count is also read
 // by game code, but only as a wait's exit condition (nothing derived from it is stored); a frame-keyed
 // value would never advance inside that wait.
 struct SweepMask {
@@ -35,7 +33,7 @@ struct SweepMask {
   const char* why;
 };
 inline constexpr SweepMask kSweepMasks[] = {
-    // debug 82B70000 (notes/plans/2026-10-30-doa4-netplay-phase1/debug-82b70000-report.md): online pair p1t14b desynced
+    // debug 82B70000: online pair p1t14b desynced
     // at frame 10 from this block at frame 0. The host had stashed the SDK handle in this critical section's header
     // (wait-list words "REX\0" + handle), the joiner had not: the CRT thread-start/exit notifier sub_827939E0 (called
     // by every new thread's start trampoline sub_82797768 and by ExitThread's sub_82791288) holds the section while it
@@ -126,7 +124,7 @@ inline constexpr uint32_t kSceneMtLockCount = kSceneMt + 2520;
 // A mixed session makes the scene generator equal on both PCs at each frame boundary (np_session.cpp, after the hash). Why it must: a suit's model
 // loads on another frame than COS. 1's, its one-time draws move with it, and the stream parts; in Tag it does not meet again. The camera's shake
 // (sub_82318730) draws from this stream, and a fighter's tag-out step in a fight moved with the camera (a no-suit session with the stream one draw
-// ahead on one PC, `P1`, and the same with only the camera's draws private, `B1`: task-7b-report.md). So a frame can part the stream only from the
+// ahead on one PC, `P1`, and the same with only the camera's draws private, `B1`). So a frame can part the stream only from the
 // first draw that differs in that frame to the frame's end: what reads the stream later in that frame reads a different number. Measured: a frame
 // ends with the stream apart on 37 of 12199 round frames on one script and 2111 of 7014 on another, from the morph and face timers and the audio
 // pickers. The camera block stayed equal on all of the 16680 round frames logged, so those draws come after the camera's.

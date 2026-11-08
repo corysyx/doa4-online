@@ -1,7 +1,7 @@
 // The one rule for moving a character's costume list, shared by the two systems that write the costume tables: the Extras
 // boxes (doa4_tweaks) and the imported suits (doa4_costumes). Boxes first, suits after them.
 //
-// By charId c (notes/research/doa4_costume_system.md):
+// By charId c:
 //   max[c]   u8   kMax + c        costumes (caps the save's unlock count)
 //   len[c]   u8   kLength + c     list length (the sum of the variant counts)
 //   list[c]  be32 kList + 4c   -> u8 model index per (costume, variant), costume-major
@@ -25,8 +25,7 @@ inline constexpr uint32_t kLength = 0x82C348A4;    // u8[25]
 inline constexpr uint32_t kList = 0x82C348C0;      // be32[25]
 inline constexpr uint32_t kVariants = 0x82C34928;  // be32[25]
 
-// sub_8249A710 indexes a 15-entry threshold table by the unlock count, so a character keeps at most 17 costumes
-// (notes/research/swimsuit_table_readers.md).
+// sub_8249A710 indexes a 15-entry threshold table by the unlock count, so a character keeps at most 17 costumes.
 inline constexpr uint32_t kCostumeLimit = 17;
 // A costume number at or above max makes the lookup read variant bytes past the array, and a costume number is a u8: a
 // block this size with zeros after the data cannot be read past. The boxes' own blocks stay at their v1.0.9 size (32

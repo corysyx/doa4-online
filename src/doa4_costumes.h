@@ -46,7 +46,7 @@ inline constexpr uint64_t kWholeCat = 0x400000;
 // list pointer is a table when inside them, or outside the XEX heap (a box's or Apply's block): IsCostumeTable.
 inline constexpr uint32_t kImageStart = 0x82000000;
 inline constexpr uint32_t kImageEnd = 0x83000000;
-// From Task 1 (notes/research/swimsuit_table_readers.md): sub_8249A710 indexes a 15-entry
+// Found by reading the game's table readers: sub_8249A710 indexes a 15-entry
 // threshold table by the unlock count, so a character keeps at most 17 costumes; a costume
 // number at or above max makes the lookup read variant bytes past the array, so the list and
 // variant copies are 256 bytes with zeros after the data (a u8 costume number cannot reach past).
@@ -147,7 +147,7 @@ std::vector<uint8_t> TableBytes(const GuestBytes& guest, const GuardState& state
 uint8_t VisibleCount(uint8_t save_count, uint8_t list_length, bool has_suits);
 
 // The select screen's per-player copy of the save's counts: u8[25] per player (row = base + 25 * player), indexed by
-// charId. Written by exactly two guest functions (fix round notes: Task 3 report): sub_82525E80 fills one player's row
+// charId. Written by exactly two guest functions: sub_82525E80 fills one player's row
 // from the loaded profile when the screen starts, and sub_82523C18 refills every row from the screen's snapshot of the
 // save. Read by the cursor sub_825265E0, the list drawer sub_82528190 and the random costume sub_82523120.
 inline constexpr uint32_t kCountCopy = 0x83103000;
@@ -200,7 +200,7 @@ LoadDecision DecideLoad(const GuardState* state, const GuestBytes& guest, uint32
 // The game's load slots: 4 rows of 44 bytes from kLoadSlots. +0 status (255 idle), +3 character and +4 model being loaded or asked for, +5 and +6
 // the same once loaded. The game compares these with what it wants (sub_823FE9D0, from the fight's plan sub_823E4748 among others), so in a mixed
 // session they must read the same on both PCs: a redirect written into them makes a tag to that fighter miss on the PC without the suit, and
-// refuses the tag there alone (notes/plans/2026-11-06-public-importer-plan1-foundation/task-7b-report.md). So in a mixed session the request keeps
+// refuses the tag there alone. So in a mixed session the request keeps
 // the model it was asked for, and only the loader's tick sub_823FE150, which turns the row's model into a record of files, reads the other one.
 inline constexpr uint32_t kLoadSlots = 0x830ADBEC;
 inline constexpr uint32_t kLoadSlotBytes = 44;

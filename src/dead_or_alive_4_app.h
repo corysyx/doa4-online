@@ -100,8 +100,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   // Where the game files are: --game_data_root, else the folder the
   // first-run setup saved (doa4_game_files), else the setup screen, which
   // resumes start-up once the user has chosen. The SDK calls this after the
-  // window, the ImGui drawer and the toml exist, before the runtime. See
-  // notes/specs/2026-10-28-first-run-setup-design.md.
+  // window, the ImGui drawer and the toml exist, before the runtime.
   std::optional<rex::PathConfig> OnFinalizePaths(
       const rex::PathConfig& sdk_defaults, std::function<void(rex::PathConfig)> resume) override {
     // The SDK has just titled the window with the exe's name and its build stamp; this is the first app code after that.
@@ -1323,8 +1322,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     SetUpPhotos();
   }
 
-  // Full-quality photos: the service, F12, the notice. See
-  // notes/specs/2026-10-28-photo-mode-design.md.
+  // Full-quality photos: the service, F12, the notice.
   void SetUpPhotos() {
     doa4::photo::Service::Hooks hooks;
     hooks.capture = [this](doa4::photo::Image* image) { return CaptureFrame(image); };

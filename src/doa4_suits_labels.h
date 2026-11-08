@@ -1,6 +1,5 @@
 // doa4_suits_labels.h
-// Costume-select labels past COS. 10 (notes/research/costume_select_ui.md, sections 1, 2, 4(b), 4(c1);
-// redesigned in Task 9b fix round 1).
+// Costume-select labels past COS. 10 (redesigned in a fix round).
 //
 // The costume list drawer sub_82528190 (generated .19.cpp:42601) draws costume i as sprite
 // (6 << 16) | (123 + i): `lis r8,6` + `ori r27,r8,123`, then `add r11,r31,r27` per costume. A sprite id
@@ -24,7 +23,7 @@
 // draw struct, so the queued command carries the new id and the flush finds the label too. Every
 // other draw, including the real Record panel (sub_82528640 reads records 133/134 directly), sees the
 // original records. A census of the 51 functions that form an address in the pointer array found no
-// store into it, no loop over a table's records and no bound on a record index (Task 9b fix 1 report).
+// store into it, no loop over a table's records and no bound on a record index.
 //
 // The art: there is no font, each label is a pre-drawn cell of image 0 (512x256, k_8 = palette
 // indices, Xenos-tiled) of spChrN.xpr / spChrW.xpr (spr.afs entries 8 and 9; images 0-2 are

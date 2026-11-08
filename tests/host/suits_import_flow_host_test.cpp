@@ -865,7 +865,6 @@ static void TestConstantsAndNames() {
   CHECK(kSectionTitle == "DOAX2 swimsuits (optional): needs your own USA copy of Dead or Alive Xtreme 2");
   CHECK(kUnlockNote ==
         "Importing the swimsuits also unlocks all the DOA4 costumes for the nine girls who have them. Your save isn't changed.");
-  CHECK(kNotChosen == "Not chosen: the game runs with its normal costumes.");
   CHECK(kChosenPrefix == "Swimsuits from: ");
   CHECK(kOfferTitle == "The DOAX2 swimsuit import did not finish last time.");
   CHECK(kPhaseCheckingSpace == "Checking free space");

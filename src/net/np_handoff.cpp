@@ -24,8 +24,8 @@ constexpr size_t kFixedBytes = 47;
 constexpr uint8_t kMinDelay = 1;
 constexpr uint8_t kMaxDelay = 8;
 
-// The SDK cvars the census (Task 4 report, Step 1) found can reach the guest, in this order. Each name is a cvar
-// defined in sdk-np1 (the host test checks that against the sources). Why each is here is in the report's table.
+// The SDK cvars the census found can reach the guest, in this order. Each name is a cvar
+// defined in sdk-np1 (the host test checks that against the sources).
 constexpr const char* kSdkSettings[] = {
     // guest kernel and system state: what an export returns to the guest, what the guest image or heap holds
     "user_language", "user_country", "license_mask", "cl", "xex_apply_patches", "kernel_debug_monitor",
@@ -54,8 +54,8 @@ constexpr const char* kSdkSettings[] = {
 // cvar again: a toggle cannot end a match.
 constexpr const char* kPortSettings[] = {"doa4_suits_full_bust"};
 
-// The TRUST class: carried settings whose NON-DEFAULT value weakens a boundary of the PC that applies it (the census
-// table in the Task 4 report says why for each). They are forced to their default on both sides of a session:
+// The TRUST class: carried settings whose NON-DEFAULT value weakens a boundary of the PC that applies it.
+// They are forced to their default on both sides of a session:
 // CaptureGuestSettings writes the default whatever the host has, and ApplyGuestSettings (and so Pack and Unpack)
 // refuses a text that carries another value. The default is the text the cvar registry prints: "true" or "false" for
 // a bool, the decimal number, the string itself. The host test checks each default against the SDK's definition.

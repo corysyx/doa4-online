@@ -22,8 +22,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# AMD Ryzen 7 9800X3D, tests/host/dpps_host_test.cpp as built for the friend (np_phase0/friend_test/dpps_host_test_canon.exe,
-# SHA-1 369bf81b...): np_phase0/friend_test/dpps_canon_local_2026-10-30.txt, task-11b-report.md
+# AMD Ryzen 7 9800X3D, tests/host/dpps_host_test.cpp as built for the friend (SHA-1 369bf81b...), results of 2026-10-30
 LOCAL_DPPS_CANONICAL = "9358b1f6111e7b0e"
 # The same PC, the raw results (what the old exe printed too): information only, never judged
 LOCAL_DPPS_COMBINED = "2d0081405299d44a"
