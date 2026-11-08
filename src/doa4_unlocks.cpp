@@ -52,12 +52,12 @@ int UnlockCharacters(const GuestBytes& guest, uint32_t profile) {
   return changed;
 }
 
-int UnlockCostumes(const GuestBytes& guest, uint32_t profile) {
+int UnlockCostumes(const GuestBytes& guest, uint32_t profile, CostumeMax which) {
   int changed = 0;
   for (int i = 0; i < kCharacterCount; ++i) {
     const uint32_t address = profile + kCostumeCount + uint32_t(i);
     const uint8_t count = guest.Read(address);
-    const uint8_t max = OwnMaxCostumes(guest, i);
+    const uint8_t max = which == CostumeMax::kTable ? MaxCostumes(guest, i) : OwnMaxCostumes(guest, i);
     if (count < max) {
       guest.Write(address, max);
       changed += max - count;
@@ -208,7 +208,7 @@ bool IsWiped(const GuestBytes& guest, uint32_t profile) {
   return wiped;
 }
 
-bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what) {
+bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what, CostumeMax max) {
   switch (what) {
     case Unlock::kCharacters:
       for (int i = 0; i < kCharacterCount; ++i) {
@@ -219,7 +219,10 @@ bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what) {
       return true;
     case Unlock::kCostumes:
       for (int i = 0; i < kCharacterCount; ++i) {
-        if (ProfileByte(guest, profile, kCostumeCount, i) < OwnMaxCostumes(guest, i)) return false;
+        if (ProfileByte(guest, profile, kCostumeCount, i) <
+            (max == CostumeMax::kTable ? MaxCostumes(guest, i) : OwnMaxCostumes(guest, i))) {
+          return false;
+        }
       }
       return true;
     case Unlock::kVoices:
@@ -230,7 +233,7 @@ bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what) {
     case Unlock::kStages:
     case Unlock::kEverything:
       return IsUnlocked(guest, profile, Unlock::kCharacters) &&
-             IsUnlocked(guest, profile, Unlock::kCostumes) &&
+             IsUnlocked(guest, profile, Unlock::kCostumes, max) &&
              IsUnlocked(guest, profile, Unlock::kVoices) && AllStoryCleared(guest, profile);
   }
   return false;
@@ -247,12 +250,12 @@ int OpenStageCount(const GuestBytes& guest, uint32_t profile) {
   return int(nassau) + int(biolab) + int(TatamiOpen(guest, profile));
 }
 
-UnlockResult ApplyUnlock(const GuestBytes& guest, uint32_t profile, Unlock what) {
+UnlockResult ApplyUnlock(const GuestBytes& guest, uint32_t profile, Unlock what, CostumeMax max) {
   UnlockResult result;
   const int stages_before = OpenStageCount(guest, profile);
   const bool all = what == Unlock::kStages || what == Unlock::kEverything;
   if (all || what == Unlock::kCharacters) result.characters = UnlockCharacters(guest, profile);
-  if (all || what == Unlock::kCostumes) result.costumes = UnlockCostumes(guest, profile);
+  if (all || what == Unlock::kCostumes) result.costumes = UnlockCostumes(guest, profile, max);
   if (all || what == Unlock::kVoices) result.voices = UnlockVoices(guest, profile);
   if (all) RecordStoryClears(guest, profile);
   result.stages = OpenStageCount(guest, profile) - stages_before;

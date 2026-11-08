@@ -762,7 +762,11 @@ void HoldFrameTiming(uint8_t* base) {
 }
 
 // Step (3) of the frame hook: unlock everything for the profile the game has loaded, every frame (a later reload of the
-// save would otherwise take it back). FindProfile is false until the save has been read.
+// save would otherwise take it back). FindProfile is false until the save has been read. The save is the session's own copy
+// (<user data>/netplay/session, filled from the host's files), never the player's. The costume counts go to the TABLE's
+// maximum (CostumeMax::kTable), suits included, not to each girl's own as the player's Unlock all does: in a session the
+// select screen's count copy is not raised and the game's "her count >= her maximum" test is not replaced (doa4_suits_hooks.cpp
+// CountCopyOffline), so the suits are offered, and an award or Story clear adds no count, only because the count is the table's.
 void UnlockStep(State& s, uint32_t f) {
   if (!s.unlock || !s.host.guest) return;
   const doa4::GuestBytes& g = *s.host.guest;
@@ -774,20 +778,21 @@ void UnlockStep(State& s, uint32_t f) {
   }
   const std::optional<uint32_t> p = doa4::unlocks::FindProfile(g);
   if (!p) return;
-  if (doa4::unlocks::IsUnlocked(g, *p, doa4::unlocks::Unlock::kEverything)) {
+  if (doa4::unlocks::IsUnlocked(g, *p, doa4::unlocks::Unlock::kEverything, doa4::unlocks::CostumeMax::kTable)) {
     if (!s.unlock_seen_logged) {  // once: the evidence that the step ran on a save that needed nothing
       s.unlock_seen_logged = true;
       Log("unlock: profile found at frame " + std::to_string(f) + ", everything already unlocked");
     }
     return;
   }
-  const doa4::unlocks::UnlockResult r = doa4::unlocks::ApplyUnlock(g, *p, doa4::unlocks::Unlock::kEverything);
+  const doa4::unlocks::UnlockResult r = doa4::unlocks::ApplyUnlock(g, *p, doa4::unlocks::Unlock::kEverything,
+                                                                           doa4::unlocks::CostumeMax::kTable);
   ++s.unlocks_applied;
   char line[160];
-  std::snprintf(line, sizeof line, "unlock: everything at frame %u (characters %d, costumes %d, voices %d, stages %d)", f,
+  std::snprintf(line, sizeof line, "unlock: everything (table maximum) at frame %u (characters %d, costumes %d, voices %d, stages %d)", f,
                 r.characters, r.costumes, r.voices, r.stages);
   Log(line);
-  // The counts this frame wrote, in the log of each peer, so two logs can be compared at this frame (a frame-0 equal dump does
+  // The counts this frame wrote (the table's maxima), in the log of each peer, so two logs can be compared at this frame (a frame-0 equal dump does
   // not reach this write, and the profile is outside .data).
   std::string counts = "unlock: counts at frame " + std::to_string(f) + ":";
   for (int i = 0; i < doa4::unlocks::kCharacterCount; ++i) {

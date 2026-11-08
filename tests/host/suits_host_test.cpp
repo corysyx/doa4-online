@@ -1,7 +1,7 @@
 // Host test for src/doa4_suits.cpp: an import folder against a fake game folder and the image's
 // real costume tables, read from your own image (DOA4_TEST_IMAGE, doa4_test_image.h; no game byte is in this
-// repository). Without the image the sections that need the tables print SKIPPED; the manifest and folder checks that fail
-// before the tables are read run on an empty guest. Built and run by run_suits_test.bat. Optional real-archive check:
+// repository). With the variable unset the sections that need the tables print SKIPPED (set but unreadable or failing a pin, they FAIL);
+// the manifest and folder checks that fail before the tables are read run on an empty guest. Built and run by run_suits_test.bat. Optional real-archive check:
 // DOA4_SUITS_GAME_DIR=<the DOA4 folder holding chrone.afs, chrtwo.afs, chrthree.afs> (read-only).
 // Prints "suits: N checks run" before its verdict line: a run that ends a section early shows
 // as a smaller N.

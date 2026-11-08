@@ -712,6 +712,49 @@ static void TestUnlockEverythingLeavesSuitsOut() {
   SetSuitCostumes({});
 }
 
+// The online session's frame step is not the player's "Unlock all": the session's save is its own copy, and in a session the
+// select screen's count copy is not raised (the hooks leave the game's rule), so the suits show only because the step writes
+// the TABLE maximum. CostumeMax::kTable asks for exactly that; the default stays each girl's own maximum.
+static void TestSessionUnlockKeepsTableMax() {
+  FakeGuest g;
+  Setup(g, g_fresh);
+  Import(g, false);
+  const int own = BaseMax(KasumiIndex());
+  const int table = own + kSuitsPerGirl;
+  CHECK(!IsUnlocked(g.guest, kP, Unlock::kEverything, CostumeMax::kTable));
+  ApplyUnlock(g.guest, kP, Unlock::kEverything, CostumeMax::kTable);
+  CHECK(At(g, kCostumeCount, KasumiIndex()) == table);                                  // girl A: her own + 4
+  CHECK(At(g, kCostumeCount, KokoroIndex()) == BaseMax(KokoroIndex()) + kSuitsPerGirl);  // girl B too (no box here)
+  CHECK(At(g, kCostumeCount, g_index_c) == BaseMax(g_index_c));                          // a girl with none
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kEverything, CostumeMax::kTable));
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kStages, CostumeMax::kTable));
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kCostumes, CostumeMax::kTable));
+  CHECK(IsUnlocked(g.guest, kP, Unlock::kEverything));  // at the table's, so also at the own maximum
+  g.writes = 0;
+  const UnlockResult again = ApplyUnlock(g.guest, kP, Unlock::kEverything, CostumeMax::kTable);
+  CHECK(g.writes == 0 && again.costumes == 0);
+  // The table's rule is false at the own maximum; the own rule is true there.
+  FakeGuest full;
+  Setup(full, g_full);
+  Import(full, false);
+  CHECK(At(full, kCostumeCount, KasumiIndex()) == own);
+  CHECK(!IsUnlocked(full.guest, kP, Unlock::kEverything, CostumeMax::kTable));
+  CHECK(!IsUnlocked(full.guest, kP, Unlock::kCostumes, CostumeMax::kTable));
+  CHECK(IsUnlocked(full.guest, kP, Unlock::kEverything));
+  CHECK(IsUnlocked(full.guest, kP, Unlock::kEverything, CostumeMax::kOwn));  // the default is kOwn
+  // The default and kOwn write the same bytes.
+  FakeGuest by_default, explicit_own;
+  Setup(by_default, g_fresh);
+  Setup(explicit_own, g_fresh);
+  Import(by_default, false);
+  Import(explicit_own, false);
+  ApplyUnlock(by_default.guest, kP, Unlock::kEverything);
+  ApplyUnlock(explicit_own.guest, kP, Unlock::kEverything, CostumeMax::kOwn);
+  CHECK(Profile(by_default) == Profile(explicit_own));
+  CHECK(At(by_default, kCostumeCount, KasumiIndex()) == own);
+  SetSuitCostumes({});
+}
+
 // No suits told: the counts equal the table's maximum, as before.
 static void TestNoSuitsUnchanged() {
   FakeGuest g;
@@ -866,6 +909,7 @@ static void RunAll() {
   TestUnlockCostumesWritesOwnMax();
   TestIsUnlockedAtOwnMax();
   TestUnlockEverythingLeavesSuitsOut();
+  TestSessionUnlockKeepsTableMax();
   TestNoSuitsUnchanged();
   TestClampKeepsWholeMax();
   TestCostumesComplete();

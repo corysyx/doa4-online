@@ -29,7 +29,8 @@
 // - sub_82523C18(r3 = snapshot): from sub_82523E20 and sub_82524130, refills every row from the screen's snapshot of
 //   the save (sub_82523A38).
 // After each, the rows of the girls with suits are raised to what the list offers (costumes::VisibleCount). Only the
-// copy changes, never the save. Not in a session (np_session unlocks everything there; the same stand-in as
+// copy changes, never the save. Not in a session (np_session's frame step writes the table's maximum, suits included, into the
+// session's own save copy, so the count is already high; the same stand-in as
 // SyncCostumeCounts: DOA4_EXTRAS_REQUEST marks a record run standing in for an offline game). One line, the first time a process
 // fills the copy, says which it is.
 // Test switch DOA4_SUITS_COUNT_TRACE=1, read once: logs every call of both writers with its thread, and at the list
@@ -185,7 +186,7 @@ const bool g_count_trace = [] {
   return env && env[0] == '1';
 }();
 
-// Not in a session: np_session unlocks everything there (a record run with DOA4_EXTRAS_REQUEST stands in for offline; through
+// Not in a session: np_session's frame step writes the table's maximum there (CostumeMax::kTable; a record run with DOA4_EXTRAS_REQUEST stands in for offline; through
 // TestSwitch, so a player's environment cannot make one peer of a session raise its copy alone).
 bool CountCopyStandIn() {
   static const bool stand_in = doa4::np::TestSwitch("DOA4_EXTRAS_REQUEST") != nullptr;

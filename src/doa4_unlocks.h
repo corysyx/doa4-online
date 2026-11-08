@@ -76,9 +76,10 @@ bool RaiseCostumes(const GuestBytes& guest, uint32_t profile, uint8_t char_id);
 
 // How many imported swimsuits each character has (by charId): the table's maximum includes them, the save's count does
 // not. Called once at start-up, after the suits are in the tables and before any guest code runs; all zero by default.
-// RaiseCostumes, TatamiOpen, ApplyUnlock and IsUnlocked leave the suits out of the maximum: the "Unlock all" act writes each girl's
-// own maximum, so the import never changes the save. ClampCostumeCounts and FindProfile keep the table's whole maximum (a
-// count above it is what they correct).
+// RaiseCostumes, TatamiOpen and, by default, ApplyUnlock and IsUnlocked (CostumeMax::kOwn) leave the suits out of the maximum:
+// the player's "Unlock all" writes each girl's own maximum, so the import never changes the save. ClampCostumeCounts and
+// FindProfile keep the table's whole maximum (a count above it is what they correct). The online session's frame step asks
+// ApplyUnlock and IsUnlocked for CostumeMax::kTable instead (see there).
 void SetSuitCostumes(const std::array<uint8_t, kCharIdCount>& by_char);
 
 // The Tatami stage's rule (the game's sub_82537350): every costume but Alpha-152's at the game's own maximum, every
@@ -96,7 +97,16 @@ bool CostumesComplete(const GuestBytes& guest, uint32_t profile, uint8_t char_id
 int WipeUnlocks(const GuestBytes& guest, uint32_t profile);
 bool IsWiped(const GuestBytes& guest, uint32_t profile);
 
-bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what);
+// Which costume maximum IsUnlocked compares with and ApplyUnlock writes. kOwn: the game's own, without the imported suits (the
+// player's Unlock all: the suits are offered on the select screen without the save's count, so the import never changes the
+// save). kTable: the table's whole maximum, suits included. Only the online session's frame step (np_session.cpp UnlockStep)
+// uses it: in a session the select screen's count copy is not raised and the game's "her count >= her maximum" test is not
+// replaced (doa4_suits_hooks.cpp CountCopyOffline), so the suits show, and award and Story-clear stay no-ops, only because the
+// count is the table's maximum. That save is the session's own copy (<user data>/netplay/session), not the player's.
+enum class CostumeMax { kOwn, kTable };
+
+// Whether the unlock is in place; the costume part compares each count with `max`.
+bool IsUnlocked(const GuestBytes& guest, uint32_t profile, Unlock what, CostumeMax max = CostumeMax::kOwn);
 
 // How many of the three unlockable stages are open, by the game's own rules
 // (sub_82537458 / sub_82537350).
@@ -104,7 +114,8 @@ int OpenStageCount(const GuestBytes& guest, uint32_t profile);
 
 // Writes the unlock. kStages (and kEverything) also unlocks characters,
 // costumes and voices, and records one Story clear per Story character: the
-// stages have no flags of their own. The costume counts go to each girl's own maximum (SetSuitCostumes), never the suits.
-UnlockResult ApplyUnlock(const GuestBytes& guest, uint32_t profile, Unlock what);
+// stages have no flags of their own. The costume counts go to `max`: by default each girl's own maximum (SetSuitCostumes), never
+// the suits; kTable (the online session only) is the table's.
+UnlockResult ApplyUnlock(const GuestBytes& guest, uint32_t profile, Unlock what, CostumeMax max = CostumeMax::kOwn);
 
 }  // namespace doa4::unlocks
