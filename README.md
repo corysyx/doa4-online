@@ -425,7 +425,7 @@ No game byte is in the repository. The tests that check the code against the gam
 costume tables, the unlock tables, the suit loader) read them from a decrypted image of your own
 default.xex: set `DOA4_TEST_IMAGE` to that file's path (the whole image, loaded at `0x82000000`). Each
 range the tests read is checked against a SHA-1 first, so a different or damaged image is refused. Without
-the variable those sections print `SKIPPED (<why>)` and the rest still run; the unlock and Extras tests
+the variable those sections print `SKIPPED (DOA4_TEST_IMAGE unset)` and the rest still run; a variable that is set to a missing or short file, or to an image that fails a pin, makes the test fail with the reason; the unlock and Extras tests
 always run on synthetic tables and repeat on the real ones when the image is there.
 
 ## 10. Troubleshooting

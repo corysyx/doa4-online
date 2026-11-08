@@ -2513,9 +2513,11 @@ static void TestRealImportEqualsOracle() {
       CKF(st.suits.size() == 34 && st.skipped.empty(), "LoadImport accepted %zu suits, skipped %zu (%s)", st.suits.size(),
           st.skipped.size(), st.skipped.empty() ? "" : st.skipped[0].c_str());
       std::printf("real_import_equals_oracle: LoadImport accepted %zu of 34\n", st.suits.size());
-    } else {
+    } else if (doa4_test::ImageIsUnset(why)) {
       std::printf("real_import_equals_oracle: LoadImport check: SKIPPED (%s)\n", why.c_str());
       ++g_skipped;
+    } else {
+      CKF(false, "LoadImport check: DOA4_TEST_IMAGE is set but the image tier cannot run: %s", why.c_str());
     }
   }
   std::printf("real_import_equals_oracle: outcome %d, %zu files compared with %zu of the reference, %.1f s\n",

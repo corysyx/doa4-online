@@ -62,12 +62,12 @@ struct Tables {
 };
 
 // Synthetic tables. index -> charId is (6 i + 14) mod 25 (23 distinct charIds, none equal to its index; 2 and 8 have no
-// profile index); the maxima run 2..12 with neighbours always different; the roster is the charIds of the 17 profile
+// profile index); the maxima are 25 distinct values 2..26 (2 + (4 c + 14) mod 25), each different from the game's at the same charId; the roster is the charIds of the 17 profile
 // indices that have Story mode (all but 3, 6, 8, 12, 21 and 22), the later ones first, and the first one again.
 static Tables SyntheticTables() {
   Tables t{"synthetic", {}, {}, {}};
   for (int i = 0; i < 23; ++i) t.index_to_char[size_t(i)] = uint8_t((6 * i + 14) % 25);
-  for (int c = 0; c < 25; ++c) t.max[size_t(c)] = uint8_t(2 + (4 * c + 1) % 11);
+  for (int c = 0; c < 25; ++c) t.max[size_t(c)] = uint8_t(2 + (4 * c + 14) % 25);
   size_t k = 0;
   for (int i = 22; i >= 0; --i) {
     if (i == 3 || i == 6 || i == 8 || i == 12 || i == 21 || i == 22) continue;
@@ -98,6 +98,27 @@ static bool HasStory(const Tables& t, int index) {
   }
   return false;
 }
+
+// SHA-1 over the unlock FIELD bytes of a 0x8C-byte profile, in the order the code visits them (the first-clear flag, then for
+// each profile index its costume count, character flag, Story clears, cleared-at-Normal flag and voice flag). The two pins
+// were computed from the real fresh save and the real 100% save this test used to carry; they are checksums only.
+// `story_as_flag` hashes each Story-clear count as 0 or 1 (a model cannot know a real player's clear counts).
+static std::string FieldsSha1(const std::vector<uint8_t>& p, bool story_as_flag) {
+  std::vector<uint8_t> b;
+  const auto at = [&](uint32_t offset) { return p[offset - kFixtureStart]; };
+  b.push_back(at(kFirstStoryClear));
+  for (uint32_t i = 0; i < uint32_t(kCharacterCount); ++i) {
+    b.push_back(at(kCostumeCount + i));
+    b.push_back(at(kCharacterUnlocked + i));
+    const uint8_t clears = at(kStoryClears + i);
+    b.push_back(story_as_flag ? uint8_t(clears ? 1 : 0) : clears);
+    b.push_back(at(kStoryClearedNormal + i));
+    b.push_back(at(kVoiceUnlocked + i));
+  }
+  return doa4_test::Sha1Hex(b.data(), b.size());
+}
+static const char kFreshFieldsSha1[] = "ad368af3e880eaf7d79a78e17d5562969b67bd19";
+static const char kFullFieldsSha1[] = "ab5986e5f3169b8b2d33d4268d5883586dc6d936";  // Story clears as 0/1
 
 static bool InUnlockField(uint32_t offset) {
   return offset == kFirstStoryClear || (offset >= kCostumeCount && offset < kCostumeCount + kCharacterCount) ||
@@ -216,13 +237,12 @@ static uint8_t Fresh(uint32_t offset, int index = 0) {
 }
 
 static void TestFreshProfileIsANewSave() {
-  // Fresh save: every costume count 2; the 7 hidden characters (Helena, Ein,
-  // Gen Fu, Leon, Tengu, Alpha-152, Spartan-458) locked.
-  for (int i = 0; i < kCharacterCount; ++i) {
-    CHECK(Fresh(kCostumeCount, i) == 2);
-    const bool hidden = i == 3 || i == 6 || i == 7 || i == 8 || i == 12 || i == 21 || i == 22;
-    CHECK(Fresh(kCharacterUnlocked, i) == (hidden ? 0 : 1));
-  }
+  // A new save's unlock fields (every costume count 2; the 7 hidden characters Helena, Ein, Gen Fu, Leon, Tengu, Alpha-152
+  // and Spartan-458 locked; no voices, no Story clears) are the real fresh save's: the model hashes to the pin computed
+  // from the real save. The full profile is pinned the same way on the image's tables (a model with other tables has other
+  // maxima).
+  CHECK(FieldsSha1(g_fresh, false) == kFreshFieldsSha1);
+  if (std::string(g_tables_name) == "image") CHECK(FieldsSha1(g_full, true) == kFullFieldsSha1);
   // The tables the tests lean on: the named characters exist, a charId is not its own index (so a charId read as an index
   // reads another girl's cell), and the two profiles differ outside the unlock fields.
   CHECK(g_index_a >= 0 && g_index_b >= 0 && g_index_c >= 0 && g_index_a != g_index_b);
@@ -772,8 +792,9 @@ int main() {
   if (const std::optional<Tables> image = ImageTables(&why)) {
     UseTables(*image);
     RunAll();
-  } else {
-    doa4_test::PrintSkipped("unlocks: the checks on the image's tables", why);
+  } else if (doa4_test::ReportNoImage("unlocks: the checks on the image's tables", why)) {
+    ++g_checks;
+    ++g_failures;
   }
   std::printf("unlocks: %d checks run\n", g_checks);
   if (g_failures) {

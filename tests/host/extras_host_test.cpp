@@ -45,12 +45,12 @@ struct Tables {
   std::array<uint8_t, 18> roster;         // the Story roster's charIds
 };
 
-// Synthetic: index -> charId is (6 i + 14) mod 25; the maxima run 2..12; the roster holds the charIds of the 17 profile
+// Synthetic: index -> charId is (6 i + 14) mod 25; the maxima are 25 distinct values 2..26; the roster holds the charIds of the 17 profile
 // indices that have Story mode (all but 3, 6, 8, 12, 21 and 22) and the first one again.
 static Tables SyntheticTables() {
   Tables t{"synthetic", {}, {}, {}};
   for (int i = 0; i < 23; ++i) t.index_to_char[size_t(i)] = uint8_t((6 * i + 14) % 25);
-  for (int c = 0; c < 25; ++c) t.max[size_t(c)] = uint8_t(2 + (4 * c + 1) % 11);
+  for (int c = 0; c < 25; ++c) t.max[size_t(c)] = uint8_t(2 + (4 * c + 14) % 25);
   size_t k = 0;
   for (int i = 22; i >= 0; --i) {
     if (i == 3 || i == 6 || i == 8 || i == 12 || i == 21 || i == 22) continue;
@@ -100,6 +100,18 @@ static std::vector<uint8_t> FreshProfile() {
   return p;
 }
 
+// SHA-1 over the unlock field bytes of the fresh profile, in the order ForEachUnlockByte visits them; the pin was computed
+// from the real fresh save this test used to carry (the same pin as unlocks_host_test.cpp).
+static std::string FieldsSha1(const std::vector<uint8_t>& p) {
+  std::vector<uint8_t> b;
+  const auto at = [&](uint32_t offset) { return p[offset - kFixtureStart]; };
+  b.push_back(at(kFirstStoryClear));
+  for (uint32_t i = 0; i < uint32_t(kCharacterCount); ++i) {
+    for (const uint32_t base : {kCostumeCount, kCharacterUnlocked, kStoryClears, kStoryClearedNormal, kVoiceUnlocked}) b.push_back(at(base + i));
+  }
+  return doa4_test::Sha1Hex(b.data(), b.size());
+}
+
 static Tables g_t;
 
 // A loaded fresh profile in a map, as in unlocks_host_test.cpp.
@@ -134,6 +146,8 @@ static void WriteFile(const fs::path& path, const std::string& text) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   out << text;
 }
+
+static void TestFreshProfileIsTheRealOne() { CHECK(FieldsSha1(FreshProfile()) == "ad368af3e880eaf7d79a78e17d5562969b67bd19"); }
 
 static void TestSaveDir() {
   CHECK(doa4::SaveDir("C:/u", 0xB13EBABEBABEBABEull) ==
@@ -447,6 +461,7 @@ static void RunAll() {
     std::printf("FAIL [%s] TestWipeWithBackup threw: %s\n", g_tables_name, e.what());
     ++g_failures;
   }
+  TestFreshProfileIsTheRealOne();
   TestSaveDir();
   TestBackupStamp();
   TestDescribe();
@@ -467,8 +482,9 @@ int main() {
     g_t = *image;
     g_tables_name = "image";
     RunAll();
-  } else {
-    doa4_test::PrintSkipped("extras: the checks on the image's tables", why);
+  } else if (doa4_test::ReportNoImage("extras: the checks on the image's tables", why)) {
+    ++g_checks;
+    ++g_failures;
   }
   std::printf("extras: %d checks run\n", g_checks);
   if (g_failures) {

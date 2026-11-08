@@ -9,6 +9,10 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
+#ifdef _WIN32
+#include <process.h>
+#endif
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -1376,7 +1380,9 @@ static void TestRaiseCountRowFollowsBox() {
 
 // A file of 0x300 bytes of a known pattern standing for an image: guest address 0x82000000 + n is file offset n.
 static std::filesystem::path WriteFakeImage(std::vector<uint8_t>* bytes) {
-  const std::filesystem::path path = std::filesystem::temp_directory_path() / "doa4_test_image_reader_check.bin";
+  // One name per process: a second run at the same time must not delete this one's file.
+  const std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                     ("doa4_test_image_reader_check_" + std::to_string(unsigned(_getpid())) + ".bin");
   bytes->resize(0x300);
   for (size_t i = 0; i < bytes->size(); ++i) (*bytes)[i] = uint8_t(i * 7 + 3);
   std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(bytes->data()), std::streamsize(bytes->size()));
@@ -1398,6 +1404,14 @@ static void TestImageReader() {
   const std::string two_blocks = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
   CHECK(Sha1Hex(reinterpret_cast<const uint8_t*>(two_blocks.data()), two_blocks.size()) ==
         "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+  // The padding boundaries: 55 bytes fill one block with the length, 56 and 63 need a second block, 64 is a whole block.
+  for (const auto& [length, want] : {std::pair<size_t, const char*>{55, "c1c8bbdc22796e28c0e15163d20899b65621d65a"},
+                                      {56, "c2db330f6083854c99d4b5bfb6e8f29f201be699"},
+                                      {63, "03f09f5b158a7a8cdad920bddc29b81c18a551f5"},
+                                      {64, "0098ba824b5c16427bd7a1122a5a442a25ec644d"}}) {
+    const std::vector<uint8_t> a(length, uint8_t('a'));
+    CHECK(Sha1Hex(a.data(), a.size()) == want);
+  }
   const std::vector<uint8_t> million(1000000, uint8_t('a'));
   CHECK(Sha1Hex(million.data(), million.size()) == "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
 
@@ -1493,8 +1507,9 @@ int main() {
     TestCountSuits();
     TestRaiseCountRow();
     TestRaiseCountRowFollowsBox();
-  } else {
-    doa4_test::PrintSkipped("costumes: the checks on the image's costume tables", image ? why_max : why);
+  } else if (doa4_test::ReportNoImage("costumes: the checks on the image's costume tables", image ? why_max : why)) {
+    ++g_checks;
+    ++g_failures;
   }
   std::printf("costumes: %d checks run\n", g_checks);
   if (g_failures) {

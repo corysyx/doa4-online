@@ -163,6 +163,54 @@ inline std::optional<std::vector<uint8_t>> ReadImageRange(const ImageRange& rang
   return ReadRangeFromFile(*path, range, why);
 }
 
+// Several short pieces of the image (the sites a patch file names), checked by ONE SHA-1 over their bytes in the order
+// given. The pieces are `length` bytes at `address`; the result is their bytes concatenated.
+struct ImageSite {
+  uint32_t address, length;
+};
+
+inline std::optional<std::vector<uint8_t>> ReadSitesFromFile(const std::filesystem::path& path,
+                                                             const std::vector<ImageSite>& sites, const char* sha1,
+                                                             std::string* why) {
+  const auto fail = [&](const std::string& text) -> std::optional<std::vector<uint8_t>> {
+    if (why) *why = text;
+    return std::nullopt;
+  };
+  const std::string name = PathText(path);
+  std::ifstream in(path, std::ios::binary);
+  if (!in || sites.empty()) return fail(name + ": cannot read");
+  std::vector<uint8_t> out;
+  for (const ImageSite& site : sites) {
+    if (site.address < kImageBase || site.length == 0) return fail(name + ": cannot read");
+    std::vector<uint8_t> piece(site.length, uint8_t(0));
+    in.clear();
+    in.seekg(std::streamoff(site.address - kImageBase));
+    in.read(reinterpret_cast<char*>(piece.data()), std::streamsize(piece.size()));
+    if (!in || size_t(in.gcount()) != piece.size()) return fail(name + ": cannot read");
+    out.insert(out.end(), piece.begin(), piece.end());
+  }
+  const std::string got = Sha1Hex(out.data(), out.size());
+  if (got != sha1) {
+    return fail(name + ": the sites from " + AddressText(sites.front().address) + " have SHA-1 " + got + ", expected " + sha1);
+  }
+  return out;
+}
+
+inline std::optional<std::vector<uint8_t>> ReadImageSites(const std::vector<ImageSite>& sites, const char* sha1,
+                                                          std::string* why) {
+  const std::optional<std::filesystem::path> path = ImagePath();
+  if (!path) {
+    if (why) *why = "DOA4_TEST_IMAGE unset";
+    return std::nullopt;
+  }
+  return ReadSitesFromFile(*path, sites, sha1, why);
+}
+
+// What a test does when its image tier cannot read the image. Only a variable that is not set at all is a skip; a variable
+// that is set and names a missing or short file, or a file whose bytes differ from the pins, is a failure the caller
+// counts (the tier cannot be quietly skipped by a wrong path).
+inline bool ImageIsUnset(const std::string& why) { return why == "DOA4_TEST_IMAGE unset"; }
+
 // The three ranges of the costume tests, together.
 struct CostumeImage {
   std::vector<uint8_t> tables, records, files;
@@ -185,6 +233,18 @@ inline std::optional<CostumeImage> LoadCostumeImage(std::string* why) {
 // One line for a section that did not run for want of the image.
 inline void PrintSkipped(const char* section, const std::string& why) {
   std::printf("%s: SKIPPED (%s)\n", section, why.c_str());
+}
+
+// For a section that needs the image and could not read it: an unset variable prints "SKIPPED (DOA4_TEST_IMAGE unset)" and
+// returns false; anything else (a missing or short file, a pin that fails) prints a FAIL line with the reason and returns
+// true, and the caller counts one failed check.
+inline bool ReportNoImage(const char* section, const std::string& why) {
+  if (ImageIsUnset(why)) {
+    PrintSkipped(section, why);
+    return false;
+  }
+  std::printf("FAIL %s: DOA4_TEST_IMAGE is set but the image tier cannot run: %s\n", section, why.c_str());
+  return true;
 }
 
 }  // namespace doa4_test

@@ -1,5 +1,6 @@
-// Host test for src/doa4_tweaks.cpp, against the Xenia patch file's bytes and
-// the image's originals (doa4_tweak_fixtures.h). The costume tweaks are checked on the game's real costume tables, read
+// Host test for src/doa4_tweaks.cpp, against the Xenia patch file's bytes (doa4_tweak_fixtures.h) and the bytes the game
+// holds at the patch sites ("originals"): the test's own, each different from its patch byte, always; and with
+// DOA4_TEST_IMAGE set (doa4_test_image.h) the real ones too, read from your own image and checked by one SHA-1. The costume tweaks are checked on the game's real costume tables, read
 // from your own image (DOA4_TEST_IMAGE, doa4_test_image.h); without it that section prints SKIPPED. Built and run by
 // run_tweaks_test.bat.
 
@@ -17,8 +18,10 @@
 #include "doa4_tweak_fixtures.h"
 
 static int g_failures = 0;
+static int g_checks = 0;
 #define CHECK(cond)                                               \
   do {                                                            \
+    ++g_checks;                                                   \
     if (!(cond)) {                                                \
       std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
       ++g_failures;                                               \
@@ -44,7 +47,39 @@ const std::vector<fx::FixturePatch>& FixtureFor(size_t tweak) {
 // What the tests that predate the costume tweaks pass as guest memory for their blocks: none is needed by them.
 static const AllocFn kNoAlloc = [](uint32_t) { return uint32_t(0); };
 
-// Guest memory holding the image's original bytes at every patch address.
+// The bytes the game holds at every patch address before any patch: set by UseOriginals.
+static std::map<uint32_t, uint8_t> g_original;
+static const char* g_originals_name = "synthetic";
+static const char kPatchSitesSha1[] = "14f9cc36cf7a8e270c1a7eeeafc3cb5afca4c334";  // the 24 image bytes at the sites below, by address
+
+static std::vector<doa4_test::ImageSite> PatchSites() {
+  std::vector<doa4_test::ImageSite> sites;
+  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters}) {
+    for (const auto& p : *patches) sites.push_back({p.address, uint32_t(p.on.size())});
+  }
+  std::sort(sites.begin(), sites.end(), [](const auto& a, const auto& b) { return a.address < b.address; });
+  return sites;
+}
+// The test's own originals: every byte differs from the patch byte at its address.
+static void UseSyntheticOriginals() {
+  g_original.clear();
+  g_originals_name = "synthetic";
+  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters}) {
+    for (const auto& p : *patches) {
+      for (size_t i = 0; i < p.on.size(); ++i) g_original[p.address + uint32_t(i)] = uint8_t(p.on[i] ^ 0x5A);
+    }
+  }
+}
+static void UseImageOriginals(const std::vector<uint8_t>& bytes) {
+  g_original.clear();
+  g_originals_name = "image";
+  size_t at = 0;
+  for (const auto& site : PatchSites()) {
+    for (uint32_t i = 0; i < site.length; ++i) g_original[site.address + i] = bytes[at++];
+  }
+}
+
+// Guest memory holding the originals at every patch address.
 // Writes to read-only addresses fault (as on the host) unless made writable.
 struct FakeGuest {
   std::map<uint32_t, uint8_t> bytes;
@@ -79,15 +114,15 @@ struct FakeGuest {
   FakeGuest() {
     for (size_t t = 0; t < AllTweaks().size(); ++t) {
       for (const auto& p : FixtureFor(t)) {
-        for (size_t i = 0; i < p.original.size(); ++i) bytes[p.address + uint32_t(i)] = p.original[i];
+        for (size_t i = 0; i < p.on.size(); ++i) bytes[p.address + uint32_t(i)] = g_original.at(p.address + uint32_t(i));
       }
     }
   }
   bool Holds(const std::vector<fx::FixturePatch>& patches, bool on) {
     for (const auto& p : patches) {
-      const auto& want = on ? p.on : p.original;
-      for (size_t i = 0; i < want.size(); ++i) {
-        if (bytes[p.address + uint32_t(i)] != want[i]) return false;
+      for (size_t i = 0; i < p.on.size(); ++i) {
+        const uint8_t want = on ? p.on[i] : g_original.at(p.address + uint32_t(i));
+        if (bytes[p.address + uint32_t(i)] != want) return false;
       }
     }
     return true;
@@ -499,8 +534,36 @@ static void TestCostumeBlockFailure() {
   }
 }
 
+// The tests that use the patch sites' originals.
+static void RunPatchTests() {
+  TestListsMatchThePatchFile();
+  TestReadOnlyRanges();
+  TestOnThenOffRestoresEveryByte();
+  TestNoTweakTouchesReadOnlyData();
+  TestOffNeedsOriginals();
+  TestCaptureOnlyOnce();
+}
+
 int main() {
+  // Each original differs from its patch byte, or the on/off checks could not tell the two apart.
+  UseSyntheticOriginals();
+  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters}) {
+    for (const auto& p : *patches) {
+      for (size_t i = 0; i < p.on.size(); ++i) CHECK(g_original.at(p.address + uint32_t(i)) != p.on[i]);
+    }
+  }
+  RunPatchTests();
+
   std::string why;
+  const std::optional<std::vector<uint8_t>> originals = doa4_test::ReadImageSites(PatchSites(), kPatchSitesSha1, &why);
+  if (originals) {
+    UseImageOriginals(*originals);
+    RunPatchTests();
+  } else if (doa4_test::ReportNoImage("tweaks: the patch tests on the image's original bytes", why)) {
+    ++g_checks;
+    ++g_failures;
+  }
+  why.clear();
   if (const std::optional<doa4_test::CostumeImage> image = doa4_test::LoadCostumeImage(&why)) {
     g_tables = DeriveCostumeTables(*image);
     CHECK(g_tables.size() == 25);
@@ -510,15 +573,11 @@ int main() {
     TestCostumeTweaksTogether();
     TestCostumeBlocksAreAllocatedOnceUpFront();
     TestCostumeBlockFailure();
-  } else {
-    doa4_test::PrintSkipped("tweaks: the costume tweaks on the image's costume tables", why);
+  } else if (doa4_test::ReportNoImage("tweaks: the costume tweaks on the image's costume tables", why)) {
+    ++g_checks;
+    ++g_failures;
   }
-  TestListsMatchThePatchFile();
-  TestReadOnlyRanges();
-  TestOnThenOffRestoresEveryByte();
-  TestNoTweakTouchesReadOnlyData();
-  TestOffNeedsOriginals();
-  TestCaptureOnlyOnce();
+  std::printf("tweaks: %d checks run\n", g_checks);
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

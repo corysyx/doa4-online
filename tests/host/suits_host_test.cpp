@@ -1793,8 +1793,9 @@ int main() {
     TestMarkAppliedTables();
     TestRealGameFolder();
     TestSessionFilesAndGuard();
-  } else {
-    doa4_test::PrintSkipped("suits: the sections on the image's costume tables", why);
+  } else if (doa4_test::ReportNoImage("suits: the sections on the image's costume tables", why)) {
+    ++g_checks;
+    ++g_failures;
   }
   std::printf("suits: %d checks run\n", g_checks);
   if (g_failures) {
