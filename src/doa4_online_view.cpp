@@ -125,8 +125,15 @@ View Describe(const In& in) {
   v.show_restart = in.restart_pending && !SessionLocks(in);
   // Review fix round I-1: no online play while a check downloads or once it swapped files in this process (the
   // relaunch into a session would start the new exe, whose hand-off build check refuses the session).
-  v.join_host_enabled = !in.update_busy && !in.restart_pending;
-  v.join_host_note = in.restart_pending ? updater::kRestartText : in.update_busy ? updater::kBusyText : "";
+  // Task 6: and while an Esc swimsuit import runs, and after one changed the swimsuit folder until the next start (the lobby's
+  // swimsuit checksum is fixed at start). Note order: kRestartText, kSuitsRestartText, kBusyText, kSuitsBusyText.
+  v.suits_import_enabled = !open;
+  v.join_host_enabled = !in.update_busy && !in.restart_pending && !in.suits_import_busy && !in.suits_restart_pending;
+  v.join_host_note = in.restart_pending            ? updater::kRestartText
+                     : in.suits_restart_pending    ? kSuitsRestartText
+                     : in.update_busy              ? updater::kBusyText
+                     : in.suits_import_busy        ? kSuitsBusyText
+                                                   : "";
 
   // the code: shown while hosting or connected as the host, when the lobby has one; and (review fix round G-R) to a
   // joiner still connecting, so that the host can "Reach out" to it through a strict router
@@ -212,7 +219,9 @@ std::string BannerText(bool waiting, Ending ending) {
 std::string TabLogLine(const In& in, const View& view) {
   const State state = in.in_session ? State::kInSession : (in.lobby_open ? in.lobby.state : State::kOffline);
   return std::string("[doa4][NET] tab: ") + StateText(state) + " start=" + (view.start_enabled ? "1" : "0") +
-         " leave=" + (view.show_leave ? "1" : "0");
+         " leave=" + (view.show_leave ? "1" : "0") +
+         " join_host=" + (view.join_host_enabled ? "1" : "0") +
+         (view.join_host_note.empty() ? std::string() : " note=" + view.join_host_note);
 }
 
 }  // namespace doa4::online_view

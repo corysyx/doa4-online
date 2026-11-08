@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -27,6 +28,7 @@
 #include "doa4_online_tab.h"
 #include "doa4_online_view.h"
 #include "doa4_photo_service.h"
+#include "doa4_suits_import_flow.h"
 #include "doa4_tweaks.h"
 
 namespace rex::input {
@@ -73,6 +75,13 @@ struct MenuHost {
   // DOAX2 swimsuits: the import's one-line status, and each suit not loaded with why.
   std::string suits_summary;
   std::vector<std::string> suits_notes;
+  // The Esc import (Plan 3, Task 6). The app owns the flow (the import survives the menu closing; the app destroys it after
+  // this menu, before the runtime, at shutdown): the menu only borrows the pointer. Null: no import section.
+  suits_import::Flow* suits_import = nullptr;
+  // Why the finished import could not be put in place at start, else the older-importer note; "" for neither.
+  std::string suits_import_note;
+  bool suits_loaded = false;            // an import loaded at start: the button reads "Import again..."
+  std::filesystem::path game_root;      // the game files the import reads (the folder the game runs from)
   std::filesystem::path save_dir;  // the ups.dat save package folder, or empty
   // Where the one-time save backup goes: outside the folder the game lists
   // its saves from.
@@ -110,6 +119,7 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   void PollNetState();
   // Test switch DOA4_EXTRAS_REQUEST: what a click would do, without drawing. "wipe", "restart" or "tweak NB" (tweak N,
   // B = 0 or 1).
+  // "suits_import" starts the Esc import from DOA4_SUITS_IMPORT_TEST=<ASCII path> as a click on the button would.
   void TestAction(std::string_view action);
 
  protected:
@@ -128,6 +138,14 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   void DrawExtrasTab();
   void DrawPhotoTab();
   void DrawOnlineTab();
+  void DrawSuitsImport();
+  // The one answer behind the import button's disabled state and the test action's refusal; *why says what stops it.
+  bool SuitsImportEnabled(std::string* why) const;
+  // The button's work (and the test action's): Flow::Start on the game files and the user data.
+  void StartSuitsImport();
+  // host_.defer, but a call queued before this menu was destroyed does nothing. The import flow is destroyed only after the
+  // menu (OnShutdown), so a call that passes this check still has its flow.
+  std::function<void(std::function<void()>)> GuardedDefer();
   void DrawGameTab();
   bool SessionLocked() const;
   bool Locked(online_view::Control control) const;  // LockedInSession(control, SessionLocked())
@@ -164,6 +182,7 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   OnlineTab online_tab_;
   std::string logged_tab_line_;  // the last "[doa4][NET] tab: ..." line written
   bool logged_locks_ = false;    // the "menu: locked in session" line was written
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // GuardedDefer's token; cleared by ~MenuDialog
 };
 
 }  // namespace doa4

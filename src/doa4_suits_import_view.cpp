@@ -52,7 +52,8 @@ void DrawSuitImport(Flow& flow, const DrawHooks& hooks) {
       Section(flow, hooks);
       if (hooks.start_import) {
         ImGui::BeginDisabled(flow.source().empty());
-        if (ImGui::Button("Import##suits")) hooks.defer(hooks.start_import);
+        const std::string label = (hooks.import_label.empty() ? std::string("Import") : hooks.import_label) + "##suits";
+        if (ImGui::Button(label.c_str())) hooks.defer(hooks.start_import);
         ImGui::EndDisabled();
       }
       break;
@@ -75,8 +76,8 @@ void DrawSuitImport(Flow& flow, const DrawHooks& hooks) {
         break;
       }
       if (flow.mode() == Mode::kMenu) {
-        if (flow.restart_needed() && hooks.restart && ImGui::Button("Restart##suits")) hooks.restart();
-        if (flow.can_retry()) {
+        if (flow.restart_needed() && hooks.restart && ImGui::Button("Restart now##suits")) hooks.restart();
+        if (flow.can_retry() || !flow.restart_needed()) {  // an ending with nothing to retry still lets the player go back
           if (flow.restart_needed() && hooks.restart) ImGui::SameLine();
           if (ImGui::Button("Choose another...##suits")) flow.Back();
         }

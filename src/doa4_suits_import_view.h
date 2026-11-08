@@ -5,6 +5,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 
 #include "doa4_suits_import_flow.h"
 
@@ -16,8 +17,9 @@ struct DrawHooks {
   // Called while drawing, on the UI thread, at the click (or every frame of an automatic start): the callee makes it
   // idempotent and does the real work after the frame (it defers, as the dialog does).
   std::function<void()> start_game;   // "Start the game" and an automatic start: resume the start
-  std::function<void()> restart;      // kMenu only: "Restart"; may be empty elsewhere
+  std::function<void()> restart;      // kMenu only: "Restart now"; may be empty elsewhere
   std::function<void()> start_import; // when set, kChoose also shows "Import" (enabled once a source is chosen)
+  std::string import_label;           // the Import button's text; empty: "Import"
 };
 
 // kChoose: the section (title, the two choose buttons, the chosen or not-chosen line, Clear, the unlock note) and, with

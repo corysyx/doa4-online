@@ -6,6 +6,8 @@
 
 #include <array>
 #include <cfloat>
+#include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -34,6 +36,7 @@
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
 #include "doa4_photo_win.h"
+#include "doa4_suits_import_view.h"
 #include "doa4_speakers.h"
 #include "doa4_utf8.h"
 #include "doa4_unlocks.h"
@@ -135,7 +138,43 @@ MenuDialog::MenuDialog(rex::ui::ImGuiDrawer* drawer, MenuHost host)
 }
 
 MenuDialog::~MenuDialog() {
+  *alive_ = false;
   host_.window->RemoveInputListener(this);
+}
+
+std::function<void(std::function<void()>)> MenuDialog::GuardedDefer() {
+  return [this, alive = std::weak_ptr<bool>(alive_)](std::function<void()> fn) {
+    host_.defer([alive, fn = std::move(fn)] {
+      if (auto a = alive.lock(); a && *a) fn();
+    });
+  };
+}
+
+bool MenuDialog::SuitsImportEnabled(std::string* why) const {
+  const std::string none;
+  std::string reason;
+  if (!host_.suits_import) {
+    reason = "no import in this build";
+  } else if (host_.suits_import->busy()) {
+    reason = "an import is running";
+  } else if (Locked(online_view::Control::kExtras)) {
+    reason = online_view::kLockedText;
+  } else if (host_.online.state) {
+    const online_view::In in = host_.online.state(false);
+    if (!online_view::Describe(in).suits_import_enabled) reason = "online play is on: disconnect first";
+  }
+  if (why) *why = reason;
+  return reason.empty();
+}
+
+void MenuDialog::StartSuitsImport() {
+  if (!host_.suits_import) return;
+  std::string why;
+  if (!SuitsImportEnabled(&why)) {
+    REXLOG_INFO("[doa4][SUITS] import: start refused: {}", why);
+    return;
+  }
+  host_.suits_import->Start(host_.game_root, host_.user_data, 2);
 }
 
 bool MenuDialog::SessionLocked() const { return host_.session_locked && host_.session_locked(); }
@@ -577,6 +616,30 @@ void MenuDialog::DrawExtrasTab() {
   }
   ImGui::EndDisabled();
   ImGui::TextDisabled("Up and down range of DOAX2 instead of the character's DOA4 range. Takes effect at once.");
+  DrawSuitsImport();
+}
+
+// The import (Plan 3, Task 6): choose, import with progress and cancel, the result, and "Restart now" after one that
+// changed the folder. The flow is the app's (it keeps running with the menu closed); this only draws it.
+void MenuDialog::DrawSuitsImport() {
+  if (!host_.suits_import) return;
+  suits_import::Flow& flow = *host_.suits_import;
+  if (!host_.suits_import_note.empty() && !flow.restart_needed()) {
+    ImGui::TextColored(kNoteColor, "%s", host_.suits_import_note.c_str());
+  }
+  suits_import::DrawHooks hooks;
+  hooks.defer = GuardedDefer();
+  hooks.start_game = [] {};
+  hooks.restart = [this] { Restart(online_view::Control::kUpdateRestart); };  // the session lock applies as for the update's
+  hooks.start_import = [this] { StartSuitsImport(); };
+  hooks.import_label = host_.suits_loaded ? "Import again..." : "Import DOAX2 swimsuits...";
+  std::string why;
+  const bool choosing = flow.stage() == suits_import::Stage::kChoose;
+  const bool enabled = SuitsImportEnabled(&why);
+  ImGui::BeginDisabled(choosing && !enabled);
+  suits_import::DrawSuitImport(flow, hooks);
+  ImGui::EndDisabled();
+  if (choosing && !enabled && !why.empty()) ImGui::TextDisabled("%s", why.c_str());
 }
 
 void MenuDialog::DrawWipeUnlocks(const std::optional<uint32_t>& profile, bool locked) {
@@ -627,6 +690,30 @@ void MenuDialog::TestAction(std::string_view action) {
     }
   } else if (action == "restart") {
     Restart(online_view::Control::kUpdateRestart);
+  } else if (action == "suits_import") {
+    // What a click does: the source is set through the flow's pick effects (the app's return DOA4_SUITS_IMPORT_TEST without a
+    // dialog), then the button's own work. Refused exactly when the button is disabled.
+    const char* env = std::getenv("DOA4_SUITS_IMPORT_TEST");
+    std::string why;
+    if (!env || !env[0]) {
+      REXLOG_INFO("[doa4][SUITS] test action suits_import: refused: DOA4_SUITS_IMPORT_TEST is not set");
+    } else if (!host_.suits_import) {
+      REXLOG_INFO("[doa4][SUITS] test action suits_import: refused: no import section");
+    } else if (!SuitsImportEnabled(&why)) {
+      REXLOG_INFO("[doa4][SUITS] test action suits_import: refused: {}", why);
+    } else if (host_.suits_import->stage() != suits_import::Stage::kChoose) {
+      REXLOG_INFO("[doa4][SUITS] test action suits_import: refused: the import screen is not at the choose step");
+    } else {
+      std::error_code ec;
+      const bool folder = std::filesystem::is_directory(std::filesystem::path(env), ec);
+      REXLOG_INFO("[doa4][SUITS] test action suits_import: source ({})", folder ? "folder" : "image");
+      if (folder) {
+        host_.suits_import->ChooseFolder();
+      } else {
+        host_.suits_import->ChooseImage();
+      }
+      StartSuitsImport();
+    }
   } else if (action.rfind("tweak", 0) == 0 && action.size() == 8 && host_.guest) {  // tweak<index><0|1>, as "tweak 21"
     const size_t index = size_t(action[6] - '0');
     if (index < tweaks::AllTweaks().size()) SetTweak(index, action[7] == '1');

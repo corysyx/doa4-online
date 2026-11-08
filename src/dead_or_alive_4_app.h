@@ -206,6 +206,71 @@ class DeadOrAlive4App : public rex::ReXApp {
     if (running) REXLOG_INFO("[doa4][SETUP] suits: import stopped");
   }
 
+  // ---- The Esc menu's swimsuit import (Plan 3, Task 6) ----------------------------------------------------------------
+  // The app owns this flow (Mode::kMenu) and its own worker thread, so an import survives the menu closing. The flow is
+  // created when the menu first opens (or a test action needs it). It dies on the UI thread at shutdown, after the menu and
+  // before the runtime: a running import is logged and cancelled once, the flow is destroyed, then the worker is joined.
+  doa4::suits_import::Flow* EnsureMenuSuitsFlow() {
+    if (menu_suits_flow_) return menu_suits_flow_.get();
+    // DOA4_SUITS_IMPORT_TEST (ASCII path): the pick effects return it without a dialog, as a test action's click would.
+    static const auto test_source = []() -> std::optional<std::filesystem::path> {
+      const char* env = std::getenv("DOA4_SUITS_IMPORT_TEST");
+      if (!env || !env[0]) return std::nullopt;
+      return std::filesystem::path(env);
+    };
+    doa4::suits_import::Effects fx;
+    fx.pick_iso = [this](const std::filesystem::path& start) -> std::optional<std::filesystem::path> {
+      if (const auto t = test_source()) return t;
+      return doa4::setup::PickIsoFile(SetupHwnd(), start);
+    };
+    fx.pick_folder = [this](const std::filesystem::path& start) -> std::optional<std::filesystem::path> {
+      if (const auto t = test_source()) return t;
+      return doa4::photo::PickFolder(SetupHwnd(), start, L"Dead or Alive 4 - choose the extracted DOAX2 folder");
+    };
+    fx.start = [](doa4::suitconv::ImportRequest request) {
+      return doa4::suits_import::StartJobRunner(std::move(request));
+    };
+    fx.run_async = [this](std::function<void()> work) {
+      if (menu_suits_worker_.joinable()) menu_suits_worker_.join();  // the previous waiter has posted its result
+      menu_suits_worker_ = std::thread(std::move(work));
+    };
+    // The restart latch is also set here, in the posted callback that ended the import (UI thread), after the flow handled it;
+    // UiTick re-checks it, so nothing depends on a painted frame.
+    fx.post = [this](std::function<void()> fn) {
+      app_context().CallInUIThread([this, fn = std::move(fn)] {
+        fn();
+        LatchSuitsRestart();
+      });
+    };
+    fx.save_pending = [this](bool pending) { return SaveSuitsImportPending(pending); };
+    fx.log = [](const std::string& line) { REXLOG_INFO("[doa4][SUITS] {}", line); };
+    menu_suits_flow_ = std::make_unique<doa4::suits_import::Flow>(doa4::suits_import::Mode::kMenu, std::move(fx));
+    return menu_suits_flow_.get();
+  }
+
+  // UI thread. Once a menu import ended with files changed (or a swap waiting), Host and Join stay off until the next start:
+  // the lobby's swimsuit checksum was fixed at this start. Never cleared in this process, whatever the screen shows later.
+  void LatchSuitsRestart() {
+    if (suits_restart_pending_ || !menu_suits_flow_ || !menu_suits_flow_->restart_needed()) return;
+    suits_restart_pending_ = true;
+    REXLOG_INFO("[doa4][SUITS] restart needed: Host and Join stay off until the game restarts");
+  }
+
+  void EndMenuSuits() {
+    const bool running = menu_suits_flow_ && menu_suits_flow_->busy();
+    if (running) REXLOG_INFO("[doa4][SUITS] menu import running at shutdown: cancelling");
+    menu_suits_flow_.reset();  // a running import is cancelled once, here
+    if (menu_suits_worker_.joinable()) menu_suits_worker_.join();
+    if (running) REXLOG_INFO("[doa4][SUITS] menu import stopped");
+  }
+
+  // The game files the import reads: the folder in use (the one the game runs from).
+  std::filesystem::path SuitsGameRoot() {
+    if (!game_files_.empty()) return game_files_;
+    rex::Runtime* rt = runtime();
+    return rt ? std::filesystem::absolute(rt->game_data_root()) : std::filesystem::path();
+  }
+
   // The start-up section is over (UI thread, after a frame): close the screen, end the import flow, resume the start.
   void ResumeFromSetup() {
     std::function<void()> resume = std::move(setup_resume_);
@@ -932,6 +997,8 @@ class DeadOrAlive4App : public rex::ReXApp {
     in.show_stats = rex::cvar::Query<bool>("netplay_show_stats");
     in.update_busy = doa4::updater::Busy();  // fix round I-1: Join, Host and the button follow the updater
     in.restart_pending = doa4::updater::RestartPending();
+    in.suits_import_busy = menu_suits_flow_ && menu_suits_flow_->busy();  // the Esc import runs (UI thread)
+    in.suits_restart_pending = suits_restart_pending_;                    // the latch, not restart_needed()
     return in;
   }
 
@@ -1024,6 +1091,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     if (net_closing_.load(std::memory_order_acquire)) return;
     UpdateCursor();
     SyncCostumeCounts();
+    LatchSuitsRestart();  // the Esc import ended (a timer, not a painted frame)
     PollExtrasRequest();
     if (rex::cvar::Query<bool>("doa4_show_fps")) {
       const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1166,6 +1234,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     photo_notice_.reset();  // before the base app destroys the ImGui drawer
     net_overlay_.reset();   // likewise
     menu_.reset();  // before the base app destroys the ImGui drawer
+    EndMenuSuits();  // after the menu (its deferred calls are guarded by it), before the runtime: cancel once, destroy, join
     rex::ui::UnregisterBind("bind_doa4_diag");
     diag_overlay_.reset();  // before the base app destroys the ImGui drawer
     snap_stop_.store(true, std::memory_order_release);
@@ -1480,6 +1549,11 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.protect = protect_;
     host.suits_summary = suits_status_.Summary();
     host.suits_notes = suits_status_.skipped;
+    host.suits_import = EnsureMenuSuitsFlow();
+    host.suits_import_note = !suits_swap_problem_.empty() ? suits_swap_problem_
+                                                          : doa4::suits_import::ReimportNote(suits_status_.converter);
+    host.suits_loaded = !suits_status_.suits.empty();
+    host.game_root = SuitsGameRoot();
     host.save_dir = SaveFolder();
     host.backup_root = BackupFolder();
     host.extras = &extras_;
@@ -1598,6 +1672,10 @@ class DeadOrAlive4App : public rex::ReXApp {
   // OnFinalizePaths that runs when the section ends.
   std::unique_ptr<doa4::suits_import::Flow> suits_flow_;
   std::thread suits_worker_;
+  // The Esc menu's import (EnsureMenuSuitsFlow..EndMenuSuits): its flow, its own worker thread, and the restart latch.
+  std::unique_ptr<doa4::suits_import::Flow> menu_suits_flow_;
+  std::thread menu_suits_worker_;
+  bool suits_restart_pending_ = false;  // UI thread; set once a menu import changed the folder, never cleared
   std::function<void()> setup_resume_;
   std::thread setup_test_tick_;  // DOA4_SETUP_TEST only (StartSetupTestTick)
   std::atomic<bool> setup_test_tick_stop_{false};

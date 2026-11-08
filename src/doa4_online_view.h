@@ -25,6 +25,8 @@ struct In {
   bool show_stats = false;  // netplay_show_stats (the F9 box)
   bool update_busy = false;      // updater::Busy(): a check runs
   bool restart_pending = false;  // updater::RestartPending(): this process swapped a release in
+  bool suits_import_busy = false;       // the Esc menu's swimsuit import runs
+  bool suits_restart_pending = false;   // an Esc import changed the swimsuit folder: latched until the next start
 };
 
 struct View {
@@ -49,7 +51,13 @@ struct View {
   // files in this process (updater::kRestartText, which wins); join_host_note says which, else "".
   bool join_host_enabled = false;
   std::string join_host_note;
+  // The Esc menu's swimsuit import button: the same lobby-and-session condition as update_enabled, without update_busy.
+  bool suits_import_enabled = false;
 };
+
+// join_host_note texts for the swimsuit import (the note order is kRestartText, kSuitsRestartText, kBusyText, kSuitsBusyText).
+inline constexpr const char* kSuitsRestartText = "Restart the game to use the new swimsuits online.";
+inline constexpr const char* kSuitsBusyText = "The swimsuits are being imported.";
 
 View Describe(const In& in);
 

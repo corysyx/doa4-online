@@ -400,19 +400,28 @@ static void TestBanner() {
 static void TestTabLogLine() {
   In in = Open(State::kConnected, true);
   in.lobby.can_start = true;
-  CHECK_EQ(TabLogLine(in, Describe(in)), "[doa4][NET] tab: connected start=1 leave=0");
+  CHECK_EQ(TabLogLine(in, Describe(in)), "[doa4][NET] tab: connected start=1 leave=0 join_host=1");
   in.lobby.can_start = false;
-  CHECK_EQ(TabLogLine(in, Describe(in)), "[doa4][NET] tab: connected start=0 leave=0");
+  CHECK_EQ(TabLogLine(in, Describe(in)), "[doa4][NET] tab: connected start=0 leave=0 join_host=1");
   In s = Open(State::kInSession, true);
   s.in_session = true;
-  CHECK_EQ(TabLogLine(s, Describe(s)), "[doa4][NET] tab: in_session start=0 leave=1");
+  CHECK_EQ(TabLogLine(s, Describe(s)), "[doa4][NET] tab: in_session start=0 leave=1 join_host=1");
   In h = Open(State::kHosting, true);
-  CHECK_EQ(TabLogLine(h, Describe(h)), "[doa4][NET] tab: hosting start=0 leave=0");
-  CHECK_EQ(TabLogLine(In{}, Describe(In{})), "[doa4][NET] tab: offline start=0 leave=0");
+  CHECK_EQ(TabLogLine(h, Describe(h)), "[doa4][NET] tab: hosting start=0 leave=0 join_host=1");
+  CHECK_EQ(TabLogLine(In{}, Describe(In{})), "[doa4][NET] tab: offline start=0 leave=0 join_host=1");
   // an in_session process whose lobby still says connecting reports the session (the process-level flag wins)
   In e = Open(State::kConnecting, false);
   e.in_session = true;
-  CHECK_EQ(TabLogLine(e, Describe(e)), "[doa4][NET] tab: in_session start=0 leave=1");
+  CHECK_EQ(TabLogLine(e, Describe(e)), "[doa4][NET] tab: in_session start=0 leave=1 join_host=1");
+  // Task 6: the Host/Join state and its reason are on the line, so a minimized run can be checked from the log
+  In n;
+  n.suits_restart_pending = true;
+  CHECK_EQ(TabLogLine(n, Describe(n)),
+           std::string("[doa4][NET] tab: offline start=0 leave=0 join_host=0 note=") + kSuitsRestartText);
+  In u;
+  u.update_busy = true;
+  CHECK_EQ(TabLogLine(u, Describe(u)),
+           "[doa4][NET] tab: offline start=0 leave=0 join_host=0 note=An update is downloading.");
 }
 
 // Plan 1b Task 4: Check for Updates is enabled only when the lobby is Offline (or was never opened) and no session runs
@@ -525,6 +534,149 @@ static void TestJoinerCodeWhileConnecting() {
   CHECK_EQ(Describe(host).code_note, "Public address found");
 }
 
+// ---- Task 6: the Esc menu's swimsuit import -----------------------------------------------------------------------------
+// The note order is the updater's restart text, the swimsuits' restart text, the updater's busy text, the swimsuits' busy text.
+static void TestSuitsBusyDisablesJoinHost() {
+  In in;
+  in.suits_import_busy = true;
+  const View v = Describe(in);
+  CHECK(!v.join_host_enabled);
+  CHECK_EQ(v.join_host_note, "The swimsuits are being imported.");
+  CHECK(v.show_join && v.show_host);  // still shown, disabled
+  CHECK(!v.show_restart);             // the update's Restart button is not the swimsuits'
+  // an Offline lobby that was opened is gated the same way
+  In off = Open(State::kOffline, false);
+  off.suits_import_busy = true;
+  CHECK(!Describe(off).join_host_enabled);
+  // an update download wins the note (kBusyText before kSuitsBusyText); the control is off either way
+  In both = in;
+  both.update_busy = true;
+  CHECK(!Describe(both).join_host_enabled);
+  CHECK_EQ(Describe(both).join_host_note, "An update is downloading.");
+}
+
+static void TestSuitsRestartDisablesJoinHost() {
+  In in;
+  in.suits_restart_pending = true;
+  const View v = Describe(in);
+  CHECK(!v.join_host_enabled);
+  CHECK_EQ(v.join_host_note, "Restart the game to use the new swimsuits online.");
+  // the latch outlasts the import: busy is off, Host and Join stay disabled
+  CHECK(!in.suits_import_busy);
+  CHECK(v.suits_import_enabled);  // importing again stays possible (the Flow decides about a second run)
+  // the swimsuits' restart text wins over both busy texts
+  In all = in;
+  all.update_busy = true;
+  all.suits_import_busy = true;
+  CHECK(!Describe(all).join_host_enabled);
+  CHECK_EQ(Describe(all).join_host_note, "Restart the game to use the new swimsuits online.");
+}
+
+static void TestUpdaterRestartTextWins() {
+  In in;
+  in.restart_pending = true;
+  in.suits_restart_pending = true;
+  in.suits_import_busy = true;
+  in.update_busy = true;
+  const View v = Describe(in);
+  CHECK(!v.join_host_enabled);
+  CHECK_EQ(v.join_host_note, "Restart the game to finish the update.");
+  In r;
+  r.restart_pending = true;
+  r.suits_import_busy = true;
+  CHECK_EQ(Describe(r).join_host_note, "Restart the game to finish the update.");
+  // the swimsuits' restart text is earlier than the update's busy text
+  In sr_ub;
+  sr_ub.suits_restart_pending = true;
+  sr_ub.update_busy = true;
+  CHECK_EQ(Describe(sr_ub).join_host_note, "Restart the game to use the new swimsuits online.");
+  // the update's busy text is earlier than the swimsuits' busy text
+  In ub_sb;
+  ub_sb.update_busy = true;
+  ub_sb.suits_import_busy = true;
+  CHECK_EQ(Describe(ub_sb).join_host_note, "An update is downloading.");
+}
+
+static void TestSuitsImportEnabledOnlyOffline() {
+  CHECK(Describe(In{}).suits_import_enabled);  // no lobby yet
+  CHECK(Describe(Open(State::kOffline, false)).suits_import_enabled);
+  CHECK(Describe(Open(State::kOffline, true)).suits_import_enabled);
+  int disabled = 0;
+  for (State s : {State::kHosting, State::kConnecting, State::kConnected, State::kStarting, State::kRestarting,
+                  State::kInSession}) {
+    for (bool host : {false, true}) {
+      CHECK(!Describe(Open(s, host)).suits_import_enabled);
+      ++disabled;
+    }
+  }
+  CHECK(disabled == 12);
+  // a session process: disabled whatever its lobby says
+  In a;
+  a.in_session = true;
+  CHECK(!Describe(a).suits_import_enabled);
+  In b = Open(State::kOffline, false);
+  b.in_session = true;
+  CHECK(!Describe(b).suits_import_enabled);
+  In c = Open(State::kStarting, true);
+  c.in_session = true;
+  CHECK(!Describe(c).suits_import_enabled);
+  // unlike update_enabled, neither an update flag nor the import's own flags disable it (the menu adds !busy() itself)
+  In ub = Open(State::kOffline, false);
+  ub.update_busy = true;
+  ub.restart_pending = true;
+  ub.suits_import_busy = true;
+  ub.suits_restart_pending = true;
+  CHECK(Describe(ub).suits_import_enabled);
+  // with no update flag set it follows update_enabled in every lobby state
+  for (State s : {State::kOffline, State::kHosting, State::kConnecting, State::kConnected, State::kStarting,
+                  State::kRestarting, State::kInSession}) {
+    const In in = Open(s, false);
+    CHECK(Describe(in).suits_import_enabled == Describe(in).update_enabled);
+  }
+}
+
+// The new flags false give today's View for every existing case, enumerated by data against the pre-Task-6 rules
+// (restated here as the reference, not read back from Describe).
+static void TestDefaultsUnchanged() {
+  const State states[] = {State::kOffline,  State::kHosting,    State::kConnecting, State::kConnected,
+                          State::kStarting, State::kRestarting, State::kInSession};
+  int cases = 0;
+  for (const bool lobby_open : {false, true}) {
+    for (const State s : states) {
+      for (const bool host : {false, true}) {
+        for (const bool in_session : {false, true}) {
+          for (const bool update_busy : {false, true}) {
+            for (const bool restart_pending : {false, true}) {
+              In in = Open(s, host);
+              in.lobby_open = lobby_open;
+              in.in_session = in_session;
+              in.update_busy = update_busy;
+              in.restart_pending = restart_pending;
+              in.suits_import_busy = false;
+              in.suits_restart_pending = false;
+              const View v = Describe(in);
+              const State eff = !lobby_open && !in_session ? State::kOffline : s;
+              const bool open = eff != State::kOffline || in_session;
+              const bool locks =
+                  in_session || (lobby_open && (s == State::kStarting || s == State::kRestarting || s == State::kInSession));
+              CHECK(v.update_enabled == (!open && !update_busy));
+              CHECK(v.join_host_enabled == (!update_busy && !restart_pending));
+              CHECK_EQ(v.join_host_note, restart_pending ? "Restart the game to finish the update."
+                                         : update_busy   ? "An update is downloading."
+                                                         : "");
+              CHECK(v.show_restart == (restart_pending && !locks));
+              CHECK(v.delay_enabled == !locks);
+              CHECK_EQ(v.update_note, open ? "Disconnect from online play first." : "");
+              ++cases;
+            }
+          }
+        }
+      }
+    }
+  }
+  CHECK(cases == 2 * 7 * 2 * 2 * 2 * 2);
+}
+
 int main() {
   TestOffline();
   TestHosting();
@@ -545,6 +697,11 @@ int main() {
   TestUpdateButton();
   TestUpdateLocksJoinHost();
   TestJoinerCodeWhileConnecting();
+  TestSuitsBusyDisablesJoinHost();
+  TestSuitsRestartDisablesJoinHost();
+  TestUpdaterRestartTextWins();
+  TestSuitsImportEnabledOnlyOffline();
+  TestDefaultsUnchanged();
   std::printf("%s: %d checks, %d failures\n", g_failures ? "FAILED" : "PASSED", g_checks, g_failures);
   return g_failures ? 1 : 0;
 }
