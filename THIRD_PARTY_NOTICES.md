@@ -300,8 +300,7 @@ The same names are in the README's Credits section.
 - The ReXGlue SDK (https://github.com/rexglue/rexglue-sdk): the recompilation toolchain and runtime.
 - Tekken 6 Native Online, by Ekspym and mahmoud-mess (https://github.com/Ekspym/tekken6-native-online-source,
   https://github.com/mahmoud-mess/tekken6-recomp): the audio and XMA lockstep of the SDK fork this port runs on is
-  theirs, used with permission (netplay spec, section 3.1), and their work is the main reference for the
-  rollback-ready design.
+  theirs, and their work is the main reference for the rollback-ready design.
 - GekkoNet by HeatXD (https://github.com/HeatXD/GekkoNet), the input exchange, and miniupnpc by Thomas Bernard
   (https://github.com/miniupnp/miniupnp), the router port; their licences are above.
 - MK-3D-rollback by Jstackzz (https://github.com/Jstackzz/MK-3D-rollback): studied for the lobby, rotation and
@@ -311,7 +310,8 @@ The same names are in the README's Credits section.
   (https://github.com/AdrianCassar/xenia-canary), RMG-K (https://github.com/Jay-Day/RMG-K), 3SX
   (https://github.com/crowded-street/3sx) and Giuroll (https://github.com/Hagb/giuroll).
 - sheikproject (https://github.com/sheikproject): the DOAX2 swimsuit converter is built on their version of the
-  original DOAX2 script from the XeNTaX forum. That script could load a basic armature and the models; sheikproject
-  heavily modified and updated it, and the converter's recipe follows their version. The original XeNTaX forum
-  script's author is not known. Used with permission.
+  original Blender script to import models into DOA4, found on the XeNTaX forums. That script could load a basic
+  armature and the models; sheikproject heavily modified and updated it, and the converter's recipe follows their
+  version. The original script's author is not known.
+- Thanks to everyone who helped playtest the online play.
 - GGPO: no GGPO code is taken. GekkoNet is inspired by it and carries no GGPO code, so no GGPO notice is needed.

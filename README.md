@@ -261,9 +261,7 @@ that need a restart, and changing the game folder.
 | Issue | Status |
 |---|---|
 | A rare crash with `Call to invalid or unregistered function at guest address 0x...` in the log, at one particular move or moment. | A function the recompiler missed. Send the log (`logs\`) and say which move or moment, so it can be added in the next release. |
-| Lei COS. 10 skirt: her panties go through the back in idle, the left side comes out in idle, and both sides stand up in guard and crouch. | Postponed. |
-| Hitomi's wrists; Kokoro COS. 11 elbows and wrists; Lei COS. 11 wrist seam (assumed on all her suits). | Postponed. |
-| Kasumi COS. 10 clips through her top on the bounce. | Postponed. |
+| The imported DOAX2 swimsuits still need polish: some show clipping, physics that don't look right, or visible seams in the models. | Being worked on in later releases. |
 | Story mode: retrying a fight after a loss freezes the game for a couple of frames before the fight starts again. | A fix is planned. |
 | The extra costumes (Esc menu, **Extras** tab: Helena's opera dress, Kokoro's pink and blue kimonos): reflections on the stage scenery show the character in a different costume. | A fix is planned. |
 | First start with an extracted *Dead or Alive 4* folder: choosing it on the setup screen starts the game right away, before the optional DOAX2 swimsuit step. | Import the swimsuits any time from the Esc menu, **Extras** tab, **Import DOAX2 swimsuits...**. A fix is planned. |
@@ -290,8 +288,7 @@ Planned, no dates:
 - Tekken 6 Native Online by Ekspym and mahmoud-mess
   ([Ekspym/tekken6-native-online-source](https://github.com/Ekspym/tekken6-native-online-source),
   [mahmoud-mess/tekken6-recomp](https://github.com/mahmoud-mess/tekken6-recomp)): the SDK fork's audio
-  and XMA lockstep is theirs, used with permission; also the main reference for the rollback-ready
-  design.
+  and XMA lockstep is theirs; also the main reference for the rollback-ready design.
 - [GekkoNet](https://github.com/HeatXD/GekkoNet) by HeatXD (the input exchange) and
   [miniupnpc](https://github.com/miniupnp/miniupnp) by Thomas Bernard (the router port); licences in
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
@@ -303,12 +300,26 @@ Planned, no dates:
   [Xenia Canary netplay](https://github.com/AdrianCassar/xenia-canary) (AdrianCassar),
   [RMG-K](https://github.com/Jay-Day/RMG-K), [3SX](https://github.com/crowded-street/3sx) and
   [Giuroll](https://github.com/Hagb/giuroll).
-- [sheikproject](https://github.com/sheikproject): the original DOAX2 script was found on the XeNTaX
-  forums long ago and could load a basic armature and the models. sheikproject heavily modified and
-  updated it, and the swimsuit converter's recipe is built on that version. Used with permission. The
-  original XeNTaX forum script's author is not known.
+- [sheikproject](https://github.com/sheikproject): the original Blender script to import models into
+  DOA4 was found on the XeNTaX forums; it could load a basic armature and the models. sheikproject
+  heavily modified and updated it, and the swimsuit converter's recipe is built on that version. The
+  original script's author is not known.
+- Thanks to everyone who helped playtest the online play.
 
 The same names, and the licences of the code taken, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Reporting bugs
+
+Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-recomp/issues):
+
+1. Search the open issues first. If yours is already there, add what you saw to it.
+2. Otherwise press **New issue** and describe:
+   - which release you run (the Esc menu's **About** shows it);
+   - what you did, what you expected, and what happened instead;
+   - whether it happened offline or online, and whether you have the DOAX2 swimsuits imported.
+3. Attach the newest log, `logs\dead_or_alive_4_NNN.log` next to the exe. For a problem online, also
+   attach the newest folder from **Open session logs** in the Online tab. Both players' logs help most.
+4. Do not attach game files, disc images or anything extracted from them.
 
 ## AI disclosure
 
