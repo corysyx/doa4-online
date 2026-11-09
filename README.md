@@ -264,6 +264,8 @@ that need a restart, and changing the game folder.
 | Lei COS. 10 skirt: her panties go through the back in idle, the left side comes out in idle, and both sides stand up in guard and crouch. | Postponed. |
 | Hitomi's wrists; Kokoro COS. 11 elbows and wrists; Lei COS. 11 wrist seam (assumed on all her suits). | Postponed. |
 | Kasumi COS. 10 clips through her top on the bounce. | Postponed. |
+| Story mode: retrying a fight after a loss freezes the game for a couple of frames before the fight starts again. | A fix is planned. |
+| The extra costumes (Esc menu, **Extras** tab: Helena's opera dress, Kokoro's pink and blue kimonos): reflections on the stage scenery show the character in a different costume. | A fix is planned. |
 | First start with an extracted *Dead or Alive 4* folder: choosing it on the setup screen starts the game right away, before the optional DOAX2 swimsuit step. | Import the swimsuits any time from the Esc menu, **Extras** tab, **Import DOAX2 swimsuits...**. A fix is planned. |
 | The profile / storage device screen on the first start hides the mouse pointer, which makes it awkward to click through. | A fix is planned: the screen should work with a controller or keyboard, or show the pointer. |
 | The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
