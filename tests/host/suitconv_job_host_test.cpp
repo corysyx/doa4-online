@@ -310,6 +310,23 @@ struct World {
       const int now = ++converting;
       int peak_now = peak.load();
       while (now > peak_now && !peak.compare_exchange_weak(peak_now, now)) {}
+      if (hold_last.count(idx)) {
+        // Held until every suit outside hold_last has finished, so these finish last on any machine and at any
+        // timer resolution (a 100 ms sleep did not outlast 32 short ones at Windows' default 15.6 ms tick).
+        const size_t others = suits.size() - hold_last.size();
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        for (;;) {
+          {
+            std::lock_guard<std::mutex> lk(order_mu);
+            if (finish_order.size() >= others) break;
+          }
+          if (std::chrono::steady_clock::now() > give_up) {
+            hold_timed_out = true;
+            break;
+          }
+          SleepMs(1);
+        }
+      }
       if (delay_ms[idx] > 0) SleepMs(delay_ms[idx]);
       --converting;
       size_t finished_n = 0;
@@ -423,6 +440,8 @@ struct World {
   std::vector<SuitOutput> outs;
   // behaviour of the fake converter and the other hooks
   std::vector<int> delay_ms;
+  std::set<int> hold_last;                 // suits the fake converter holds until every other suit has finished
+  std::atomic<bool> hold_timed_out{false};  // a hold gave up after 10 s (needs more workers than held suits)
   int read_delay_ms = 0;  // the fake read_inputs waits this long before its read
   std::set<int> fail_suits, throw_bad_alloc, throw_runtime;
   bool fail_all = false;
@@ -1381,17 +1400,20 @@ static void TestManifestOrderIndependentOfFinish() {
   Group("manifest_order_independent_of_finish");
   World w("manifest_order");
   std::mt19937 rng(20261107);
-  for (int i = 0; i < kSuits; ++i) w.delay_ms[size_t(i)] = i < 2 ? 100 : int(rng() % 12);
+  for (int i = 2; i < kSuits; ++i) w.delay_ms[size_t(i)] = int(rng() % 12);
+  w.hold_last = {0, 1};  // 4 workers: two hold suits 0 and 1, two convert the other 32
   const ImportResult r = RunJob(w, w.MakeHooks(), 4);
   CKF(Is(r, Outcome::kImported), "outcome %d (%s)", int(r.outcome), r.detail.c_str());
-  // The fixture's precondition: suits finished out of picks order. Suits 0 and 1 take 100 ms each while the other two
-  // workers get through the remaining 32 in a few ms apiece, so both finish after almost all of them (about 64 inversions).
+  // The fixture's precondition: suits finished out of picks order. Suits 0 and 1 are held until the other 32 have
+  // finished, so each is behind all 32 of them: 64 inversions, 65 if suit 1 finished before suit 0. A count, not a
+  // timing: the CI runner's coarse sleeps once left a 100 ms delay with only 17.
   int inversions = 0;
   CK(w.finish_order.size() == 34);
+  CK(!w.hold_timed_out);
   for (size_t i = 0; i < w.finish_order.size(); ++i)
     for (size_t j = i + 1; j < w.finish_order.size(); ++j)
       if (w.finish_order[i] > w.finish_order[j]) ++inversions;
-  CKF(inversions >= 20, "%d inversions", inversions);
+  CKF(inversions >= 64, "%d inversions", inversions);
   CK(!std::is_sorted(w.finish_order.begin(), w.finish_order.end()));
   CK(ReadText(w.Cur() / "manifest.txt") == w.ExpectedManifest());
   CheckImportFolder(w, w.Cur(), {}, "the import");
