@@ -1216,7 +1216,7 @@ function Get-DOA4LogSink {
 
 function Test-DOA4HasFirstRunSetup {
     param([Parameter(Mandatory = $true)][hashtable]$Ctx)
-    # A release is built from the netplay branch, which has the first-run setup.
+    # A release is built from the main branch, which has the first-run setup.
     if ((Get-DOA4Source -Ctx $Ctx) -eq 'release') { return $true }
     return (Test-Path -LiteralPath (Join-Path $Ctx.GamePath 'src\doa4_setup_dialog.cpp'))
 }

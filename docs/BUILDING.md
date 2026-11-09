@@ -63,7 +63,7 @@ From a plain `cmd` window:
 ```bat
 mkdir C:\doa4
 cd /d C:\doa4
-git clone -b netplay https://github.com/Dwreckgg/doa4-recomp doa4-recomp
+git clone -b main https://github.com/Dwreckgg/doa4-recomp doa4-recomp
 type doa4-recomp\netplay_sdk.txt
 ```
 
@@ -78,7 +78,7 @@ git -C rexglue-sdk submodule update --init --recursive
 py -3 doa4-recomp\tools\fix_git_symlinks.py rexglue-sdk
 ```
 
-The release is built from the `netplay` branch (the repository's default branch), as cloned above. CMake prints a harmless "no v* tag
+The release is built from the `main` branch (the repository's default branch), as cloned above. CMake prints a harmless "no v* tag
 reachable from HEAD" warning on a fresh SDK clone.
 
 ### Fix the SDK's symlinks (Windows)
