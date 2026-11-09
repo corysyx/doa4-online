@@ -102,6 +102,8 @@ The game can build 34 swimsuits from *Dead or Alive Xtreme 2* as extra costumes 
 come after each character's own and extra costumes on the costume select screen, and you can pick them
 straight away on any save.
 
+![Ayane and Tina in two of the DOAX2 swimsuits, in Training mode](docs/images/doax2-swimsuits.jpg)
+
 - **You need your own USA copy of DOAX2**, as a disc image (`.iso`) or an extracted folder. Other
   pressings do not match and are refused as a wrong disc. Your *Dead or Alive 4* files must be the Rev 1
   files the game is set up with.
