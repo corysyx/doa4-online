@@ -51,7 +51,7 @@ building and running, any paths work.
 
 ```
 doa4\
-  doa4-recomp\     this repository
+  doa4-online\     this repository
   rexglue-sdk\     the SDK, built from source together with the game
   xex\DOA4\        the extracted game files (default.xex, *.afs, movie\, SOUND\, dic\)
 ```
@@ -63,8 +63,8 @@ From a plain `cmd` window:
 ```bat
 mkdir C:\doa4
 cd /d C:\doa4
-git clone -b main https://github.com/Dwreckgg/doa4-recomp doa4-recomp
-type doa4-recomp\netplay_sdk.txt
+git clone -b main https://github.com/Dwreckgg/doa4-online doa4-online
+type doa4-online\netplay_sdk.txt
 ```
 
 `netplay_sdk.txt` holds two lines, `repo=` (the SDK repository) and `commit=` (the SDK commit this
@@ -75,7 +75,7 @@ workflow does exactly this:
 git clone --filter=blob:none https://github.com/Dwreckgg/rexglue-sdk rexglue-sdk
 git -C rexglue-sdk checkout <the commit from netplay_sdk.txt>
 git -C rexglue-sdk submodule update --init --recursive
-py -3 doa4-recomp\tools\fix_git_symlinks.py rexglue-sdk
+py -3 doa4-online\tools\fix_git_symlinks.py rexglue-sdk
 ```
 
 The release is built from the `main` branch (the repository's default branch), as cloned above. CMake prints a harmless "no v* tag
@@ -107,8 +107,8 @@ byte `0xFD90000`).
 
 ```bat
 cd /d C:\doa4
-py -3 doa4-recomp\tools\xdvdfs_extract.py "Dead or Alive 4 (USA, Europe) (En,Ja,Fr,De,Es,It,Zh,Ko) (Rev 1).iso" xex\DOA4 --list
-py -3 doa4-recomp\tools\xdvdfs_extract.py "Dead or Alive 4 (USA, Europe) (En,Ja,Fr,De,Es,It,Zh,Ko) (Rev 1).iso" xex\DOA4
+py -3 doa4-online\tools\xdvdfs_extract.py "Dead or Alive 4 (USA, Europe) (En,Ja,Fr,De,Es,It,Zh,Ko) (Rev 1).iso" xex\DOA4 --list
+py -3 doa4-online\tools\xdvdfs_extract.py "Dead or Alive 4 (USA, Europe) (En,Ja,Fr,De,Es,It,Zh,Ko) (Rev 1).iso" xex\DOA4
 ```
 
 The first command only lists the contents (a quick check that the image is readable); the second
@@ -122,11 +122,11 @@ build, so check `extract-xiso -h` if that command line does not work.
 
 `tools\np_build.bat` is the entry point. It sets up Visual Studio's environment, puts LLVM first on
 `PATH`, and runs CMake with the flags the build needs. It reads the SDK folder from `DOA4_SDK` (forward
-slashes). From a plain `cmd` window (not PowerShell). The script leaves the window in the `doa4-recomp` folder, so
+slashes). From a plain `cmd` window (not PowerShell). The script leaves the window in the `doa4-online` folder, so
 start there and call it relative to it:
 
 ```bat
-cd /d C:\doa4\doa4-recomp
+cd /d C:\doa4\doa4-online
 set "DOA4_SDK=C:/doa4/rexglue-sdk"
 tools\np_build.bat configure
 tools\np_build.bat build
@@ -149,7 +149,7 @@ The same, by hand (this is what the script and the release workflow run; the wor
 ```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
 set "PATH=C:\Program Files\LLVM\bin;%PATH%"
-cd /d C:\doa4\doa4-recomp
+cd /d C:\doa4\doa4-online
 
 rem Configure (once, or after deleting out\build):
 cmake --preset win-amd64-release -DREXSDK_DIR=C:/doa4/rexglue-sdk "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3" -DDOA4_RELEASE_CHANNEL=alpha
@@ -209,7 +209,7 @@ failures` or `<name>: all checks passed`). To run them all, judged by that line 
 (`--only <name> ...` for some), from a `cmd` window:
 
 ```bat
-cd /d C:\doa4\doa4-recomp
+cd /d C:\doa4\doa4-online
 set "REXSDK_DIR=C:\doa4\rexglue-sdk"
 set "DOA4_CI=1"
 py -3 -I tools\run_host_tests.py

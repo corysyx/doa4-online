@@ -533,7 +533,7 @@ Describe 'Play and the folders in release mode' {
 Describe 'The shipped config.ps1 (release mode)' {
     It 'names the fork, the netplay channel, the three files, no pin, and release as the default' {
         $c = & (Join-Path $script:Src 'launcher\config.ps1')
-        $c.ReleaseRepo | Should BeExactly 'Dwreckgg/doa4-recomp'
+        $c.ReleaseRepo | Should BeExactly 'Dwreckgg/doa4-online'
         $c.ReleaseChannel | Should BeExactly 'netplay'
         @($c.ReleaseAssets) -join ',' | Should BeExactly 'dead_or_alive_4.exe,rexruntime.dll,TracyClient.dll'
         $c.ReleaseTag | Should BeExactly ''

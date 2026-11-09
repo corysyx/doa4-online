@@ -39,7 +39,7 @@
     # The releases: GitHub repository, tag channel (tags '<channel>-v<a.b.c>') and the files
     # a release must have (besides SHA256SUMS.txt). Empty ReleaseTag: the newest release; a
     # tag (for example 'netplay-v1.0.7') pins that release.
-    ReleaseRepo    = 'Dwreckgg/doa4-recomp'
+    ReleaseRepo    = 'Dwreckgg/doa4-online'
     ReleaseChannel = 'netplay'
     ReleaseAssets  = @('dead_or_alive_4.exe', 'rexruntime.dll', 'TracyClient.dll')
     ReleaseTag     = ''

@@ -21,7 +21,7 @@ concurrency:
 jobs:
   release:
     # forks of this fork publish nothing unless they opt in (repository variable PUBLISH_RELEASES = true)
-    if: github.repository == 'Dwreckgg/doa4-recomp' || vars.PUBLISH_RELEASES == 'true'
+    if: github.repository == 'Dwreckgg/doa4-online' || vars.PUBLISH_RELEASES == 'true'
     runs-on: windows-2025-vs2026
     timeout-minutes: 300
     steps:

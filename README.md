@@ -10,7 +10,7 @@ costumes. This is **alpha 0.3.0**: it works and is used, but it is still an alph
 the game, and the swimsuits need your own DOAX2 disc.
 
 It is a fork of [parkerallan/doa4-recomp](https://github.com/parkerallan/doa4-recomp), published at
-[Dwreckgg/doa4-recomp](https://github.com/Dwreckgg/doa4-recomp). On top of it: two-player **online
+[Dwreckgg/doa4-online](https://github.com/Dwreckgg/doa4-online). On top of it: two-player **online
 play**, frame pacing, an Esc menu (Video / Audio / Controls / Photo / Extras / Online / Game tabs),
 graphics options, full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts
 the game files. Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
@@ -26,7 +26,7 @@ your own copy of *Dead or Alive 4 (USA, Europe) (Rev 1)* as a disc image (`.iso`
 folder; and, only for the swimsuits, your own **USA** copy of *Dead or Alive Xtreme 2*.
 
 1. **Download the game program.** Open the
-   [Releases page](https://github.com/Dwreckgg/doa4-recomp/releases), pick the newest `alpha-v...`
+   [Releases page](https://github.com/Dwreckgg/doa4-online/releases), pick the newest `alpha-v...`
    release and download `DOA4-alpha-v...-win64.zip`. Both players must use the **same** release. If you
    already have an older copy, update it in the game instead: see [Updating](#updating).
 2. **Unzip it** into a folder of its own, for example `C:\Games\Dead or Alive 4 Online` (plain letters,
@@ -64,7 +64,7 @@ If the friend's game shows its own code while connecting, the host can type it u
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
 pre-releases named `alpha-v<x.y.z>` on
-[the Releases page](https://github.com/Dwreckgg/doa4-recomp/releases). A release holds the game's exe
+[the Releases page](https://github.com/Dwreckgg/doa4-online/releases). A release holds the game's exe
 and its two DLLs, never game data. `SHA256SUMS.txt` (in the zip and on the page) holds the SHA-256 of
 the three files.
 
@@ -310,7 +310,7 @@ The same names, and the licences of the code taken, are in [THIRD_PARTY_NOTICES.
 
 ## Reporting bugs
 
-Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-recomp/issues):
+Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-online/issues):
 
 1. Search the open issues first. If yours is already there, add what you saw to it.
 2. Otherwise press **New issue** and describe:

@@ -62,7 +62,7 @@ function New-TestConfig {
         WingetVsId = 'Microsoft.VisualStudio.BuildTools'; VsWorkload = 'Microsoft.VisualStudio.Workload.VCTools'
         VsVersionRange = '[18,19)'; RequiredFreeGB = 6
         GitSize = 'about 70 MB download'; LlvmSize = 'about 400 MB download'; VsSize = 'about 2 GB download'
-        ReleaseRepo = 'Dwreckgg/doa4-recomp'; ReleaseChannel = 'netplay'
+        ReleaseRepo = 'Dwreckgg/doa4-online'; ReleaseChannel = 'netplay'
         ReleaseAssets = @('dead_or_alive_4.exe', 'rexruntime.dll', 'TracyClient.dll'); ReleaseTag = ''
         DefaultSource = 'source'
     }
@@ -78,11 +78,11 @@ function New-TReleaseConfig {
 
 # ---- release mode fakes: the GitHub API and downloads, the process query, folder renames ----
 
-$script:TReleaseListUrl = 'https://api.github.com/repos/Dwreckgg/doa4-recomp/releases?per_page=30'
+$script:TReleaseListUrl = 'https://api.github.com/repos/Dwreckgg/doa4-online/releases?per_page=30'
 
 function Get-TAssetUrl {
     param([string]$Tag, [string]$Name)
-    return ('https://github.com/Dwreckgg/doa4-recomp/releases/download/{0}/{1}' -f $Tag, $Name)
+    return ('https://github.com/Dwreckgg/doa4-online/releases/download/{0}/{1}' -f $Tag, $Name)
 }
 
 # The bytes a fixture release serves for one file: different for every tag and name.
@@ -129,13 +129,13 @@ function New-TReleaseSet {
             else { $files[$url] = Get-TAssetBytes $tag $n }
             $id++
             [void]$assets.Add([ordered]@{
-                    url = "https://api.github.com/repos/Dwreckgg/doa4-recomp/releases/assets/$id"; id = $id; name = $n
+                    url = "https://api.github.com/repos/Dwreckgg/doa4-online/releases/assets/$id"; id = $id; name = $n
                     content_type = 'application/octet-stream'; state = 'uploaded'; browser_download_url = $url
                 })
         }
         $draft = $false; if ($s.ContainsKey('Draft')) { $draft = [bool]$s.Draft }
         [void]$list.Add([ordered]@{
-                url = 'https://api.github.com/repos/Dwreckgg/doa4-recomp/releases/1'; tag_name = $tag; name = $tag
+                url = 'https://api.github.com/repos/Dwreckgg/doa4-online/releases/1'; tag_name = $tag; name = $tag
                 draft = $draft; prerelease = $true; assets = $assets.ToArray()
             })
     }
