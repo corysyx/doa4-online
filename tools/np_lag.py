@@ -78,7 +78,12 @@ POINTS = {
     "guest vblank": "t_vblank_us",
     "GPU wait wake": "t_gpu_wait_wake_us",
     "GPU swap packet": "t_gpu_swap_us",
+    # A cut build (present_before_vblank_wait): a frame presented early (gpu_flags bit 0) has its swap record stamped at the
+    # early IssueSwap, at the wait's entry, before the wait sleeps; read_trace moves that time to its own column.
+    "GPU early IssueSwap": "t_gpu_early_swap_us",
 }
+DERIVED_COLUMNS = ("t_gpu_early_swap_us",)  # not in the CSV: read_trace derives them
+GPU_FLAG_EARLY = 1  # gpu_flags bit 0 (sdk pace_stats.h kLagGpuSwapEarly)
 DISPLAYED = "displayed"  # from PresentMon: the host Present call + msUntilDisplayed
 # What lies inside each stage, as far as the code shows (a "residual" is end minus start with unnamed work inside).
 STAGE_NOTES = {
@@ -100,11 +105,22 @@ STAGE_NOTES = {
     ("guest vblank", "GPU wait wake"): "the vblank interrupt (MarkVblank) and the wake of the wait (WakeRegisterWaits)",
     ("GPU wait wake", "GPU swap packet"): "GPU thread: the packets after the wait up to the swap packet (gpu_after_wait_packets)",
     ("GPU swap packet", "host Present call"): "GPU thread: IssueSwap (the swap texture) and the presenter's paint",
+    ("GPU wait entry", "GPU early IssueSwap"): "GPU thread: the shape check of the packets after the wait (early frames)",
+    ("GPU early IssueSwap", "host Present call"): "GPU thread: the early IssueSwap (the swap texture) and the paint, run at "
+                                                  "the wait's entry before it sleeps (present_before_vblank_wait)",
     ("host Present return", DISPLAYED): "the swap chain to the display (PresentMon msUntilDisplayed from the call, minus the call)",
+}
+# Notes that differ when most of a configuration's frames were presented early (a cut build).
+EARLY_STAGE_NOTES = {
+    ("guest VdSwap", "swap return"): "GPU back-pressure: the guest present blocks until the GPU thread has run the PREVIOUS "
+                                     "swap's packet, after that swap's vblank wait (its host present came earlier, at the "
+                                     "wait's entry: present_before_vblank_wait)",
+    ("swap return", "GPU wait entry"): "GPU thread: the frame's commands up to the wait before its swap packet (it reaches "
+                                       "them after the previous swap's packet, at the vblank)",
 }
 GPU_WORK = ("host Present return (previous frame)", "GPU wait entry")  # the GPU thread's own work on a frame (Task 8)
 GPU_WORK_NOTE = ("GPU thread: from presenting the previous swap to the wait before this frame's swap packet (its commands "
-                 "for this frame; consecutive frames only)")
+                 "for this frame; consecutive frames whose previous present was not early only)")
 LOOP_TAIL = ("swap return", "next frame start")  # the rest of the loop pass; holds the 60 Hz pacing wait if it is there
 LOOP_NOTE = "residual: the main loop after the guest present until the next pass starts (any frame pacing wait)"
 # Constraints a frame's points must meet (later - earlier >= 0); a violation is a negative stage time.
@@ -112,7 +128,8 @@ ORDER_CHECKS = [("frame start", "session step done"), ("session step done", "fra
                 ("frame start", "pad read"), ("frame start", "swap call"), ("swap call", "guest VdSwap"),
                 ("guest VdSwap", "swap return"), ("pad read", "guest VdSwap"), ("guest VdSwap", "host Present call"),
                 ("host Present call", "host Present return"), ("GPU wait entry", "GPU wait wake"),
-                ("GPU wait wake", "GPU swap packet")]
+                ("GPU wait wake", "GPU swap packet"), ("GPU wait entry", "GPU early IssueSwap"),
+                ("GPU early IssueSwap", "host Present call")]
 
 
 # ---- statistics -----------------------------------------------------------------------------------------------------
@@ -148,8 +165,18 @@ def read_trace(path):
     rows = []
     with open(path, newline="") as f:
         for r in csv.DictReader(f):
-            rows.append({k: (int(v) if v not in ("", None) else None) for k, v in r.items()})
+            row = {k: (int(v) if v not in ("", None) else None) for k, v in r.items()}
+            # an early frame's swap time is the early IssueSwap (at the wait's entry), not the swap packet
+            row["t_gpu_early_swap_us"] = None
+            if (row.get("gpu_flags") or 0) & GPU_FLAG_EARLY:
+                row["t_gpu_early_swap_us"], row["t_gpu_swap_us"] = row.get("t_gpu_swap_us"), None
+            rows.append(row)
     return rows
+
+
+def early_frames(rows):
+    """How many of `rows` were presented early (gpu_flags bit 0)."""
+    return sum(1 for r in rows if (r.get("gpu_flags") or 0) & GPU_FLAG_EARLY)
 
 
 def window_rows(rows, start=WINDOW_START, frames=WINDOW_FRAMES, fight=False):
@@ -210,10 +237,13 @@ def loop_tail(rows):
 
 def gpu_work(rows):
     """The previous row's host Present return -> this row's GPU wait entry, in ms (consecutive frames with both points):
-    the GPU thread's own work on a frame (Task 8, R56)."""
+    the GPU thread's own work on a frame (Task 8, R56). Not over a previous frame presented early: its present came
+    before its vblank wait, so the span would hold that sleep (on a cut build the frame's own work is the stage
+    "swap return -> GPU wait entry")."""
     out = []
     for prev, r in zip(rows, rows[1:]):
-        if r["frame"] == prev["frame"] + 1 and prev.get("t_host_present_us") is not None and r.get("t_gpu_wait_enter_us") is not None:
+        if (r["frame"] == prev["frame"] + 1 and prev.get("t_host_present_us") is not None and
+                r.get("t_gpu_wait_enter_us") is not None and not (prev.get("gpu_flags") or 0) & GPU_FLAG_EARLY):
             out.append((r["t_gpu_wait_enter_us"] - prev["t_host_present_us"]) / 1000.0)
     return out
 
@@ -328,6 +358,69 @@ class Sampler(threading.Thread):
             self.samples.append((time.time(), tasklist_pids()))
             if self.stop.wait(SAMPLE_S):
                 return
+
+
+def process_affinity(pid):
+    """The live process mask of `pid` (GetProcessAffinityMask: a job object's affinity limit shows in it), or None if
+    the process cannot be opened or read."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        proc, system = ctypes.c_size_t(0), ctypes.c_size_t(0)
+        if not k32.GetProcessAffinityMask(h, ctypes.byref(proc), ctypes.byref(system)):
+            return None
+        return proc.value
+    finally:
+        k32.CloseHandle(h)
+
+
+class AffinityReadback(threading.Thread):
+    """R42 (#351, #352): reads the LIVE game's CPU mask back after its start-up and writes it to `out`. Waits for the
+    game's pid in <run>/pid.txt (written by the runner once the game started), then `delay` seconds, then reads the
+    process mask and writes one line: the pid, how long after the pid appeared it was read, the mask read, the mask
+    requested and whether they match. Stopped before a pid appeared, it writes that there was no read-back."""
+
+    def __init__(self, run_dir, out, requested, delay=45.0):
+        super().__init__(daemon=True)
+        self.run_dir, self.out, self.requested, self.delay = run_dir, out, requested, delay
+        self.stop = threading.Event()
+
+    def _write(self, line):
+        with open(self.out, "w", newline="\n") as f:
+            f.write(line + "\n")
+
+    def run(self):
+        pid_file = os.path.join(self.run_dir, "pid.txt")
+        while not os.path.exists(pid_file):
+            if self.stop.wait(0.2):
+                self._write(f"no read-back: the game's pid.txt never appeared in {self.run_dir} (requested {self.requested})")
+                return
+        t0 = time.time()
+        try:
+            pid = int(open(pid_file).read().strip())
+        except (OSError, ValueError) as e:
+            self._write(f"no read-back: pid.txt unreadable ({e}) (requested {self.requested})")
+            return
+        if self.stop.wait(self.delay):
+            self._write(f"no read-back: the run ended within {self.delay:g} s of the pid (pid {pid}, requested {self.requested})")
+            return
+        mask = process_affinity(pid)
+        after = time.time() - t0
+        try:
+            want = int(self.requested, 0)
+        except ValueError:
+            want = None
+        got = "unreadable" if mask is None else f"0x{mask:X}"
+        self._write(f"pid {pid}: read {after:.1f} s after the pid appeared ({time.strftime('%H:%M:%S')}): process affinity mask "
+                    f"{got} (requested {self.requested}; match {'yes' if mask is not None and mask == want else 'no'})")
 
 
 def own_pids(run_dirs):
@@ -473,6 +566,10 @@ def cmd_run(a):
             run_dirs = [os.path.join(runs, f"{name}_host"), os.path.join(runs, f"{name}_joiner")]
         sampler = Sampler()
         sampler.start()
+        readback = None
+        if a.affinity:  # R42: the live mask, read back after start-up, beside the run (the request is in _meta.txt)
+            readback = AffinityReadback(run_dirs[0], os.path.join(a.out, f"{name}_affinity.txt"), a.affinity, a.affinity_delay)
+            readback.start()
         t0 = time.time()
         with open(os.path.join(a.out, f"{name}_console.log"), "wb") as f:
             f.write((" ".join(cmd) + "\n").encode())
@@ -487,6 +584,9 @@ def cmd_run(a):
             f.write(f"exit {p.returncode}\n".encode())
         sampler.stop.set()
         sampler.join()
+        if readback:
+            readback.stop.set()
+            readback.join()
         label, foreign = label_run(sampler.samples, own_pids(run_dirs))
         with open(os.path.join(a.out, f"{name}_meta.txt"), "w", newline="\n") as f:
             f.write(f"config {a.config}\nrun {name}\nmode {a.mode}\nkind {a.kind}\nseed {a.seed}\nbin {a.bin}\n")
@@ -559,7 +659,7 @@ def analyse_run(out, meta, presentmon, start, frames):
     res["fight_total"] = sum(1 for r in all_rows if r.get("fight_state") == FIGHT_ROUND)
     res["has_fight"] = any(r.get("fight_state") is not None for r in all_rows)
     n, ws, joined, neg = check_trace(rows)
-    res.update(frames=n, with_swap=ws, joined=joined, negatives=neg, fps=fps(rows))
+    res.update(frames=n, with_swap=ws, joined=joined, negatives=neg, fps=fps(rows), early=early_frames(rows))
     res["pad_main"] = statistics.median([r["pad_calls_main"] for r in rows]) if rows else None
     res["pad_other"] = sum(r["pad_calls_other"] for r in rows)
     res["swaps_other"] = sum(r["swap_calls_other"] for r in rows)
@@ -619,7 +719,8 @@ def analyse(out, presentmon, start, frames):
                             f"the whole trace, " if r["has_fight"] else "no fight_state column, ") +
                          f"negative stage times {len(r['negatives'])}, pad reads per frame (main, median) {r['pad_main']}, "
                          f"pad reads on other threads {r['pad_other']}, guest swaps per frame (main) {r['swap_main_hist']}, "
-                         f"swap calls on other threads {r['swaps_other']}")
+                         f"swap calls on other threads {r['swaps_other']}, early-presented {r['early']} of {r['frames']} frames "
+                         f"(gpu_flags bit 0, present_before_vblank_wait)")
             pm = r.get("pm")
             if pm:
                 lines.append(f"  - PresentMon: {pm['window_rows']} rows of pid {r['pid']} in the window ({pm['rows']} in all), "
@@ -652,8 +753,10 @@ def analyse(out, presentmon, start, frames):
                 return f"| {label} | - | - | - | - | - | {note} |"
             return (f"| {label} | {fmt(pooled['median'])} | {fmt(pooled['p95'])} | {fmt(pooled['p99'])} | "
                     f"{' / '.join(fmt(x) for x in meds)} | {fmt(spread(meds))} | {note} |")
+        mostly_early = sum(g["early"] for g in good) * 2 > sum(g["frames"] for g in good)
         for a, b in stages:
-            note = STAGE_NOTES.get((a, b), "residual: end minus start, the work between is not named by the trace")
+            note = (EARLY_STAGE_NOTES.get((a, b)) if mostly_early else None) or STAGE_NOTES.get(
+                (a, b), "residual: end minus start, the work between is not named by the trace")
             lines.append(row_for(f"{a} -> {b}", [stage_values(g["rows"], a, b) for g in good], note))
         lines.append(row_for(f"{LOOP_TAIL[0]} -> {LOOP_TAIL[1]}", [loop_tail(g["rows"]) for g in good], LOOP_NOTE))
         if any(gpu_work(g["rows"]) for g in good):
@@ -722,7 +825,9 @@ def main(argv=None):
     r.add_argument("--seed", type=int, default=7)
     r.add_argument("--fix", help="offline/pair: the session's DOA4_NP_FIX (e.g. none: the determinism layer off, so "
                                  "the record session keeps the script input but not the layer's pacing)")
-    r.add_argument("--affinity", help="logical CPU mask passed to np_run.py --affinity (offline only)")
+    r.add_argument("--affinity", help="logical CPU mask passed to np_run.py --affinity (offline only); the live game's mask "
+                                      "is read back --affinity-delay s after its pid appears into <out>/<run>_affinity.txt")
+    r.add_argument("--affinity-delay", type=float, default=45.0, help="seconds after the game's start for the mask read-back")
     r.add_argument("--script", default=os.path.join(HERE, "np_scripts", "single.txt"))
     r.add_argument("--userdata", default=os.path.join(np_run.DOA4_ROOT, "np_phase0", "ud_pristine"))
     r.add_argument("--cache", default=os.path.join(np_run.DOA4_ROOT, "ou_runs", "cache"))

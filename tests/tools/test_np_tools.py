@@ -3666,12 +3666,14 @@ LAG_COLUMNS = LAG_COLUMNS_T7 + (",t_gpu_wait_enter_us,t_vblank_us,t_gpu_wait_wak
                                 "gpu_wait_poll,gpu_wait_ref,gpu_wait_info,gpu_after_wait_packets,gpu_after_wait_sig,gpu_flags")
 
 
-def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2, gpu=True):
+def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2, gpu=True, early=False):
     """A synthetic lagtrace CSV: `frames` 60 fps frames from np_frame first_np, each with all points (frame start, +0.1 session,
     +0.3 frame fn, +0.5 pad, +9 swap call, +9.2 VdSwap, +9.4 swap return, +9.6 GPU wait entry, +10.5 guest vblank, +10.55 GPU
     wait wake, +10.6 GPU swap packet, +11 Present call, +11.4 return; ms). break_swap_at: that row has no swap index and no
     present (a join miss); negative_at: that row's Present return is before its call; fight(i): row i's fight_state (2, a
-    round, by default); gpu=False: Task 7's header, without the GPU-thread columns."""
+    round, by default); gpu=False: Task 7's header, without the GPU-thread columns. early=True: every frame presented early
+    (present_before_vblank_wait: gpu_flags 1, the early IssueSwap stamped 0.02 ms after the wait entry, no vblank, no
+    wake, the wait's parameters known)."""
     lines = [LAG_COLUMNS if gpu else LAG_COLUMNS_T7]
     for i in range(frames):
         t = 1_000_000 + i * 16_667
@@ -3682,7 +3684,9 @@ def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None,
             ret = call - 50
         v = [i + 1, t + 500, t, t + 9_200, ret, swap, first_np + i, t + 100, t + 300, t + 9_000, t + 9_400, call, 4, 0, 1, 0,
              1 if call else None, fight(i)]
-        if gpu:
+        if gpu and early:
+            v += ([t + 9_600, None, None, t + 9_620, 0, 1, 123, 4, 19, 0, 0, 1] if call else [None] * 12)
+        elif gpu:
             v += ([t + 9_600, t + 10_500, t + 10_550, t + 10_600, 900, 1, 123, 4, 19, 2, 25728, 0] if call else [None] * 12)
         lines.append(",".join("" if x is None else str(x) for x in v))
     with open(path, "w", newline="\n") as f:
@@ -3697,7 +3701,9 @@ def test_lag_columns_match_source(root):
     header = "".join(re.findall(r'"([^"]*)"', m.group(1))) if m else None
     check(header == LAG_COLUMNS, f"np_lag: the CSV header in doa4_lagtrace.cpp is LAG_COLUMNS: {header}")
     lag = load("np_lag")
-    check(set(lag.POINTS.values()) <= set(LAG_COLUMNS.split(",")), "np_lag: every point column is a trace column")
+    # every point column is a trace column, except the ones np_lag derives on reading (DERIVED_COLUMNS: the early IssueSwap)
+    check(set(lag.POINTS.values()) - set(lag.DERIVED_COLUMNS) <= set(LAG_COLUMNS.split(",")) and lag.DERIVED_COLUMNS == ("t_gpu_early_swap_us",),
+          "np_lag: every point column is a trace column (or derived)")
 
 
 def test_lag_percentile_and_spread(root):
@@ -3891,6 +3897,85 @@ def test_lag_display_by_mode(root):
     check(rows.get("pad read -> swap call") == "8.50", f"np_lag analyse: the game-side stages stay pooled: {rows.get('pad read -> swap call')}")
     check(rows.get("host Present return (previous frame) -> GPU wait entry") == "14.87",
           f"np_lag analyse: the GPU thread's own work row (Task 8): {rows.get('host Present return (previous frame) -> GPU wait entry')}")
+
+
+def test_lag_early_frames(root):
+    # Task 8 fix round 1 (review M4): a cut build's trace (present_before_vblank_wait). For an early frame the swap record's
+    # time is the early IssueSwap at the wait's entry, not the swap packet: it is read as its own point, "GPU early
+    # IssueSwap", so the order is wait entry -> early IssueSwap -> Present call (NOT "GPU swap packet" before the wait).
+    lag = load("np_lag")
+    rows = lag.window_rows(lag.read_trace(lag_trace(os.path.join(root, "e.csv"), 3600, early=True)))
+    order, _ = lag.measured_order(rows, list(lag.POINTS))
+    check(order == ["frame start", "session step done", "frame function done", "pad read", "swap call", "guest VdSwap",
+                    "swap return", "GPU wait entry", "GPU early IssueSwap", "host Present call", "host Present return"],
+          f"np_lag measured order of an early trace: {order}")
+    v = lag.stage_values(rows, "GPU wait entry", "GPU early IssueSwap")
+    check(len(v) == 3600 and all(abs(x - 0.02) < 1e-9 for x in v), f"np_lag early: wait entry -> early IssueSwap 0.02 ms: {v[:2]}")
+    # the GPU thread's own work is not "previous Present return -> wait entry" when the previous present was early (that
+    # span holds the previous swap's vblank sleep): no value, NOT 14.867 ms
+    check(lag.gpu_work(rows) == [], f"np_lag gpu_work over early frames: {lag.gpu_work(rows)[:2]}")
+    n, ws, joined, neg = lag.check_trace(rows)
+    check(neg == [], f"np_lag check_trace on an early trace: {neg[:2]}")
+    # analyse: the run line counts the early frames; the stage notes are the cut build's
+    out = os.path.join(root, "out")
+    for name, pid, early in (("ea", 101, True), ("na", 202, False)):
+        os.makedirs(os.path.join(out, "runs", name))
+        os.makedirs(os.path.join(out, "lag", name))
+        open(os.path.join(out, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out, "runs", name, "game.log"), "w").write("x\n")
+        lag_trace(os.path.join(out, "lag", name, f"lagtrace_{pid}.csv"), 3600, early=early)
+        open(os.path.join(out, f"{name}_meta.txt"), "w").write(f"config c{name}\nrun {name}\nmode windowed\nkind offline\nlabel clean\nexit 0\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out, None, 3394, 3600)
+    text = open(os.path.join(out, "analysis.md")).read()
+    early_part, plain_part = text.split("## cna")[0], text.split("## cna")[1]
+    check("early-presented 3600 of 3600 frames" in early_part and "early-presented 0 of 3600 frames" in plain_part,
+          "np_lag analyse: the run line counts the early frames")
+    note = lambda part: next((l for l in part.splitlines() if l.startswith("| guest VdSwap -> swap return |")), "")
+    check("PREVIOUS swap's packet" in note(early_part) and "6 us after host Present(N-1)" not in note(early_part),
+          f"np_lag analyse: the back-pressure note of a cut run: {note(early_part)}")
+    check("6 us after host Present(N-1)" in note(plain_part), f"np_lag analyse: the back-pressure note of a run without the cut: {note(plain_part)}")
+    check("host Present return (previous frame) -> GPU wait entry" not in early_part and
+          "host Present return (previous frame) -> GPU wait entry" in plain_part,
+          "np_lag analyse: the GPU-work row only where the previous present was not early")
+
+
+def test_lag_affinity_readback(root):
+    # Task 8 fix round 1 (review M5, R42 / #351 #352): with --affinity, the run folder gets the LIVE process's mask read
+    # back after start-up, not the mask that was asked for. The child is limited the way np_run limits the game (a job
+    # object, np_run.limit_cpus), to one CPU: its mask (0x1) differs from this process's and the system's, so a reader that
+    # returns the request or the system mask is told apart only by the request it is given (0x3 below, NOT 0x1).
+    lag = load("np_lag")
+    np_run = load("np_run")
+    p = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(60)"], creationflags=0x08000000)
+    try:
+        job = np_run.limit_cpus(int(p._handle), 0x1)  # noqa: F841 (the job lives while this test runs)
+        got = lag.process_affinity(p.pid)
+        check(got == 0x1, f"np_lag process_affinity of a job-limited child: {got!r} (want 0x1)")
+        run = os.path.join(root, "runs", "c_r1")
+        os.makedirs(run)
+        out = os.path.join(root, "c_r1_affinity.txt")
+        rb = lag.AffinityReadback(run, out, requested="0x3", delay=0.5)
+        rb.start()
+        time.sleep(0.3)  # the game's pid appears only after the runner started it
+        open(os.path.join(run, "pid.txt"), "w").write(str(p.pid))
+        rb.join(15)
+        text = open(out).read() if os.path.exists(out) else ""
+        check(not rb.is_alive() and f"pid {p.pid}" in text and "process affinity mask 0x1 " in text and "requested 0x3" in text
+              and "match no" in text, f"np_lag affinity read-back file: {text!r}")
+        m = re.search(r"read ([0-9.]+) s after the pid appeared", text)
+        check(m is not None and float(m.group(1)) >= 0.5, f"np_lag affinity read-back waits its delay after start-up: {text!r}")
+    finally:
+        p.kill()
+        p.wait()
+    # no pid.txt before the run ended: the file says so (an absence is written, never a guessed mask)
+    out2 = os.path.join(root, "c_r2_affinity.txt")
+    rb2 = lag.AffinityReadback(os.path.join(root, "runs", "none"), out2, requested="0x1", delay=0.5)
+    rb2.start()
+    rb2.stop.set()
+    rb2.join(5)
+    text2 = open(out2).read() if os.path.exists(out2) else ""
+    check("no read-back" in text2 and "pid.txt" in text2 and "mask 0x" not in text2, f"np_lag affinity read-back with no pid: {text2!r}")
 
 
 def test_lag_plain(root):
