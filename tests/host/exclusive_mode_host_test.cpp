@@ -19,6 +19,10 @@
 //   exclusive update is running (its own resizes reconnect the swap chain);
 // - a placement axis stays inside the given work area, whatever its origin (a secondary monitor, one left of the
 //   primary), and never moves to the primary monitor's.
+// Task 9c fix round 2 (re-review N1, R88):
+// - while exclusive, "" and the not-offered fallback choose the desktop mode captured at entry, not the live mode;
+// - a switch while exclusive is confirmed by the mode the output shows (refresh within 1.5 Hz, the target's size or,
+//   under GPU scaling, the desktop's); a refused switch is not.
 
 #include <rex/ui/display_mode.h>
 #include <rex/ui/exclusive_fullscreen.h>
@@ -235,6 +239,61 @@ static void TestSortedUniqueModes() {
   CHECK(list2.size() == 1);
 }
 
+// Fix round 2, re-review N1: while exclusive, "" and the not-offered fallback mean the desktop mode captured at entry,
+// not the output's live mode (which the exclusive entry set). Outside exclusive, or without a capture, the live one.
+static void TestDesktopForChoice() {
+  const dm::DisplayMode captured = M(2560, 1440, 164834, 1000);  // the desktop before the entry
+  const dm::DisplayMode live = M(2560, 1440, 59951, 1000);       // what the output reports while exclusive at 60 Hz
+  const std::vector<dm::DisplayMode> offered = {M(2560, 1440, 164834, 1000), M(1920, 1080, 60000, 1000),
+                                                M(2560, 1440, 59951, 1000)};
+  auto same = [](const dm::DisplayMode& a, const dm::DisplayMode& b) {
+    return a.width == b.width && a.height == b.height && a.refresh_num == b.refresh_num &&
+           a.refresh_den == b.refresh_den;
+  };
+  // exclusive, captured: "" -> the captured desktop (NOT the live 59.951 Hz mode exclusive fullscreen set)
+  dm::Choice c = dm::ChooseMode("", offered, dm::DesktopForChoice(true, true, captured, live));
+  CHECK(c.pick == dm::Pick::kDesktop && same(c.mode, captured));
+  // exclusive, captured: a mode not offered falls back to the captured desktop too
+  c = dm::ChooseMode("1600x900@60", offered, dm::DesktopForChoice(true, true, captured, live));
+  CHECK(c.pick == dm::Pick::kFallback && same(c.mode, captured));
+  // exclusive, captured: an offered mode is itself (the desktop does not matter)
+  c = dm::ChooseMode("1920x1080@60", offered, dm::DesktopForChoice(true, true, captured, live));
+  CHECK(c.pick == dm::Pick::kOffered && same(c.mode, M(1920, 1080, 60000, 1000)));
+  // not exclusive (the entry itself): the live desktop
+  c = dm::ChooseMode("", offered, dm::DesktopForChoice(false, true, captured, live));
+  CHECK(same(c.mode, live));
+  // exclusive but no capture: the live one (as before the fix)
+  CHECK(same(dm::DesktopForChoice(true, false, captured, live), live));
+  CHECK(same(dm::DesktopForChoice(false, false, captured, live), live));
+}
+
+// Fix round 2 (R88): the mode the output shows after a switch while exclusive, against the target.
+static void TestObserveModeSwitch() {
+  using O = dm::Observed;
+  // back to the desktop 2560x1440 @ 164.834: shown as 2560x1440 @ 165 (or 164) -> the target
+  CHECK(dm::ObserveModeSwitch(M(2560, 1440, 164834, 1000), 2560, 1440, 165, 2560, 1440) == O::kTarget);
+  CHECK(dm::ObserveModeSwitch(M(2560, 1440, 164834, 1000), 2560, 1440, 164, 2560, 1440) == O::kTarget);
+  // a refused switch back to the desktop: the output still shows the exclusive mode's 59 Hz -> NOT the target
+  CHECK(dm::ObserveModeSwitch(M(2560, 1440, 164834, 1000), 2560, 1440, 59, 2560, 1440) == O::kNotTarget);
+  // 1920x1080 @ 60/1 under GPU scaling: Windows reports the desktop size at 59 Hz (c2) -> scaled, the target
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60, 1), 2560, 1440, 59, 2560, 1440) == O::kTargetScaled);
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60, 1), 1920, 1080, 60, 2560, 1440) == O::kTarget);
+  // a refused switch to 1920x1080 @ 60 from the desktop: still 165 Hz -> NOT the target
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60, 1), 2560, 1440, 165, 2560, 1440) == O::kNotTarget);
+  // the refresh bound: 1.5 Hz either way of 60 (58 and 62 are out, 59 and 61 in)
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60, 1), 1920, 1080, 61, 2560, 1440) == O::kTarget);
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60, 1), 1920, 1080, 58, 2560, 1440) == O::kNotTarget);
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60, 1), 1920, 1080, 62, 2560, 1440) == O::kNotTarget);
+  // 59.94 (60000/1001) shown as 59 or 60
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60000, 1001), 1920, 1080, 59, 2560, 1440) == O::kTarget);
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60000, 1001), 1920, 1080, 60, 2560, 1440) == O::kTarget);
+  // a size that is neither the target's nor the desktop's -> NOT the target
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 60, 1), 1280, 720, 60, 2560, 1440) == O::kNotTarget);
+  // an unspecified target rate matches any refresh, the size still counts
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 0, 0), 1920, 1080, 165, 2560, 1440) == O::kTarget);
+  CHECK(dm::ObserveModeSwitch(M(1920, 1080, 0, 0), 1280, 720, 165, 2560, 1440) == O::kNotTarget);
+}
+
 static void TestFittingClientSizes() {
   // a 2560x1400 work area (taskbar 40), frame 16x39: 2560x1440 does NOT fit, 1920x1080 does
   auto s = dm::FittingClientSizes(2560, 1400, 16, 39);
@@ -263,6 +322,8 @@ int main() {
   TestChooseMode();
   TestSortedUniqueModes();
   TestFittingClientSizes();
+  TestDesktopForChoice();
+  TestObserveModeSwitch();
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
     return 1;
