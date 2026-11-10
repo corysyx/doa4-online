@@ -168,6 +168,26 @@ static void TestRemoveFromFile() {
   CHECK(!doa4::RemoveTomlKeyFromFile(path, "audio_speakers", &removed).empty());
   CHECK(!removed && ReadAll(path) == broken && !std::filesystem::exists(tmp));
 
+  // A quoted-key twin: the line match removes only the bare one, so the result still holds the key. The
+  // loadability check refuses it, and the file stays as it was.
+  const std::string twin = "audio_speakers = 1\n\"audio_speakers\" = 2\n";
+  WriteRaw(path, twin);
+  removed = true;
+  CHECK(doa4::RemoveTomlKeyFromFile(path, "audio_speakers", &removed).find("still holds") != std::string::npos);
+  CHECK(!removed && ReadAll(path) == twin && !std::filesystem::exists(tmp));
+
+  // A session process leaves the file as it is (R10): same bytes, same time, no removal, no error.
+  const std::string with_key = "# c\naudio_speakers = \"surround\"\nvsync = true\n";
+  WriteRaw(path, with_key);
+  const auto session_time = std::filesystem::last_write_time(path);
+  removed = true;
+  CHECK(doa4::RemoveSavedSpeakersLine(path, true, &removed).empty());
+  CHECK(!removed && ReadAll(path) == with_key && std::filesystem::last_write_time(path) == session_time);
+  CHECK(!std::filesystem::exists(tmp));
+  // The same file, not a session process: the line goes.
+  CHECK(doa4::RemoveSavedSpeakersLine(path, false, &removed).empty() && removed);
+  CHECK(ReadAll(path) == "# c\nvsync = true\n");
+
   // A directory in the file's place cannot be read: an error, not a crash.
   auto blocked = dir / "blocked.toml";
   std::filesystem::create_directories(blocked);

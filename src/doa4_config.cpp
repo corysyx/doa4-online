@@ -61,7 +61,7 @@ std::string ReadWhole(const std::filesystem::path& path, std::string* text) {
   return {};
 }
 
-// The one writer of dead_or_alive_4.toml: `updated` goes to path + ".tmp", then is renamed over `path`.
+// The one writer in doa4_config.cpp (SaveTomlKey and RemoveTomlKeyFromFile both use it): `updated` goes to path + ".tmp", then is renamed over `path`.
 std::string WriteViaTemp(const std::filesystem::path& path, const std::string& updated) {
   std::filesystem::path tmp = path;
   tmp += ".tmp";
@@ -189,6 +189,12 @@ std::string RemoveTomlKeyFromFile(const std::filesystem::path& path, std::string
   if (std::string error = WriteViaTemp(path, updated); !error.empty()) return error;
   if (removed) *removed = true;
   return {};
+}
+
+std::string RemoveSavedSpeakersLine(const std::filesystem::path& path, bool session_process, bool* removed) {
+  if (removed) *removed = false;
+  if (session_process) return {};  // the file is the player's: a session process neither reads nor changes it
+  return RemoveTomlKeyFromFile(path, "audio_speakers", removed);
 }
 
 }  // namespace doa4

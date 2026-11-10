@@ -40,4 +40,9 @@ std::string SaveTomlKey(const std::filesystem::path& path, std::string_view key,
 // true only if the file now lacks a line it had.
 std::string RemoveTomlKeyFromFile(const std::filesystem::path& path, std::string_view key, bool* removed);
 
+// The start-up removal of a saved audio_speakers line: RemoveTomlKeyFromFile(path, "audio_speakers", removed), except
+// that a session process (one started from an online hand-off) leaves the file untouched, with *removed false, because
+// the start-up snapshot of the player's settings is taken after this runs.
+std::string RemoveSavedSpeakersLine(const std::filesystem::path& path, bool session_process, bool* removed);
+
 }  // namespace doa4
