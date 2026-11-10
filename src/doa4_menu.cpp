@@ -838,7 +838,7 @@ void MenuDialog::DrawDisplayRows() {
     SetPresentationSetting("fullscreen", fs ? "true" : "false", false);
     SetPresentationSetting("fullscreen_exclusive", exclusive ? "true" : "false", false);
   }
-  ImGui::TextDisabled("Experimental: may not lower input lag.");
+  ImGui::TextDisabled("Experimental: measured no lower input lag than borderless fullscreen.");
   ImGui::PopID();
 
   ImGui::PushID("vsync");

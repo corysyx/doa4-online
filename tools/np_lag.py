@@ -21,7 +21,9 @@ minimized, windowed); --affinity is refused (np_pair limits only the joiner). Be
 deadlock.exe and RocketLeague.exe must not run and UDP 7200 must be free (exit 9, nothing started); during it the process
 list is sampled every 10 s, and the run is labelled "shared" if any of those games other than the run's own processes
 appeared, else "clean". <out>/<run>_meta.txt holds the configuration, the toml and its SHA-256, the command and the label;
-<out>/<run>_console.log the runner's output. Exclusive fullscreen has no setting yet (Task 11 adds its toml keys here).
+<out>/<run>_console.log the runner's output. Exclusive (Task 11) writes fullscreen = true and fullscreen_exclusive = true;
+VSync is --set present_vsync=true. The run line of analyse counts the frames presented exclusive (present_flags bit 1)
+and marks an exclusive-mode run with bit 1 unset on most frames as no exclusive measurement.
 
 analyse: every run with a _meta.txt in --out. Rows are the trace's frames whose np_frame (the session's frame) lies in the
 window (default 3394..6993: the single.txt fight's 60 s of random input); for a plain run, the first --window-frames
@@ -58,8 +60,10 @@ FIGHT_ROUND = 2  # src/net/np_digest.h kFightState: 2 = a round being fought (th
 BUSY_IMAGES = ("dead_or_alive_4.exe", "deadlock.exe", "RocketLeague.exe")
 SAMPLE_S = 10
 SNAPSHOT_FILES = ("dead_or_alive_4.exe", "rexruntime.dll", "TracyClient.dll")
-# The toml keys of each display mode (the game's own settings file beside the exe). None: not available yet.
-MODE_KEYS = {"windowed": {"fullscreen": "false"}, "borderless": {"fullscreen": "true"}, "exclusive": None}
+# The toml keys of each display mode (the game's own settings file beside the exe). None: not available yet. Exclusive is
+# a sub-mode of fullscreen (sdk window.cpp: fullscreen_exclusive applies only while fullscreen), so it writes both.
+MODE_KEYS = {"windowed": {"fullscreen": "false"}, "borderless": {"fullscreen": "true"},
+             "exclusive": {"fullscreen": "true", "fullscreen_exclusive": "true"}}
 
 # The trace's time columns (src/doa4_lagtrace.cpp CsvHeader) by point name.
 POINTS = {
@@ -86,6 +90,7 @@ POINTS = {
 DERIVED_COLUMNS = ("t_gpu_early_swap_us",)  # not in the CSV: read_trace derives them
 GPU_FLAG_EARLY = 1  # gpu_flags bit 0 (sdk pace_stats.h kLagGpuSwapEarly)
 PRESENT_FLAG_INTERVAL1 = 4  # present_flags bit 2: presented with sync interval 1 (sdk pace_stats.h LagPresentMark)
+PRESENT_FLAG_EXCLUSIVE = 2  # present_flags bit 1: presented in DXGI exclusive fullscreen (sdk pace_stats.h LagPresentMark)
 DISPLAYED = "displayed"  # from PresentMon: the host Present call + msUntilDisplayed
 # What lies inside each stage, as far as the code shows (a "residual" is end minus start with unnamed work inside).
 STAGE_NOTES = {
@@ -179,6 +184,11 @@ def read_trace(path):
 def early_frames(rows):
     """How many of `rows` were presented early (gpu_flags bit 0)."""
     return sum(1 for r in rows if (r.get("gpu_flags") or 0) & GPU_FLAG_EARLY)
+
+
+def exclusive_frames(rows):
+    """How many of `rows` were presented in DXGI exclusive fullscreen (present_flags bit 1)."""
+    return sum(1 for r in rows if (r.get("present_flags") or 0) & PRESENT_FLAG_EXCLUSIVE)
 
 
 def window_rows(rows, start=WINDOW_START, frames=WINDOW_FRAMES, fight=False):
@@ -707,7 +717,8 @@ def analyse_run(out, meta, presentmon, start, frames):
     res["fight_total"] = sum(1 for r in all_rows if r.get("fight_state") == FIGHT_ROUND)
     res["has_fight"] = any(r.get("fight_state") is not None for r in all_rows)
     n, ws, joined, neg = check_trace(rows)
-    res.update(frames=n, with_swap=ws, joined=joined, negatives=neg, fps=fps(rows), early=early_frames(rows))
+    res.update(frames=n, with_swap=ws, joined=joined, negatives=neg, fps=fps(rows), early=early_frames(rows),
+               exclusive=exclusive_frames(rows))
     res["pad_main"] = statistics.median([r["pad_calls_main"] for r in rows]) if rows else None
     res["pad_other"] = sum(r["pad_calls_other"] for r in rows)
     res["swaps_other"] = sum(r["swap_calls_other"] for r in rows)
@@ -768,7 +779,10 @@ def analyse(out, presentmon, start, frames):
                          f"negative stage times {len(r['negatives'])}, pad reads per frame (main, median) {r['pad_main']}, "
                          f"pad reads on other threads {r['pad_other']}, guest swaps per frame (main) {r['swap_main_hist']}, "
                          f"swap calls on other threads {r['swaps_other']}, early-presented {r['early']} of {r['frames']} frames "
-                         f"(gpu_flags bit 0, present_before_vblank_wait)")
+                         f"(gpu_flags bit 0, present_before_vblank_wait), presented exclusive {r['exclusive']} of "
+                         f"{r['frames']} frames (present_flags bit 1)"
+                         + (" - NOT an exclusive measurement (bit 1 unset on most frames)"
+                            if m["mode"] == "exclusive" and 2 * r["exclusive"] <= r["frames"] else ""))
             pm = r.get("pm")
             if pm:
                 lines.append(f"  - PresentMon: {pm['window_rows']} rows of pid {r['pid']} in the window ({pm['rows']} in all), "

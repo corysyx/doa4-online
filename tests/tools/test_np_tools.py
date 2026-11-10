@@ -3666,14 +3666,15 @@ LAG_COLUMNS = LAG_COLUMNS_T7 + (",t_gpu_wait_enter_us,t_vblank_us,t_gpu_wait_wak
                                 "gpu_wait_poll,gpu_wait_ref,gpu_wait_info,gpu_after_wait_packets,gpu_after_wait_sig,gpu_flags")
 
 
-def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2, gpu=True, early=False):
+def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2, gpu=True, early=False,
+              present_flags=1):
     """A synthetic lagtrace CSV: `frames` 60 fps frames from np_frame first_np, each with all points (frame start, +0.1 session,
     +0.3 frame fn, +0.5 pad, +9 swap call, +9.2 VdSwap, +9.4 swap return, +9.6 GPU wait entry, +10.5 guest vblank, +10.55 GPU
     wait wake, +10.6 GPU swap packet, +11 Present call, +11.4 return; ms). break_swap_at: that row has no swap index and no
     present (a join miss); negative_at: that row's Present return is before its call; fight(i): row i's fight_state (2, a
     round, by default); gpu=False: Task 7's header, without the GPU-thread columns. early=True: every frame presented early
     (present_before_vblank_wait: gpu_flags 1, the early IssueSwap stamped 0.02 ms after the wait entry, no vblank, no
-    wake, the wait's parameters known)."""
+    wake, the wait's parameters known). present_flags: every presented row's present_flags (1: tearing allowed)."""
     lines = [LAG_COLUMNS if gpu else LAG_COLUMNS_T7]
     for i in range(frames):
         t = 1_000_000 + i * 16_667
@@ -3683,7 +3684,7 @@ def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None,
         if i == negative_at:
             ret = call - 50
         v = [i + 1, t + 500, t, t + 9_200, ret, swap, first_np + i, t + 100, t + 300, t + 9_000, t + 9_400, call, 4, 0, 1, 0,
-             1 if call else None, fight(i)]
+             present_flags if call else None, fight(i)]
         if gpu and early:
             v += ([t + 9_600, None, None, t + 9_620, 0, 1, 123, 4, 19, 0, 0, 1] if call else [None] * 12)
         elif gpu:
@@ -3843,8 +3844,9 @@ def test_lag_run_rules(root):
     os.makedirs(snap)
     for f in lag.SNAPSHOT_FILES:
         open(os.path.join(snap, f), "w").write("x")
-    for extra, needle in ((["--mode", "exclusive", "--kind", "offline"], "Task 11"),
-                          (["--mode", "borderless", "--kind", "pair", "--affinity", "0x3"], "only the joiner"),
+    for extra, needle in ((["--mode", "borderless", "--kind", "pair", "--affinity", "0x3"], "only the joiner"),
+                          # Task 11: exclusive's own keys are mode keys too
+                          (["--mode", "exclusive", "--kind", "offline", "--set", "fullscreen_exclusive=false"], "already set"),
                           # Task 9b --set: a mode key, a malformed item, a key twice
                           (["--mode", "borderless", "--kind", "offline", "--set", "fullscreen=false"], "already set"),
                           (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync"], "not KEY=VALUE"),
@@ -3869,6 +3871,18 @@ def test_lag_run_rules(root):
     check(on_disk == b"audio_mute = true\nfullscreen = true\n" and sha == hashlib.sha256(on_disk).hexdigest(),
           f"np_lag make_bin: the toml {on_disk!r}")
     check(lag.MODE_KEYS["windowed"] == {"fullscreen": "false"}, "np_lag: windowed is fullscreen = false")
+    # Task 11: exclusive writes fullscreen = true AND fullscreen_exclusive = true (exclusive is a sub-mode of fullscreen,
+    # sdk window.cpp: fullscreen_exclusive alone leaves the window windowed); windowed and borderless write neither
+    # fullscreen_exclusive nor present_vsync (the game's defaults: off)
+    text_x, sha_x = lag.make_bin(snap, os.path.join(root, "bin_x"), lag.MODE_KEYS["exclusive"] or {})
+    on_disk_x = open(os.path.join(root, "bin_x", "dead_or_alive_4.toml"), "rb").read()
+    check(on_disk_x == b"audio_mute = true\nfullscreen = true\nfullscreen_exclusive = true\n" and
+          sha_x == hashlib.sha256(on_disk_x).hexdigest(), f"np_lag make_bin exclusive: the toml {on_disk_x!r}")
+    for mode in ("windowed", "borderless"):
+        _, _ = lag.make_bin(snap, os.path.join(root, f"bin_d_{mode}"), lag.MODE_KEYS[mode])
+        d = open(os.path.join(root, f"bin_d_{mode}", "dead_or_alive_4.toml"), "rb").read()
+        check(b"fullscreen_exclusive" not in d and b"present_vsync" not in d and d.startswith(b"audio_mute = true\nfullscreen = "),
+              f"np_lag make_bin {mode}: neither fullscreen_exclusive nor present_vsync: {d!r}")
     # Task 9b --set: the measured game's toml gets the mode's key, then each --set line as written, in order
     keys = lag.run_keys(lag.MODE_KEYS["borderless"], ["present_vsync=true", "x_y=2"])
     check(list(keys.items()) == [("fullscreen", "true"), ("present_vsync", "true"), ("x_y", "2")], f"np_lag run_keys: {keys}")
@@ -3913,9 +3927,28 @@ def test_lag_run_set_reaches_toml(root):
                              "--out", out, "--set", "present_vsync=true"])
         code_pair = lag.main(["run", "pv", "--mode", "borderless", "--kind", "pair", "--repeats", "1", "--bin", snap,
                               "--out", out, "--set", "present_vsync=true"])
+        # Task 11: --mode exclusive runs (no longer refused); a pair's host is exclusive, its joiner windowed. A refusal is
+        # sys.exit: caught here so it fails these checks instead of ending the suite (SystemExit is not an Exception)
+        def code_of(argv):
+            try:
+                return lag.main(argv)
+            except SystemExit as e:
+                return f"exit {e.code}"
+        code_xo = code_of(["run", "xo", "--mode", "exclusive", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                           "--out", out])
+        code_xp = code_of(["run", "xp", "--mode", "exclusive", "--kind", "pair", "--repeats", "1", "--bin", snap,
+                           "--out", out])
     finally:
         lag.tasklist_pids, lag.udp7200_lines, lag.subprocess = real
-    check(code_off == 0 and code_pair == 0 and len(launched) == 2, f"np_lag cmd_run (stubbed): {code_off} {code_pair} {launched}")
+    check(code_off == 0 and code_pair == 0 and code_xo == 0 and code_xp == 0 and len(launched) == 4,
+          f"np_lag cmd_run (stubbed): {code_off} {code_pair} {code_xo} {code_xp} {launched}")
+    rd = lambda p: open(p, "rb").read() if os.path.exists(p) else b""
+    xo = rd(os.path.join(out, "bin_xo_r1", "dead_or_alive_4.toml"))
+    xh = rd(os.path.join(out, "bin_xp_r1_host", "dead_or_alive_4.toml"))
+    xj = rd(os.path.join(out, "bin_xp_r1_joiner", "dead_or_alive_4.toml"))
+    check(xo == b"audio_mute = true\nfullscreen = true\nfullscreen_exclusive = true\n", f"np_lag offline exclusive: the game's toml {xo!r}")
+    check(xh == b"audio_mute = true\nfullscreen = true\nfullscreen_exclusive = true\n", f"np_lag pair exclusive: the host's toml {xh!r}")
+    check(xj == b"audio_mute = true\nfullscreen = false\n", f"np_lag pair exclusive: the joiner stays windowed {xj!r}")
     game = open(os.path.join(out, "bin_vs_r1", "dead_or_alive_4.toml"), "rb").read()
     host = open(os.path.join(out, "bin_pv_r1_host", "dead_or_alive_4.toml"), "rb").read()
     joiner = open(os.path.join(out, "bin_pv_r1_joiner", "dead_or_alive_4.toml"), "rb").read()
@@ -3938,6 +3971,37 @@ def test_lag_present_call_note(root):
     check("sync interval 1 on 2 of 3 presents" in mixed, f"np_lag present note, mixed: {mixed}")
     check("unknown" in none, f"np_lag present note, no presents: {none}")
     check(lag.PRESENT_FLAG_INTERVAL1 == 4, "np_lag: present_flags bit 2 is the interval-1 bit (sdk pace_stats.h)")
+
+
+def test_lag_exclusive_frames(root):
+    # Task 11 (R69, Task 9 review I1/M8): present_flags bit 1 = presented in DXGI exclusive fullscreen (sdk
+    # include/rex/pace_stats.h:61-63 LagPresentMark::flags; d3d12_presenter.cpp mark.flags ... (exclusive ? 2u : 0u)).
+    # Fixture flags 1, 3, 7, 2, 5, None: bit 1 is set in 3, 7 and 2 -> 3. Excluded wrong versions: flags == 2 (1), bit 2
+    # (7, 5 -> 2), bit 0 (1, 3, 7, 5 -> 4), counting the None row.
+    lag = load("np_lag")
+    rows = [{"present_flags": f} for f in (1, 3, 7, 2, 5, None)]
+    check(lag.exclusive_frames(rows) == 3, f"np_lag exclusive_frames: {lag.exclusive_frames(rows)}")
+    check(lag.PRESENT_FLAG_EXCLUSIVE == 2, "np_lag: present_flags bit 1 is the exclusive bit (sdk pace_stats.h)")
+    # analyse: the run line counts the exclusive frames; an exclusive-mode run with bit 1 unset on most of its frames is
+    # labelled as no exclusive measurement; a borderless run with 0 is not (it never asked for exclusive)
+    out = os.path.join(root, "out")
+    for name, pid, mode, flags in (("xa", 101, "exclusive", 3), ("xb", 202, "exclusive", 1), ("xc", 303, "borderless", 1)):
+        os.makedirs(os.path.join(out, "runs", name))
+        os.makedirs(os.path.join(out, "lag", name))
+        open(os.path.join(out, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out, "runs", name, "game.log"), "w").write("x\n")
+        lag_trace(os.path.join(out, "lag", name, f"lagtrace_{pid}.csv"), 3600, present_flags=flags)
+        open(os.path.join(out, f"{name}_meta.txt"), "w").write(f"config c{name}\nrun {name}\nmode {mode}\nkind offline\nlabel clean\nexit 0\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out, None, 3394, 3600)
+    text = open(os.path.join(out, "analysis.md")).read()
+    run_line = lambda name: next((l for l in text.splitlines() if l.startswith(f"- {name}:")), "")
+    check("presented exclusive 3600 of 3600 frames (present_flags bit 1)" in run_line("xa") and
+          "NOT an exclusive measurement" not in run_line("xa"), f"np_lag analyse exclusive run: {run_line('xa')}")
+    check("presented exclusive 0 of 3600 frames (present_flags bit 1)" in run_line("xb") and
+          "NOT an exclusive measurement" in run_line("xb"), f"np_lag analyse exclusive run without bit 1: {run_line('xb')}")
+    check("presented exclusive 0 of 3600 frames" in run_line("xc") and "NOT an exclusive measurement" not in run_line("xc"),
+          f"np_lag analyse borderless run: {run_line('xc')}")
 
 
 def test_lag_display_by_mode(root):
