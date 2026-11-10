@@ -85,6 +85,7 @@ POINTS = {
 }
 DERIVED_COLUMNS = ("t_gpu_early_swap_us",)  # not in the CSV: read_trace derives them
 GPU_FLAG_EARLY = 1  # gpu_flags bit 0 (sdk pace_stats.h kLagGpuSwapEarly)
+PRESENT_FLAG_INTERVAL1 = 4  # present_flags bit 2: presented with sync interval 1 (sdk pace_stats.h LagPresentMark)
 DISPLAYED = "displayed"  # from PresentMon: the host Present call + msUntilDisplayed
 # What lies inside each stage, as far as the code shows (a "residual" is end minus start with unnamed work inside).
 STAGE_NOTES = {
@@ -98,7 +99,7 @@ STAGE_NOTES = {
     ("guest VdSwap", "host Present call"): "guest GPU command queue up to the swap packet (GPU thread), IssueSwap, the presenter's paint",
     ("swap return", "host Present call"): "residual on the GPU thread (a trace without the GPU marks): holds the 60 Hz pacing "
                                           "(the vblank-woken WAIT_REG_MEM before the swap packet), then IssueSwap and the paint",
-    ("host Present call", "host Present return"): "IDXGISwapChain::Present (sync interval 0, RESTART; the flip-model queue)",
+    ("host Present call", "host Present return"): "IDXGISwapChain::Present (RESTART; the flip-model queue)",  # present_call_note
     ("swap return", "GPU wait entry"): "GPU thread: the frame's commands up to the wait before its swap packet (it reaches them "
                                        "after presenting the previous swap)",
     ("GPU wait entry", "guest vblank"): "GPU thread: the WAIT_REG_MEM before the swap packet, asleep until the guest vblank "
@@ -453,17 +454,47 @@ def label_run(samples, ours):
 
 def run_keys(mode_keys, sets):
     """The toml keys of the measured game: the mode's keys, then each --set "KEY=VALUE" (KEY lower-case letters, digits
-    and _, VALUE written as given). Refused (exit, nothing started): a malformed item, a key the mode or audio_mute
-    already sets, a key given twice."""
+    and _; VALUE printable ASCII without spaces, written as given, so a string value carries its own quotes, e.g.
+    fullscreen_exclusive_mode="1920x1080@60"). Refused (exit, nothing started): a malformed item, a VALUE with a space,
+    a newline or another control character (it would add a toml line of its own), a boolean not written as lower-case
+    true or false (the cvar parser reads "True" as false), a key the mode or audio_mute already sets, a key given
+    twice."""
     keys = dict(mode_keys)
     for item in sets:
         k, sep, v = item.partition("=")
         if not sep or not k or not v or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in k):
-            sys.exit(f"--set {item}: not KEY=VALUE")
+            sys.exit(f"--set {item!r}: not KEY=VALUE")
+        if any(ord(c) <= 32 or ord(c) >= 127 for c in v):
+            sys.exit(f"--set {item!r}: the value has a space, a newline or another control or non-ASCII character")
+        if v.lower() in ("true", "false", "yes", "no", "on", "off") and v not in ("true", "false"):
+            sys.exit(f"--set {item!r}: a boolean is written true or false (lower case)")
         if k in keys or k == "audio_mute":
             sys.exit(f"--set {item}: {k} is already set (by the mode, audio_mute or an earlier --set)")
         keys[k] = v
     return keys
+
+
+def present_call_note(rows):
+    """The note of the "host Present call -> host Present return" stage: the sync interval the presents used, read
+    from the trace's present_flags (bit 2: sync interval 1, present_vsync; sdk pace_stats.h), never assumed."""
+    flags = [r.get("present_flags") for r in rows if r.get("present_flags") is not None]
+    ones = sum(1 for f in flags if int(f) & PRESENT_FLAG_INTERVAL1)
+    if flags and ones == len(flags):
+        interval = "sync interval 1 on every present (present_flags bit 2), no tearing flag"
+    elif ones:
+        interval = f"sync interval 1 on {ones} of {len(flags)} presents (present_flags bit 2), 0 on the rest"
+    else:
+        interval = "sync interval 0 (present_flags bit 2 clear on every present)" if flags else "sync interval unknown"
+    return f"IDXGISwapChain::Present ({interval}, RESTART; the flip-model queue)"
+
+
+def run_bin_keys(a):
+    """{side: toml keys} of a run's exe copies: the measured game ("game", or a pair's "host") gets the mode's keys and
+    every --set; a pair's "joiner" gets the windowed keys only (never a --set). cmd_run writes each with make_bin."""
+    keys = run_keys(MODE_KEYS[a.mode], a.set)
+    if a.kind == "pair":
+        return {"host": keys, "joiner": dict(MODE_KEYS["windowed"])}
+    return {"game": keys}
 
 
 def make_bin(src, dest, keys):
@@ -537,7 +568,7 @@ def cmd_run(a):
     keys = MODE_KEYS[a.mode]
     if keys is None:
         sys.exit(f"--mode {a.mode}: no setting for it yet (Task 11 adds its toml keys to MODE_KEYS)")
-    keys = run_keys(keys, a.set)
+    side_keys = run_bin_keys(a)
     if a.kind == "plain" and a.seconds <= 0:
         sys.exit("--seconds must be positive")
     if a.kind == "pair" and a.affinity:
@@ -559,12 +590,12 @@ def cmd_run(a):
         tomls = {}
         if a.kind == "plain":
             b = os.path.join(a.out, f"bin_{name}")
-            tomls["game"] = make_bin(a.bin, b, keys)
+            tomls["game"] = make_bin(a.bin, b, side_keys["game"])
             run_dirs = [os.path.join(runs, name)]
             cmd = ["launch_plain", os.path.join(b, "dead_or_alive_4.exe"), run_dirs[0], f"{a.seconds:g} s"]
         elif a.kind == "offline":
             b = os.path.join(a.out, f"bin_{name}")
-            tomls["game"] = make_bin(a.bin, b, keys)
+            tomls["game"] = make_bin(a.bin, b, side_keys["game"])
             cmd = [sys.executable, "-I", os.path.join(HERE, "np_run.py"), "record", name,
                    "--exe", os.path.join(b, "dead_or_alive_4.exe"), "--userdata", a.userdata, "--runs", runs,
                    "--cache", a.cache, "--script", a.script, "--seed", str(a.seed), "--show-window",
@@ -574,8 +605,8 @@ def cmd_run(a):
             run_dirs = [os.path.join(runs, name)]
         else:
             bh, bj = os.path.join(a.out, f"bin_{name}_host"), os.path.join(a.out, f"bin_{name}_joiner")
-            tomls["host"] = make_bin(a.bin, bh, keys)
-            tomls["joiner"] = make_bin(a.bin, bj, MODE_KEYS["windowed"])
+            tomls["host"] = make_bin(a.bin, bh, side_keys["host"])
+            tomls["joiner"] = make_bin(a.bin, bj, side_keys["joiner"])
             cmd = [sys.executable, "-I", os.path.join(HERE, "np_pair.py"), name, "--script", a.script,
                    "--userdata", a.userdata, "--runs", runs, "--exe", os.path.join(bh, "dead_or_alive_4.exe"),
                    "--joiner-exe", os.path.join(bj, "dead_or_alive_4.exe"), "--cache", a.cache, "--seed", str(a.seed),
@@ -774,6 +805,8 @@ def analyse(out, presentmon, start, frames):
         for a, b in stages:
             note = (EARLY_STAGE_NOTES.get((a, b)) if mostly_early else None) or STAGE_NOTES.get(
                 (a, b), "residual: end minus start, the work between is not named by the trace")
+            if (a, b) == ("host Present call", "host Present return"):
+                note = present_call_note([x for g in good for x in g["rows"]])
             lines.append(row_for(f"{a} -> {b}", [stage_values(g["rows"], a, b) for g in good], note))
         lines.append(row_for(f"{LOOP_TAIL[0]} -> {LOOP_TAIL[1]}", [loop_tail(g["rows"]) for g in good], LOOP_NOTE))
         if any(gpu_work(g["rows"]) for g in good):

@@ -249,7 +249,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"present_render_pass_clear", "present"},
     {"present_safe_area_x", "present"},
     {"present_safe_area_y", "present"},
-    {"present_vsync", "present"},  // Task 9b: presentation only (never changes guest timing or memory; not the guest's vsync)
+    {"present_vsync", "present"},  // Task 9b: presentation only (presented on the UI thread; never changes guest timing or memory; not the guest's vsync)
     {"primitive_processor_cache_min_indices", "gpu-budget"},
     {"progress_log_frequency", "codegen"},
     {"render_target_path_d3d12", "gpu-backend"},

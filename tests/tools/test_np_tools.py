@@ -3851,7 +3851,14 @@ def test_lag_run_rules(root):
                           (["--mode", "windowed", "--kind", "offline", "--set", "Present_Vsync=true"], "not KEY=VALUE"),
                           (["--mode", "windowed", "--kind", "offline", "--set", "audio_mute=false"], "already set"),
                           (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=true", "--set",
-                            "present_vsync=false"], "already set")):
+                            "present_vsync=false"], "already set"),
+                          # Task 9b review M4: a value with a newline (a smuggled second toml line), a space, a wrong-case
+                          # boolean
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=true\nfullscreen=true"],
+                           "control"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "x_y=a b"], "a space"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=True"], "lower case"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=yes"], "lower case")):
         p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_lag.py"), "run", "c", "--bin", snap, "--out",
                             os.path.join(root, "out"), *extra], capture_output=True, text=True, timeout=60)
         check(p.returncode != 0 and needle in p.stderr and not os.path.exists(os.path.join(root, "out", "lag")),
@@ -3875,6 +3882,62 @@ def test_lag_run_rules(root):
     check(lag.session_env("L") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L"], f"np_lag session_env: {lag.session_env('L')}")
     check(lag.session_env("L", "none") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L", "DOA4_NP_FIX=none"],
           f"np_lag session_env with --fix none: {lag.session_env('L', 'none')}")
+
+
+def test_lag_run_set_reaches_toml(root):
+    # Task 9b review I3: cmd_run itself, with the busy check, the process sampler and the launch stubbed: a --set line is
+    # in the measured game's toml (offline: the game; pair: the host) and NOT in a pair joiner's. Excluded wrong
+    # versions: run_keys' result discarded (the line validated, then dropped), the joiner given the --set keys.
+    lag = load("np_lag")
+    snap = os.path.join(root, "snap")
+    os.makedirs(snap)
+    for f in lag.SNAPSHOT_FILES:
+        open(os.path.join(snap, f), "w").write("x")
+    launched = []
+
+    class FakeSubprocess:
+        def __getattr__(self, name):
+            return getattr(subprocess, name)
+
+        def run(self, cmd, *args, **kwargs):  # the game launch (np_run / np_pair): nothing is started
+            launched.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+    real = (lag.tasklist_pids, lag.udp7200_lines, lag.subprocess)
+    lag.tasklist_pids = lambda: {}
+    lag.udp7200_lines = lambda: []
+    lag.subprocess = FakeSubprocess()
+    try:
+        out = os.path.join(root, "out")
+        code_off = lag.main(["run", "vs", "--mode", "borderless", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                             "--out", out, "--set", "present_vsync=true"])
+        code_pair = lag.main(["run", "pv", "--mode", "borderless", "--kind", "pair", "--repeats", "1", "--bin", snap,
+                              "--out", out, "--set", "present_vsync=true"])
+    finally:
+        lag.tasklist_pids, lag.udp7200_lines, lag.subprocess = real
+    check(code_off == 0 and code_pair == 0 and len(launched) == 2, f"np_lag cmd_run (stubbed): {code_off} {code_pair} {launched}")
+    game = open(os.path.join(out, "bin_vs_r1", "dead_or_alive_4.toml"), "rb").read()
+    host = open(os.path.join(out, "bin_pv_r1_host", "dead_or_alive_4.toml"), "rb").read()
+    joiner = open(os.path.join(out, "bin_pv_r1_joiner", "dead_or_alive_4.toml"), "rb").read()
+    check(game == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\n", f"np_lag offline --set: the game's toml {game!r}")
+    check(host == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\n", f"np_lag pair --set: the host's toml {host!r}")
+    check(joiner == b"audio_mute = true\nfullscreen = false\n", f"np_lag pair --set: NOT in the joiner's toml {joiner!r}")
+    meta = open(os.path.join(out, "vs_r1_meta.txt")).read()
+    check("present_vsync = true" in meta, f"np_lag offline --set: the meta's toml line names it: {meta}")
+
+
+def test_lag_present_call_note(root):
+    # Task 9b review M3: the Present stage's note says which sync interval the presents used, from present_flags bit 2
+    lag = load("np_lag")
+    off = lag.present_call_note([{"present_flags": 1}, {"present_flags": 1}, {"present_flags": None}])
+    on = lag.present_call_note([{"present_flags": 5}, {"present_flags": 5}])
+    mixed = lag.present_call_note([{"present_flags": 1}, {"present_flags": 5}, {"present_flags": 7}])
+    none = lag.present_call_note([{"present_flags": None}])
+    check("sync interval 0" in off and "sync interval 1" not in off, f"np_lag present note, vsync off: {off}")
+    check("sync interval 1 on every present" in on, f"np_lag present note, vsync on: {on}")
+    check("sync interval 1 on 2 of 3 presents" in mixed, f"np_lag present note, mixed: {mixed}")
+    check("unknown" in none, f"np_lag present note, no presents: {none}")
+    check(lag.PRESENT_FLAG_INTERVAL1 == 4, "np_lag: present_flags bit 2 is the interval-1 bit (sdk pace_stats.h)")
 
 
 def test_lag_display_by_mode(root):
@@ -3951,6 +4014,10 @@ def test_lag_early_frames(root):
     check("PREVIOUS swap's packet" in note(early_part) and "6 us after host Present(N-1)" not in note(early_part),
           f"np_lag analyse: the back-pressure note of a cut run: {note(early_part)}")
     check("6 us after host Present(N-1)" in note(plain_part), f"np_lag analyse: the back-pressure note of a run without the cut: {note(plain_part)}")
+    # Task 9b review M3: the Present stage's note comes from the trace's present_flags (1 here: bit 2 clear), not a static text
+    present_row = next((l for l in plain_part.splitlines() if l.startswith("| host Present call -> host Present return |")), "")
+    check("sync interval 0 (present_flags bit 2 clear on every present)" in present_row,
+          f"np_lag analyse: the Present note from present_flags: {present_row}")
     check("host Present return (previous frame) -> GPU wait entry" not in early_part and
           "host Present return (previous frame) -> GPU wait entry" in plain_part,
           "np_lag analyse: the GPU-work row only where the previous present was not early")
