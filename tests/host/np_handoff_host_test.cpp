@@ -171,6 +171,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"force_convert_triangle_fans_to_lists", "gpu-render"},
     {"fullscreen", "window"},
     {"fullscreen_exclusive", "window"},  // Task 9: presentation only (DXGI exclusive fullscreen on the host's own monitor)
+    {"fullscreen_exclusive_mode", "window"},  // Task 9c: presentation only (the host monitor's mode; never the guest's video mode)
     {"game_data_root", "path"},
     {"gamma_render_target_as_unorm16", "gpu-render"},
     {"gpu_3d_to_2d_texture", "gpu-render"},
@@ -290,6 +291,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"vulkan_submit_on_primary_buffer_end", "gpu-budget"},
     {"vulkan_tessellation_wireframe", "gpu-render"},
     {"vulkan_validation_enabled", "gpu-backend"},
+    {"window_client_size", "window"},  // Task 9c: presentation only (the window's client size; unlike window_width it never feeds the guest)
     {"writable_executable_memory", "unused"},
 };
 // (Task 9 adds the Online tab's netplay_* settings: each player's own network preferences; the input delay a session
@@ -323,7 +325,7 @@ static constexpr size_t kSdkCount = sizeof(kSdkNames) / sizeof(kSdkNames[0]);
 static constexpr size_t kSdkNotCarriedCount = sizeof(kSdkNotCarried) / sizeof(kSdkNotCarried[0]);
 static constexpr size_t kPortNotCarriedCount = sizeof(kPortNotCarried) / sizeof(kPortNotCarried[0]);
 static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
-static constexpr size_t kSdkTotal = 197;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b)
+static constexpr size_t kSdkTotal = 199;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c)
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
 // The port's own carried settings beyond the tweaks: they change guest memory and are no trust matter (np_handoff.cpp
