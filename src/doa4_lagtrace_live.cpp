@@ -217,6 +217,11 @@ void OnSwapReturn() {
   if (!OnMain() || g_frame.swap_calls_main != 1 || g_frame.t_swap_return != 0) return;
   g_frame.t_swap_return = NowUs();
   int64_t qpc = 0;
+  // The SDK keeps the last VdSwap per HOST thread (thread_local), while the main loop is identified by thread AND fiber.
+  // Another guest fiber on the main host thread that swapped between this call's VdSwap and its return would hand us its
+  // ordinal. It does not happen in DOA4: the only callers of sub_8275AEE0 are the main loop's present (sub_82765AE0) and the
+  // D3D kick thread, which is its own host thread (np_core.h, the keep-alive notes). In the Task 7 matrix every main-loop
+  // frame got a new, increasing ordinal and 99.97-100% of them joined a present of that ordinal.
   const uint32_t index = rex_lag_last_guest_swap(&qpc);
   if (index != 0 && index != g_last_swap_index) {  // this call reached VdSwap
     g_last_swap_index = index;
