@@ -51,7 +51,7 @@ struct Present {
   int64_t t_call = 0;
   int64_t t_return = 0;
   uint32_t swap_index = 0;  // the guest swap whose output it painted; 0: none
-  uint32_t flags = 0;       // bit 0: the swap chain allows tearing
+  uint32_t flags = 0;       // bit 0: the swap chain allows tearing; bit 1: exclusive fullscreen; bit 2: sync interval 1
   // The GPU command processor thread's marks of that swap's packet (LagPresentMark::gpu; Task 8, R56). A "wait" is a
   // WAIT_REG_MEM whose condition did not hold at its first check; the times are those of the last wait before the
   // swap packet. 0: none.

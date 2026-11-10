@@ -248,6 +248,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"present_render_pass_clear", "present"},
     {"present_safe_area_x", "present"},
     {"present_safe_area_y", "present"},
+    {"present_vsync", "present"},  // Task 9b: presentation only (never changes guest timing or memory; not the guest's vsync)
     {"primitive_processor_cache_min_indices", "gpu-budget"},
     {"progress_log_frequency", "codegen"},
     {"render_target_path_d3d12", "gpu-backend"},
@@ -320,7 +321,7 @@ static constexpr size_t kSdkCount = sizeof(kSdkNames) / sizeof(kSdkNames[0]);
 static constexpr size_t kSdkNotCarriedCount = sizeof(kSdkNotCarried) / sizeof(kSdkNotCarried[0]);
 static constexpr size_t kPortNotCarriedCount = sizeof(kPortNotCarried) / sizeof(kPortNotCarried[0]);
 static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
-static constexpr size_t kSdkTotal = 196;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9)
+static constexpr size_t kSdkTotal = 197;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b)
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
 // The port's own carried settings beyond the tweaks: they change guest memory and are no trust matter (np_handoff.cpp
