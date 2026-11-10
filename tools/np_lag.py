@@ -92,7 +92,9 @@ POINTS = {
 DERIVED_COLUMNS = ("t_gpu_early_swap_us",)  # not in the CSV: read_trace derives them
 GPU_FLAG_EARLY = 1  # gpu_flags bit 0 (sdk pace_stats.h kLagGpuSwapEarly)
 PRESENT_FLAG_INTERVAL1 = 4  # present_flags bit 2: presented with sync interval 1 (sdk pace_stats.h LagPresentMark)
+PRESENT_FLAG_TEARING = 1  # present_flags bit 0: the swap chain allows tearing (sdk pace_stats.h LagPresentMark)
 PRESENT_FLAG_EXCLUSIVE = 2  # present_flags bit 1: presented in DXGI exclusive fullscreen (sdk pace_stats.h LagPresentMark)
+PM_ALLOW_TEARING = 0x200  # PresentMon PresentFlags: DXGI_PRESENT_ALLOW_TEARING
 DISPLAYED = "displayed"  # from PresentMon: the host Present call + msUntilDisplayed
 # What lies inside each stage, as far as the code shows (a "residual" is end minus start with unnamed work inside).
 STAGE_NOTES = {
@@ -193,6 +195,34 @@ def exclusive_frames(rows):
     return sum(1 for r in rows if (r.get("present_flags") or 0) & PRESENT_FLAG_EXCLUSIVE)
 
 
+def not_exclusive_measurement(meta, res):
+    """An exclusive-mode run whose frames were mostly NOT presented exclusive (bit 1 unset on most): not a measurement of
+    exclusive fullscreen (Task 11: a focus loss or a refused entry leaves it borderless)."""
+    return meta.get("mode") == "exclusive" and 2 * res.get("exclusive", 0) <= res.get("frames", 0)
+
+
+def call_agreement(rows):
+    """Per joined present (rows with r["pm"], the PresentMon row join_presentmon matched): (SyncInterval agreements,
+    tearing-flag agreements, n). The trace records the call as made: present_flags bit 2 = sync interval 1; the tearing
+    flag is passed only when the swap chain allows it (bit 0) and neither exclusive (bit 1) nor vsync (bit 2) is set (sdk
+    rex/ui/present_choice.h). PresentMon: SyncInterval (for a flip present the kernel's flip interval, so a platform
+    that flips differently, e.g. VRR, reads 0 where the call passed 1) and PresentFlags & 0x200 (ALLOW_TEARING)."""
+    sync = tear = n = 0
+    for r in rows:
+        p = r.get("pm")
+        f = r.get("present_flags")
+        if not p or f is None or p.get("sync") is None or p.get("present_flags") is None:
+            continue
+        f = int(f)
+        n += 1
+        if (1 if f & PRESENT_FLAG_INTERVAL1 else 0) == p["sync"]:
+            sync += 1
+        passed = bool(f & PRESENT_FLAG_TEARING) and not f & (PRESENT_FLAG_EXCLUSIVE | PRESENT_FLAG_INTERVAL1)
+        if passed == bool(p["present_flags"] & PM_ALLOW_TEARING):
+            tear += 1
+    return sync, tear, n
+
+
 def window_rows(rows, start=WINDOW_START, frames=WINDOW_FRAMES, fight=False):
     """The measured rows. Default: np_frame start..start+frames-1 (a session's script frames). fight=True (a plain launch,
     no session, so no np_frame): the first `frames` rows whose fight_state is FIGHT_ROUND (a round being fought)."""
@@ -281,7 +311,8 @@ def _col(header, *names):
 
 def read_presentmon(path, pid, qpc_frequency):
     """The capture's rows of process `pid`: dicts with t_us (the Present call on the QPC clock, None if the capture has no
-    QPC column), until_displayed_ms, between_display_ms, mode, tearing, dropped. Raises ValueError on a capture without
+    QPC column), until_displayed_ms, between_display_ms, mode, tearing, dropped, sync (SyncInterval), present_flags
+    (PresentFlags). Raises ValueError on a capture without
     the columns this needs."""
     with open(path, newline="", encoding="utf-8-sig", errors="replace") as f:
         rd = csv.DictReader(f)
@@ -293,6 +324,8 @@ def read_presentmon(path, pid, qpc_frequency):
         c_mode = _col(header, "PresentMode")
         c_tear = _col(header, "AllowsTearing")
         c_drop = _col(header, "Dropped")
+        c_sync = _col(header, "SyncInterval")
+        c_flags = _col(header, "PresentFlags")
         if not (c_pid and c_mode and c_between):
             raise ValueError(f"{path}: no ProcessID / PresentMode / msBetweenDisplayChange column in {header}")
         out = []
@@ -309,13 +342,16 @@ def read_presentmon(path, pid, qpc_frequency):
             out.append({"t_us": (t * 1e6 / qpc_frequency) if t is not None and qpc_frequency else None,
                         "until_displayed_ms": num(c_until), "between_display_ms": num(c_between),
                         "mode": r.get(c_mode), "tearing": r.get(c_tear) if c_tear else None,
-                        "dropped": r.get(c_drop) if c_drop else None})
+                        "dropped": r.get(c_drop) if c_drop else None,
+                        "sync": int(num(c_sync)) if num(c_sync) is not None else None,
+                        "present_flags": int(num(c_flags)) if num(c_flags) is not None else None})
     return out
 
 
 def join_presentmon(rows, pm, tolerance_us=1000):
     """Joins each trace row's host Present call (t_present_call_us) to the nearest PresentMon row in time (|dt| <=
-    tolerance_us) and sets row['displayed_us'] = Present call + msUntilDisplayed when that row was displayed. Both lists
+    tolerance_us), keeps it in row['pm'], and sets row['displayed_us'] = Present call + msUntilDisplayed when that row was
+    displayed. Both lists
     are in time order. Returns (rows joined, [|dt| in us])."""
     pm_t = [p for p in pm if p["t_us"] is not None]
     pm_t.sort(key=lambda p: p["t_us"])
@@ -325,6 +361,7 @@ def join_presentmon(rows, pm, tolerance_us=1000):
     for r in rows:
         t = r.get("t_present_call_us")
         r["displayed_us"] = None
+        r["pm"] = None
         if t is None or not pm_t:
             continue
         while j + 1 < len(pm_t) and abs(pm_t[j + 1]["t_us"] - t) <= abs(pm_t[j]["t_us"] - t):
@@ -334,6 +371,7 @@ def join_presentmon(rows, pm, tolerance_us=1000):
             continue
         joined += 1
         dts.append(dt)
+        r["pm"] = pm_t[j]
         ud = pm_t[j]["until_displayed_ms"]
         if ud is not None and ud > 0:
             r["displayed_us"] = int(round(t + ud * 1000.0))
@@ -526,6 +564,8 @@ def check_bin_dir(src, dest):
     """Exit unless `dest` holds every snapshot file of `src` byte for byte (the same build)."""
     for f in SNAPSHOT_FILES:
         a, b = os.path.join(src, f), os.path.join(dest, f)
+        if not os.path.exists(a):
+            sys.exit(f"--bin-dir: {f} is missing from the snapshot {src}")
         if not os.path.exists(b) or (hashlib.sha256(open(a, "rb").read()).digest() !=
                                      hashlib.sha256(open(b, "rb").read()).digest()):
             sys.exit(f"--bin-dir {dest}: {f} differs from the snapshot's (or is missing)")
@@ -622,6 +662,8 @@ def cmd_run(a):
             print(f"BUSY: {name} not started", flush=True)
             return 9
         lag = os.path.join(a.out, "lag", name)
+        if a.bin_dir:
+            check_bin_dir(a.bin, a.bin_dir)  # each run, before its folders: DIR may have changed during the batch
         os.makedirs(lag)
         env = session_env(lag, a.fix)
         tomls = {}
@@ -775,12 +817,26 @@ def analyse_run(out, meta, presentmon, start, frames):
             tear = {}
             for p in pm_win:
                 tear[p["tearing"]] = tear.get(p["tearing"], 0) + 1
+            res["agree"] = call_agreement(rows)
             res["pm"] = {"rows": len(pm), "window_rows": len(pm_win), "joined": pj, "dt_median_us": statistics.median(dts) if dts else None,
                          "modes": modes, "tearing": tear,
                          "between_display": summary([p["between_display_ms"] for p in pm_win if p["between_display_ms"]]),
                          "until_displayed": summary([p["until_displayed_ms"] for p in pm_win if p["until_displayed_ms"]]),
                          "freq": freq}
     return res
+
+
+def agree_text(agree):
+    """The run's PresentMon line: how many joined presents' SyncInterval and tearing flag agree with the call the trace
+    records (call_agreement); when most SyncIntervals disagree, the platform presented differently (Task 11, R99: our call
+    passed interval 1; PresentMon's SyncInterval is the kernel's flip interval, e.g. under VRR), not a defect."""
+    if not agree or not agree[2]:
+        return ""
+    sync, tear, n = agree
+    return (f"; SyncInterval agree {sync} of {n} (trace bit 2 vs PresentMon SyncInterval), tearing flag agree {tear} of {n} "
+            f"(trace bits 0-2 vs PresentMon PresentFlags & 0x200)"
+            + (" - the platform presented differently (PresentMon's SyncInterval is the kernel flip interval; e.g. VRR)"
+               if 2 * sync <= n else ""))
 
 
 def analyse(out, presentmon, start, frames):
@@ -793,7 +849,8 @@ def analyse(out, presentmon, start, frames):
     for r in results:
         configs.setdefault(r["meta"]["config"], []).append(r)
     for config, rs in configs.items():
-        good = [r for r in rs if "error" not in r and r["meta"].get("label") == "clean"]
+        good = [r for r in rs if "error" not in r and r["meta"].get("label") == "clean"
+                and not not_exclusive_measurement(r["meta"], r)]
         lines += [f"## {config}", ""]
         for r in rs:
             m = r["meta"]
@@ -811,13 +868,16 @@ def analyse(out, presentmon, start, frames):
                          f"(gpu_flags bit 0, present_before_vblank_wait), presented exclusive {r['exclusive']} of "
                          f"{r['frames']} frames (present_flags bit 1)"
                          + (" - NOT an exclusive measurement (bit 1 unset on most frames)"
-                            if m["mode"] == "exclusive" and 2 * r["exclusive"] <= r["frames"] else ""))
+                            if not_exclusive_measurement(m, r) else ""))
+            if not_exclusive_measurement(m, r):
+                lines.append(f"  - {m['run']} is left out of the pooled rows of {config} (not an exclusive measurement)")
             pm = r.get("pm")
             if pm:
                 lines.append(f"  - PresentMon: {pm['window_rows']} rows of pid {r['pid']} in the window ({pm['rows']} in all), "
                              f"PresentMode {pm['modes']}, AllowsTearing {pm['tearing']}, joined {pm['joined']} "
                              f"(median |dt| {fmt(pm['dt_median_us'], 1)} us), msBetweenDisplayChange "
-                             f"{_s(pm['between_display'])}, msUntilDisplayed {_s(pm['until_displayed'])}")
+                             f"{_s(pm['between_display'])}, msUntilDisplayed {_s(pm['until_displayed'])}"
+                             + agree_text(r.get("agree")))
             elif r.get("pm_error"):
                 lines.append(f"  - PresentMon: {r['pm_error']}")
         if not good:

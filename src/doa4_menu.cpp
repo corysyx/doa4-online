@@ -844,7 +844,7 @@ void MenuDialog::DrawDisplayRows() {
   ImGui::PushID("vsync");
   bool vsync = rex::cvar::Query<bool>("present_vsync");
   if (ImGui::Checkbox("VSync", &vsync)) SetPresentationSetting("present_vsync", vsync ? "true" : "false", false);
-  ImGui::TextDisabled("Removes tearing on monitors without G-Sync/FreeSync; adds little or no input lag on our test PC.");
+  ImGui::TextDisabled("Removes tearing on monitors without G-Sync/FreeSync; can add up to one screen refresh of input lag.");
   ImGui::PopID();
 
   ImGui::PushID("output_size");
