@@ -23,6 +23,7 @@
 #include "doa4_photo_hook.h"
 #include "doa4_photo_watch.h"
 #include "net/np_det.h"
+#include "net/rb_snap.h"
 
 namespace {
 std::atomic<doa4::photo::SnapshotWatcher*> g_watcher{nullptr};
@@ -40,6 +41,7 @@ REX_EXTERN(__imp__sub_823078C8);
 }
 
 REX_HOOK_RAW(sub_8275AEE0) {
+  doa4::rb::NoteD3DDevice(ctx.r3.u32);  // r3 = the D3D device: the rollback snapshot leaves it out (rb_snap.h)
   // Netplay (keepalive fix): in a session the D3D kick thread's timeout re-present returns at once (false offline).
   if (doa4::np::det::SkipKeepAliveSwap(uint32_t(ctx.lr))) return;
   const uint32_t state =

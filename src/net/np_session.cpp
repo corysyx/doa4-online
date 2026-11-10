@@ -11,6 +11,7 @@
 
 #include "np_session.h"
 #include "rb_wmap.h"
+#include "rb_snap.h"
 #include "np_digest.h"
 
 #include <algorithm>
@@ -1368,12 +1369,22 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
     return;
   }
   const double t0 = Now(s);
-  const uint32_t f = s.frame++;
+  uint32_t f = s.frame++;
   if (s.quitting) return;
   // A replay ends where its recording ends: it hashes exactly the frames the record run hashed.
   if (s.mode == Mode::kReplay && f >= s.replay.frames.size()) {
     Quit(s, "end of the recording");
     return;
+  }
+  // Rollback milestone 2 (rb_snap.h): the save / restore test of a record run. A restore puts the game back at an
+  // earlier boundary, so the frame counter goes back with it and those frames run again with their recorded input.
+  rb::SnapStep snap;
+  if (s.mode == Mode::kRecord && rb::SnapActive()) {
+    snap = rb::SnapBoundary(f, base, base[kFightState]);
+    if (snap.rewind) {
+      f = snap.frame;
+      s.frame = f + 1;
+    }
   }
 
   // 1. Hash the state entering frame f.
@@ -1399,12 +1410,15 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
   std::vector<ScriptEvent::Kind> fired;
   if (s.mode == Mode::kReplay) {
     s.staged = s.replay.frames[f];
+  } else if (snap.replay) {
+    s.staged = *snap.input;  // (already in the recording: written by the first pass)
   } else {
     s.staged = s.queue.Next(f, &fired);
     if (s.rec) {
       const std::string bytes = EncodeRecFrame(s.staged);
       std::fwrite(bytes.data(), 1, bytes.size(), s.rec);
     }
+    if (snap.record) rb::SnapRecordInput(s.staged);
   }
   const double d0 = Now(s);
   det::OnFrame(f, ctx, base);
