@@ -1682,6 +1682,20 @@ void PrepareReplayRules() {
   if (guest != "(none)") {
     std::string text = guest;
     std::replace(text.begin(), text.end(), ';', '\n');
+    // R13: a recording made before one of the port's own carried settings existed applies it at its cvar default (a
+    // hand-off is never completed this way). The meta compared below stays the recording's own text.
+    std::vector<std::pair<std::string, std::string>> filled;
+    text = handoff::CompleteGuestText(
+        text, handoff::TextSource::kReplay,
+        [](const std::string& name) {
+          const rex::cvar::FlagEntry* flag = rex::cvar::GetFlagInfo(name);
+          return flag ? flag->default_value : std::string();
+        },
+        &filled);
+    for (const auto& [name, value] : filled) {
+      EarlyLog("replay: the recording has no " + name + "; using its default " + value +
+               " (recorded before this setting existed)");
+    }
     std::string why;
     if (ApplyGuestText(text, &why, nullptr)) {
       EarlyLog("replay: the recording's guest settings applied (R21)");

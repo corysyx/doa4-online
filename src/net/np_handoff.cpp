@@ -493,6 +493,21 @@ std::optional<std::string> GuestMetaValue(std::string_view meta, std::string_vie
   return GuestSettingValue(text, name);
 }
 
+std::string CompleteGuestText(std::string_view text, TextSource source,
+                              const std::function<std::string(const std::string& name)>& default_of,
+                              std::vector<std::pair<std::string, std::string>>* filled) {
+  filled->clear();
+  std::string out(text);
+  if (source != TextSource::kReplay) return out;  // a hand-off is never completed: without a name it is refused
+  for (const char* name : kPortSettings) {
+    if (GuestSettingValue(text, name)) continue;
+    const std::string value = default_of(name);
+    out += std::string(name) + "=" + value + "\n";
+    filled->emplace_back(name, value);
+  }
+  return out;
+}
+
 std::string ApplyGuestSettings(std::string_view text,
                                const std::function<bool(const std::string& name, const std::string& value)>& set) {
   std::vector<std::optional<std::string_view>> values;

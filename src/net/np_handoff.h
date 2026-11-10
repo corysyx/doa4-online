@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include "np_rules.h"
 
@@ -83,6 +84,17 @@ std::optional<std::string> GuestSettingValue(std::string_view text, std::string_
 // The same for a guest settings text kept as one meta value (np_session GuestMeta: the lines joined by ';', "(none)" when
 // there is none): the value of `name`, or nothing.
 std::optional<std::string> GuestMetaValue(std::string_view meta, std::string_view name);
+// Where a guest settings text comes from: a session's hand-off, or a replay's recording.
+enum class TextSource { kHandoff, kReplay };
+// R13 (the user's decision): a REPLAY of a recording made before one of the port's own carried settings existed (the
+// port names after the tweaks: doa4_suits_full_bust, doa4_language, doa4_subtitles) applies that setting at its default.
+// For kReplay the result is `text` with one "name=<default_of(name)>" line appended per port setting it lacks, in list
+// order, each named in *filled (cleared first); every other line is kept as it is. For kHandoff the result is `text`
+// itself and *filled is empty, so a hand-off without a name is refused exactly as before. Nothing else is filled: a
+// recording without an SDK or tweak setting is still refused by ApplyGuestSettings.
+std::string CompleteGuestText(std::string_view text, TextSource source,
+                              const std::function<std::string(const std::string& name)>& default_of,
+                              std::vector<std::pair<std::string, std::string>>* filled);
 // The TRUST class (fix round 1): carried settings whose non-default value weakens a boundary of the PC that applies
 // it (the guest-writable game folder, patches loaded from disk, debug monitors, memory protection, host thread
 // priority and affinity, a remote command line, a remote heap size). They are forced to their default on both

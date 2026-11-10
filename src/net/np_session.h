@@ -114,8 +114,9 @@ void EarlyLog(const std::string& line);
 // (guest_skipped=).
 bool ApplyGuestText(const std::string& text, std::string* why, bool* touched);
 // Replay parity (R21): at OnPostInitLogging, a replay (DOA4_NP=replay) reads its recording's meta and applies the
-// recording's guest settings (when it has any) exactly as a session does; the unlock (meta unlock=1) runs in the frame
-// hook. No-op otherwise.
+// recording's guest settings (when it has any) exactly as a session does, except that a port setting the recording
+// predates is applied at its default, logged "replay: the recording has no <name>; using its default <value> ..." (R13,
+// handoff::CompleteGuestText); the unlock (meta unlock=1) runs in the frame hook. No-op otherwise.
 void PrepareReplayRules();
 bool Online();
 // A replay (DOA4_NP=replay) that was not refused: set by Start before any guest code runs.

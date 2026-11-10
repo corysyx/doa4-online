@@ -1612,6 +1612,89 @@ static void TestHostileLanguage() {
   }
 }
 
+// `text` without the lines of `names` (a recording made before those names were carried).
+static std::string Without(const std::string& text, std::initializer_list<const char*> names) {
+  std::string out;
+  for (size_t i = 0; i < text.size();) {
+    const size_t end = text.find('\n', i);
+    const std::string line = text.substr(i, end - i + 1);
+    i = end + 1;
+    bool drop = false;
+    for (const char* n : names) drop = drop || line.rfind(std::string(n) + "=", 0) == 0;
+    if (!drop) out += line;
+  }
+  return out;
+}
+
+// R13 (the user's decision): a REPLAY of a recording made before a port setting existed applies it at its default; a
+// hand-off without it is still refused, and a replay without an SDK or tweak setting is still refused. T2.2: the likeliest
+// wrong versions are a fill that also reaches hand-offs, a fill of every missing name (SDK ones included), and a fill
+// that duplicates a line the text already has.
+static void TestReplayDefaults() {
+  using Filled = std::vector<std::pair<std::string, std::string>>;
+  // defaults the test can tell apart from every Store() value
+  const auto default_of = [](const std::string& n) { return "<default of " + n + ">"; };
+  const std::string full = GoodText();
+  const std::string old_text = Without(full, {"doa4_language", "doa4_subtitles"});  // a recording made before G1
+  CHECK(old_text.size() < full.size() && old_text.find("doa4_language=") == std::string::npos);
+  std::map<std::string, std::string> set;
+  const auto record = [&](const std::string& n, const std::string& v) {
+    set[n] = v;
+    return true;
+  };
+
+  Group("replay defaults: a replay text without doa4_language and doa4_subtitles gets both at their defaults, named, and applies");
+  {
+    Filled filled = {{"stale", "x"}};
+    const std::string done = ho::CompleteGuestText(old_text, ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled == Filled({{"doa4_language", "<default of doa4_language>"}, {"doa4_subtitles", "<default of doa4_subtitles>"}}));
+    CHECK(done.rfind(old_text, 0) == 0);  // every recorded line kept as it is, first
+    set.clear();
+    CHECK(ho::ApplyGuestSettings(done, record).empty());
+    CHECK(set.size() == ExpectedNames().size());
+    CHECK(Val(set, "doa4_language") == "<default of doa4_language>" && Val(set, "doa4_subtitles") == "<default of doa4_subtitles>");
+    const std::map<std::string, std::string> store = Store();
+    for (const std::string& n : ExpectedNames()) {  // the rest of the recording's text exactly as recorded
+      if (n == "doa4_language" || n == "doa4_subtitles") continue;
+      g_ctx = n;
+      CHECK(Val(set, n) == Val(store, n));
+    }
+    g_ctx.clear();
+  }
+  Group("replay defaults: the same text as a hand-off is not completed and is refused exactly as before");
+  {
+    Filled filled = {{"stale", "x"}};
+    const std::string as_handoff = ho::CompleteGuestText(old_text, ho::TextSource::kHandoff, default_of, &filled);
+    CHECK(as_handoff == old_text && filled.empty());
+    CHECK(ho::ApplyGuestSettings(as_handoff, record) == "guest setting doa4_language: missing");
+    ho::Handoff h = Full();
+    h.guest_settings = as_handoff;
+    CHECK(ho::Pack(h).empty());
+    Raw r;
+    r.guest = as_handoff;
+    CHECK(UnpackRefusal(Encode(r)) == "guest setting doa4_language: missing");
+  }
+  Group("replay defaults: a replay text without an SDK or a tweak setting is still refused (only port names are filled)");
+  for (const char* other : {"vsync", "doa4_tag_all_stages"}) {
+    g_ctx = other;
+    Filled filled;
+    const std::string done =
+        ho::CompleteGuestText(Without(old_text, {other}), ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled.size() == 2);
+    CHECK(ho::ApplyGuestSettings(done, record) == "guest setting " + std::string(other) + ": missing");
+  }
+  g_ctx.clear();
+  Group("replay defaults: a complete text is unchanged; a recording without the bust setting gets it too");
+  {
+    Filled filled = {{"stale", "x"}};
+    CHECK(ho::CompleteGuestText(full, ho::TextSource::kReplay, default_of, &filled) == full && filled.empty());
+    const std::string done =
+        ho::CompleteGuestText(Without(full, {"doa4_suits_full_bust"}), ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled == Filled({{"doa4_suits_full_bust", "<default of doa4_suits_full_bust>"}}));
+    CHECK(ho::ApplyGuestSettings(done, record).empty());
+  }
+}
+
 static void TestCapture() {
   Group("capture: one query per name, in list order; the text is name=value lines in that order");
   const std::map<std::string, std::string> m = Store();
@@ -2332,6 +2415,7 @@ int main(int argc, char** argv) {
   TestGuestSettingValue();
   TestGuestMetaValue();
   TestHostileLanguage();
+  TestReplayDefaults();
   TestCapture();
   TestApply();
   TestTrustClass();
