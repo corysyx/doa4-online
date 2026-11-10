@@ -11,6 +11,14 @@
 //   a fractional refresh in the text matches the list's rational within 0.001 Hz;
 // - the menu's list: one entry per mode text, largest first, the desktop mode included;
 // - the windowed sizes: 16:9 sizes whose window fits the work area.
+// Task 9c fix round 1 (the review's I1, I2, M4):
+// - a mode switched in place while exclusive (kModeChanged) only resizes the buffers: no block, no retry, no placement;
+// - the retry budget: exactly kRetryTries tries are scheduled from a reset, then the window is blocked (never an
+//   unbounded series);
+// - a swap chain (re)connection posts an exclusive update only when fullscreen and exclusive are desired and no
+//   exclusive update is running (its own resizes reconnect the swap chain);
+// - a placement axis stays inside the given work area, whatever its origin (a secondary monitor, one left of the
+//   primary), and never moves to the primary monitor's.
 
 #include <rex/ui/display_mode.h>
 #include <rex/ui/exclusive_fullscreen.h>
@@ -46,6 +54,69 @@ static void TestActionsTable() {
   // the Step 0 fix: a refusal for now is NOT blocked, it is retried (and an entry that resized the window is undone)
   CHECK(Is(ef::ActionsFor(ef::Change::kRetryLater), false, false, true, true));
   CHECK(ef::kRetryTries == 8 && ef::kRetryIntervalMs == 500);
+  // fix round 1, I2: a mode change in place resizes the buffers and nothing else (NOT the placement, NOT blocked)
+  CHECK(Is(ef::ActionsFor(ef::Change::kModeChanged), true, false, false, false));
+}
+
+// Fix round 1, I1 (b): from a reset, AfterRetryLater schedules exactly kRetryTries tries, then blocks; it never
+// schedules again with more tries made (the old code then only logged, and every posted update tried again).
+static void TestRetryBudget() {
+  uint32_t made = 0;
+  int scheduled = 0;
+  bool blocked = false;
+  for (int step = 0; step < 50 && !blocked; ++step) {
+    if (ef::AfterRetryLater(made) == ef::RetryStep::kSchedule) {
+      ++made;
+      ++scheduled;
+    } else {
+      blocked = true;
+    }
+  }
+  CHECK(blocked && scheduled == 8);
+  CHECK(ef::AfterRetryLater(0) == ef::RetryStep::kSchedule);
+  CHECK(ef::AfterRetryLater(7) == ef::RetryStep::kSchedule);
+  CHECK(ef::AfterRetryLater(8) == ef::RetryStep::kBlock);
+  for (uint32_t m : {9u, 100u, 0xFFFFFFFFu}) {
+    CHECK(ef::AfterRetryLater(m) == ef::RetryStep::kBlock);
+  }
+}
+
+// Fix round 1, I1 (a): the full truth table; only fullscreen + exclusive desired + no update running posts.
+static void TestPostUpdateOnConnect() {
+  int posts = 0;
+  for (int fs = 0; fs < 2; ++fs) {
+    for (int ex = 0; ex < 2; ++ex) {
+      for (int busy = 0; busy < 2; ++busy) {
+        const bool post = ef::PostUpdateOnConnect(fs != 0, ex != 0, busy != 0);
+        CHECK(post == (fs && ex && !busy));
+        posts += post ? 1 : 0;
+      }
+    }
+  }
+  CHECK(posts == 1);
+  // the I1 loop's state: fullscreen, exclusive desired, inside the update (ResizeTarget's WM_SIZE) -> no post
+  CHECK(!ef::PostUpdateOnConnect(true, true, true));
+}
+
+// Fix round 1, M4: a placement axis stays inside the work area it is given, whatever its origin.
+static void TestPlaceInside() {
+  // a secondary monitor right of a 2560-wide primary, work area x [2560, 4480): a 1616-wide window at 2700 stays (the
+  // old clamp to [0, 1920 - 1616] would have moved it to 304, onto the primary)
+  CHECK(dm::PlaceInside(2700, 1616, 2560, 4480) == 2700);
+  CHECK(dm::PlaceInside(4000, 1616, 2560, 4480) == 4480 - 1616);  // moved in, still on the secondary
+  CHECK(dm::PlaceInside(100, 1616, 2560, 4480) == 2560);          // left of it: to its left edge
+  // a monitor left of the primary (negative coordinates), work area x [-1920, 0)
+  CHECK(dm::PlaceInside(-1800, 1616, -1920, 0) == -1800);
+  CHECK(dm::PlaceInside(-100, 1616, -1920, 0) == -1616);
+  // the primary, unchanged behaviour: [0, 2560)
+  CHECK(dm::PlaceInside(-50, 1616, 0, 2560) == 0 && dm::PlaceInside(300, 1616, 0, 2560) == 300 &&
+        dm::PlaceInside(2000, 1616, 0, 2560) == 2560 - 1616);
+  // larger than the area: its begin
+  CHECK(dm::PlaceInside(500, 3000, 0, 2560) == 0 && dm::PlaceInside(3000, 3000, 2560, 4480) == 2560);
+  // workspace coordinates with the primary's work area starting at y 40 (a top taskbar): the secondary's work area
+  // y [363, 1443) in screen coordinates is [323, 1403) in workspace ones; a window at workspace y 400 stays
+  CHECK(dm::PlaceInside(400, 939, 363 - 40, 1443 - 40) == 400);
+  CHECK(dm::PlaceInside(600, 939, 363 - 40, 1443 - 40) == 1403 - 939);
 }
 
 static void TestClassifyEnter() {
@@ -182,6 +253,9 @@ static void TestFittingClientSizes() {
 
 int main() {
   TestActionsTable();
+  TestRetryBudget();
+  TestPostUpdateOnConnect();
+  TestPlaceInside();
   TestClassifyEnter();
   TestRefreshMatchesWholeHz();
   TestModeText();
