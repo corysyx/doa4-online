@@ -2676,6 +2676,18 @@ def test_pair_hidden_launch(root):
           f"np_pair starts the third joiner hidden too: {got}")
 
 
+def test_pair_show_host(root):
+    # Task 7 (R46): --show-host starts the host with the window state it asks for (a measurement of presentation); the
+    # joiner stays minimized without activation. The default (test_pair_hidden_launch) hides both.
+    code, out, runs = np_pair(root, "sh", "--show-host", FAKE_STARTUP_NOTE="1")
+    check(code == 0, f"np_pair --show-host: exit {code}\n{out}")
+    host, joiner = startup_note(runs, "sh_host"), startup_note(runs, "sh_joiner")
+    check(host is not None and not host[1] & STARTF_USESHOWWINDOW and host[0] != SW_SHOWMINNOACTIVE,
+          f"np_pair --show-host: the host has no show-window flag and not 7: {host}")
+    check(joiner is not None and joiner[0] == SW_SHOWMINNOACTIVE and joiner[1] & STARTF_USESHOWWINDOW,
+          f"np_pair --show-host: the joiner still starts with wShowWindow 7 and STARTF_USESHOWWINDOW: {joiner}")
+
+
 def test_pair_joiner_game(root):
     # fix-filetimes: --joiner-game gives the joiner (and a third joiner) their own game folder, the host keeps --game (the
     # launch command is the first line of command.txt)

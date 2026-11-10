@@ -7,7 +7,7 @@ what each copy wrote.
       [--env-host K=V ...] [--env-joiner K=V ...] [--arg-host=ARG ...] [--arg-joiner=ARG ...]
       [--kill-joiner-at-frame N | --quit-joiner-at-frame N] [--third-joiner] [--host-only SECONDS]
       [--expect ok|desync|lost|refused-build|refused-files|refused-busy|refused-session|lobby] [--timeout S]
-      [--game DIR] [--joiner-game DIR] [--end-grace S] [--step-timeout S] [--settle S] [--orphan-watch S]
+      [--game DIR] [--joiner-game DIR] [--end-grace S] [--step-timeout S] [--settle S] [--orphan-watch S] [--show-host]
 
 Run folders <runs>/NAME_host and <runs>/NAME_joiner (and NAME_third), each: ud/ (a copy of the pristine save), ctl/ (the
 test switches' folder DOA4_NP_TEST_DIR: np_ctl.on, status.txt, pids.txt, session/), game.log, command.txt, stdout.txt,
@@ -23,7 +23,9 @@ DOA4_NP_STUN=off, DOA4_NP_UPNP=off, ...) and SDL_GAMECONTROLLER_IGNORE_DEVICES_E
 Process safety: this script ends only the processes it started (their Popen handles) and the pids its own runs' pids.txt files
 list (and only while the process's creation time matches the line's time: a reused pid is not ours): `taskkill /PID <pid>` (a
 close request), `/F` after --end-grace seconds (15). Never by image name. Every process it starts is hidden: the game with
-STARTF_USESHOWWINDOW + SW_SHOWMINNOACTIVE, helpers with CREATE_NO_WINDOW.
+STARTF_USESHOWWINDOW + SW_SHOWMINNOACTIVE, helpers with CREATE_NO_WINDOW. --show-host (opt-in, for a measurement of
+presentation: a minimized game presents nothing worth measuring) starts the host without that show state, so it opens its
+window as it asks; the game's relaunches (session, offline) pass the parent's show state on; the joiner stays hidden.
 A refusal is judged from the lobby's status.txt key `refusal=<none|build|files|busy|proto|session|other>` (a missing key fails
 with a clear message); the event text is only printed, and for files must name the salted group. A refused copy must also not be
 starting / restarting / in_session, have no ctl/session folder, no ud/netplay/handoff.d4h and no non-empty ud/netplay/session or sessions folder (ud/netplay/events.txt is the lobby's own and allowed), watched for --settle
@@ -382,8 +384,10 @@ class Pair:
                     f.write(f"{k}={env[k]}\n")
         side.stdout = open(os.path.join(side.run, "stdout.txt"), "w")
         flags = CREATE_SUSPENDED if affinity else 0  # limit the CPUs before any thread runs
+        shown = side.name == "host" and a.show_host  # --show-host: no STARTUPINFO show state (its relaunches pass it on)
         side.popen = subprocess.Popen(args, env=env, cwd=os.path.dirname(os.path.abspath(exe)), creationflags=flags,
-                                      startupinfo=np_run.hidden_startupinfo(), stdout=side.stdout, stderr=subprocess.STDOUT)
+                                      startupinfo=None if shown else np_run.hidden_startupinfo(), stdout=side.stdout,
+                                      stderr=subprocess.STDOUT)
         with open(os.path.join(side.run, "pid.txt"), "w") as f:  # the launched process (the batch driver's own-process list)
             f.write(str(side.popen.pid))
         if affinity:
@@ -1105,6 +1109,8 @@ def main(argv=None):
     ap.add_argument("--step-timeout", type=float, default=60, help="seconds each lobby step may take")
     ap.add_argument("--settle", type=float, default=8, help="seconds a refused run is watched for a session that starts anyway")
     ap.add_argument("--orphan-watch", type=float, default=10, help="seconds pids.txt must stay unchanged after the last kill")
+    ap.add_argument("--show-host", action="store_true",
+                    help="start the host with the window state it asks for (a measurement of presentation); the joiner stays hidden")
     a = ap.parse_args(argv)
     if a.kill_joiner_at_frame is not None and a.quit_joiner_at_frame is not None:
         sys.exit("--kill-joiner-at-frame and --quit-joiner-at-frame exclude each other")
