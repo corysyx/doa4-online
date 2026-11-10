@@ -208,7 +208,9 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   bool wipe_armed_ = false;      // the first press of "Wipe unlocks..." happened
   display::ExclusiveModesCache own_exclusive_modes_;  // used only without host_.exclusive_modes
   bool exclusive_modes_first_frame_ = true;  // this opening's first drawn frame is still to come (the dialog is per opening)
-  bool exclusive_modes_pending_ = false;     // a build is queued on host_.defer (dropped with the dialog if it closes)
+  // A build was started in this opening (queued on host_.defer; whatever its outcome, the only one this opening: a failed
+  // listing is tried again at the next opening, not on every frame).
+  bool exclusive_modes_attempted_ = false;
   std::string status_;     // last error, shown in red
   OnlineTab online_tab_;
   std::string logged_tab_line_;  // the last "[doa4][NET] tab: ..." line written

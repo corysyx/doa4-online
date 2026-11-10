@@ -159,34 +159,44 @@ static void TestExclusiveSizeList() {
 
 // Task 10 fix round 1 (review I1): when the menu builds the exclusive mode list. The full table, then the cases by name.
 static void TestExclusiveModesStep() {
-  int builds = 0;
+  // arguments: (first_frame, attempted this opening, built, from_active, exclusive_active)
+  int builds = 0, builds_after_attempt = 0;
   for (int first = 0; first < 2; ++first) {
-    for (int built = 0; built < 2; ++built) {
-      for (int from_active = 0; from_active < 2; ++from_active) {
-        for (int active = 0; active < 2; ++active) {
-          const bool build = ExclusiveModesStep(first, built, from_active, active) == ModesStep::kBuild;
-          const bool want = active ? !built : (first || !built || from_active);
-          CHECK(build == want);
-          builds += build ? 1 : 0;
+    for (int attempted = 0; attempted < 2; ++attempted) {
+      for (int built = 0; built < 2; ++built) {
+        for (int from_active = 0; from_active < 2; ++from_active) {
+          for (int active = 0; active < 2; ++active) {
+            const bool build = ExclusiveModesStep(first, attempted, built, from_active, active) == ModesStep::kBuild;
+            const bool want = !attempted && (active ? !built : (first || !built || from_active));
+            CHECK(build == want);
+            builds += build ? 1 : 0;
+            builds_after_attempt += (build && attempted) ? 1 : 0;
+          }
         }
       }
     }
   }
-  // exclusive off: 7 of 8 (all but a later frame with a list made while off); exclusive on: the 4 without a list
-  CHECK(builds == 7 + 4);
+  // not yet attempted: exclusive off 7 of 8 (all but a later frame with a list made while off), exclusive on the 4
+  // without a list; once attempted in this opening: never
+  CHECK(builds == 7 + 4 && builds_after_attempt == 0);
   // exclusive off, the opening's first frame: a fresh list, even with one kept
-  CHECK(ExclusiveModesStep(true, true, false, false) == ModesStep::kBuild);
+  CHECK(ExclusiveModesStep(true, false, true, false, false) == ModesStep::kBuild);
   // exclusive off, later frames: use the list this opening made
-  CHECK(ExclusiveModesStep(false, true, false, false) == ModesStep::kUse);
-  // exclusive off with only a list made during exclusive: replace it (once; the menu's pending flag)
-  CHECK(ExclusiveModesStep(false, true, true, false) == ModesStep::kBuild);
+  CHECK(ExclusiveModesStep(false, true, true, false, false) == ModesStep::kUse);
+  // exclusive off with only a list made during exclusive, not yet attempted this opening: replace it
+  CHECK(ExclusiveModesStep(false, false, true, true, false) == ModesStep::kBuild);
   // the I1 case: an opening while exclusive at a non-desktop mode, a list from before the entry kept: use it, NEVER list
   // during exclusive (its desktop entry would be the scaled 2560x1440 @ 59 Hz)
-  CHECK(ExclusiveModesStep(true, true, false, true) == ModesStep::kUse);
-  CHECK(ExclusiveModesStep(false, true, false, true) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(true, false, true, false, true) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(false, false, true, false, true) == ModesStep::kUse);
   // the game started in exclusive: no list yet, build one during exclusive (the desktop entry dropped), then use it
-  CHECK(ExclusiveModesStep(true, false, false, true) == ModesStep::kBuild);
-  CHECK(ExclusiveModesStep(false, true, true, true) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(true, false, false, false, true) == ModesStep::kBuild);
+  CHECK(ExclusiveModesStep(false, true, true, true, true) == ModesStep::kUse);
+  // re-review 2: a listing that failed (attempted, still nothing built) is NOT tried again on the next frames of the
+  // opening, exclusive off or on; the next opening (attempted false again) tries once more
+  CHECK(ExclusiveModesStep(false, true, false, false, false) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(false, true, false, false, true) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(true, false, false, false, false) == ModesStep::kBuild);
 }
 
 static void TestDropModeText() {

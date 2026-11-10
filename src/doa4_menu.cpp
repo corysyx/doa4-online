@@ -905,20 +905,21 @@ void MenuDialog::DrawDisplayRows() {
 void MenuDialog::EnsureExclusiveModes() {
   const bool first_frame = exclusive_modes_first_frame_;
   exclusive_modes_first_frame_ = false;
-  if (exclusive_modes_pending_ || !host_.window) return;
+  if (!host_.window) return;
   const display::ExclusiveModesCache& cache = ExclusiveModes();
-  if (display::ExclusiveModesStep(first_frame, cache.built, cache.from_active,
+  if (display::ExclusiveModesStep(first_frame, exclusive_modes_attempted_, cache.built, cache.from_active,
                                   host_.window->IsFullscreenExclusiveActive()) != display::ModesStep::kBuild) {
     return;
   }
-  exclusive_modes_pending_ = true;
+  exclusive_modes_attempted_ = true;
   GuardedDefer()([this] {
-    exclusive_modes_pending_ = false;
     std::vector<rex::ui::display_mode::DisplayMode> modes;
     rex::ui::display_mode::DisplayMode desktop;
     if (!rex::ui::d3d12::D3D12Presenter::ListExclusiveFullscreenModes(host_.window->GetNativeWindowHandle(), modes,
                                                                      desktop)) {
-      return;  // no output for the window now: the cache stays as it was (tried again at the next opening)
+      // No output for the window now: the cache stays as it was. Not tried again in this opening (attempted), only at
+      // the next one.
+      return;
     }
     const bool active_now = host_.window->IsFullscreenExclusiveActive();
     display::ExclusiveModesCache& cache = ExclusiveModes();

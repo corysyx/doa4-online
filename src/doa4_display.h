@@ -80,8 +80,12 @@ enum class ModesStep { kUse, kBuild };
 // What the menu does with the cache in a frame. Exclusive off: build at the opening's first frame (a fresh list for this
 // opening, made before any radio can turn exclusive on), and whenever no list made with exclusive off exists; else use.
 // Exclusive on: use any list (a pre-entry one, or one made during exclusive); build only if there is none, which is the
-// game started in exclusive (that build drops the desktop entry: DropModeText).
-constexpr ModesStep ExclusiveModesStep(bool first_frame, bool built, bool from_active, bool exclusive_active) {
+// game started in exclusive (that build drops the desktop entry: DropModeText). At most one build per menu opening
+// (attempted: one was started in this opening, whatever its outcome; Task 10 re-review 2): a listing that fails is not
+// tried again on every drawn frame (each try builds a DXGI factory), only at the next opening.
+constexpr ModesStep ExclusiveModesStep(bool first_frame, bool attempted, bool built, bool from_active,
+                                       bool exclusive_active) {
+  if (attempted) return ModesStep::kUse;
   if (!exclusive_active) return (first_frame || !built || from_active) ? ModesStep::kBuild : ModesStep::kUse;
   return built ? ModesStep::kUse : ModesStep::kBuild;
 }

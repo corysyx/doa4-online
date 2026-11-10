@@ -1600,7 +1600,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.backup_root = BackupFolder();
     host.extras = &extras_;
     host.exclusive_modes = &exclusive_modes_;
-    host.refuse =[this](std::string_view action, std::string* status) {
+    host.refuse = [this](std::string_view action, std::string* status) {
       // the same predicate as the Extras controls' disabled state (online_view::LockedInSession)
       return doa4::online_view::Refuse(doa4::online_view::Control::kExtras, SessionLocked(), action, status,
                                        [](const std::string& line) { REXLOG_INFO("{}", line); });
