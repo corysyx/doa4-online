@@ -1072,7 +1072,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     UpdateNetOverlay();
   }
 
-  // F7: the FPS line (in memory only; the Video tab checkbox saves the setting).
+  // F7: the FPS line (in memory only; the Game tab checkbox saves the setting).
   void ToggleFps() {
     const bool now = !rex::cvar::Query<bool>("doa4_show_fps");
     rex::cvar::SetFlagByName("doa4_show_fps", now ? "true" : "false");

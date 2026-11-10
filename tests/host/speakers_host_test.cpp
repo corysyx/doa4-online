@@ -1,4 +1,4 @@
-// Host test for src/doa4_speakers.cpp (the Audio tab's speaker choices).
+// Host test for src/doa4_speakers.cpp (the Game tab's speaker choices).
 // Built and run by run_speakers_test.bat.
 
 #include "../../src/doa4_config.h"

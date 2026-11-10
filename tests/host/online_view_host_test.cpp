@@ -320,7 +320,7 @@ static void TestLocks() {
 }
 
 // Fix round M2: one notion of "locked" - in a session, or the lobby is Starting / Restarting - and the input delay, the
-// four controls and the tab's session note all follow it.
+// six controls and the tab's session note all follow it.
 static void TestSessionLocks() {
   const State all[] = {State::kOffline,    State::kHosting,    State::kConnecting, State::kConnected,
                        State::kStarting,   State::kRestarting, State::kInSession};
@@ -356,7 +356,7 @@ static void TestSessionLocks() {
   In s;
   s.in_session = true;
   CHECK(SessionLocks(s));
-  // a Starting lobby locks the four controls
+  // a Starting lobby locks the six controls
   CHECK(LockedInSession(Control::kExtras, SessionLocks(Open(State::kStarting, true))));
   CHECK(!LockedInSession(Control::kExtras, SessionLocks(Open(State::kHosting, true))));
 }

@@ -11,7 +11,7 @@ REXCVAR_DEFINE_BOOL(doa4_helena_opera, false, "DOA4", "Helena's opera dress as a
 REXCVAR_DEFINE_BOOL(doa4_kokoro_kimonos, false, "DOA4", "Kokoro's pink and blue kimonos as extra costumes");
 REXCVAR_DEFINE_BOOL(doa4_christie_costume, false, "DOA4", "Christie's cutscene costume as an extra costume");
 
-// Video tab and F7: frames per second over the game. Host-only: not carried to the other player.
+// Game tab and F7: frames per second over the game. Host-only: not carried to the other player.
 REXCVAR_DEFINE_BOOL(doa4_show_fps, false, "DOA4", "Show frames per second over the game");
 
 // First-run setup (doa4_gamefiles.h): the folder the setup chose. The command

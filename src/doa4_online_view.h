@@ -62,7 +62,7 @@ inline constexpr const char* kSuitsBusyText = "The swimsuits are being imported.
 View Describe(const In& in);
 
 // The one notion of "locked": this process is in a session, or its lobby is Starting / Restarting into one (the
-// host pressed Start, the joiner accepted: the games are about to restart). The four controls below and the input delay
+// host pressed Start, the joiner accepted: the games are about to restart). The six controls below and the input delay
 // all read it (fix round M2).
 bool SessionLocks(const In& in);
 // Whether the build id (a hash of the exe and rexruntime.dll, seconds of disk reads) is needed: the Online tab draws,

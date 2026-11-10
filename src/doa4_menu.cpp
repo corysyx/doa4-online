@@ -214,7 +214,7 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   // The Online tab's state and the session locks are logged whichever tab is shown (the log is the test hook:
   // the session's shots never hold the menu).
   PollNetState();
-  // On every tab: the Video and Online tabs show the unsaved warning too.
+  // On every tab: the Game and Online tabs show the unsaved warning too.
   if (ImGui::GetTime() >= next_save_poll_) {
     if (host_.guest && host_.extras) PollSaved(*host_.guest, host_.save_dir, host_.extras);
     next_save_poll_ = ImGui::GetTime() + 1.0;
@@ -787,11 +787,20 @@ void MenuDialog::PickLanguage(uint8_t id) {
 }
 
 void MenuDialog::DrawGameTab() {
+  // Each section has its own ID scope: the video and speakers parts both have a "Restart now" button, and both show when a
+  // render scale and a speakers choice are pending (ImGui's ID-conflict highlight). Wrapping at the call keeps every return
+  // path of a section balanced.
+  ImGui::PushID("video");
   DrawVideoSettings();
+  ImGui::PopID();
   ImGui::Spacing();
+  ImGui::PushID("speakers");
   DrawSpeakerSettings();
+  ImGui::PopID();
   ImGui::SeparatorText("Language");
+  ImGui::PushID("language");
   DrawLanguageSettings();
+  ImGui::PopID();
   const gamefiles::GameTab tab = gamefiles::DescribeGameTab(
       host_.game_files, host_.game_files_from_command_line,
       PathFromUtf8(rex::cvar::Query<std::string>("doa4_game_files")));

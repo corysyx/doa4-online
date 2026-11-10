@@ -81,7 +81,8 @@ namespace {
 // An online session, a replay or a recording: the dropdown's request is dropped there (the dropdown is locked then, and a
 // recording's guest must not change at a wall-clock moment). DOA4_EXTRAS_REQUEST is the one exception, as in the app's
 // SyncCostumeCounts: a record run stands in for an offline game because only it takes scripted input, and
-// np::TestSwitch is null for a player.
+// np::TestSwitch is null for a player. A recording made with the `language N` test action holds no trace of the pick, so
+// its replay (which always drops it) shows the game's own language from that point.
 bool SessionActive() {
   static const bool offline_stand_in = np::TestSwitch("DOA4_EXTRAS_REQUEST") != nullptr;
   return np::Online() || np::Replaying() || (np::Active() && !offline_stand_in);
