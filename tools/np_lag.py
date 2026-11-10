@@ -547,7 +547,7 @@ def analyse_run(out, meta, presentmon, start, frames):
         except ValueError as e:
             res["pm_error"] = str(e)
             pm = []
-        if pm:
+        if pm and rows:  # a run with no window frames (a plain launch that never reached a round) gets no PresentMon join
             t0, t1 = rows[0]["t_frame_start_us"], rows[-1]["t_frame_start_us"]
             pm_win = [p for p in pm if p["t_us"] is None or t0 <= p["t_us"] <= t1 + 50000]
             pj, dts = join_presentmon(rows, pm_win)

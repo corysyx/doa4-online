@@ -3872,6 +3872,21 @@ def test_lag_plain(root):
           f"np_lag launch_plain: no session switch, no real controller: {log}")
     check("DOA4_LAG_TRACE=1" in cmd and "DOA4_NP=" not in cmd and os.path.isdir(os.path.join(run, "ud")) and
           open(os.path.join(run, "pid.txt")).read().strip().isdigit(), f"np_lag launch_plain: command.txt, ud, pid.txt: {cmd}")
+    # analyse with a PresentMon capture: a plain run that never reached a round (no window frames) is reported, not a crash
+    out = os.path.join(root, "out")
+    os.makedirs(os.path.join(out, "runs", "pw_r1"))
+    os.makedirs(os.path.join(out, "lag", "pw_r1"))
+    open(os.path.join(out, "runs", "pw_r1", "pid.txt"), "w").write("4242")
+    open(os.path.join(out, "runs", "pw_r1", "game.log"), "w").write("[doa4][LAG] lagtrace on: x (QPC frequency 10000000 Hz)\n")
+    lag_trace(os.path.join(out, "lag", "pw_r1", "lagtrace_4242.csv"), 50, first_np=-1, fight=lambda i: 0)
+    open(os.path.join(out, "pw_r1_meta.txt"), "w").write("config pw\nrun pw_r1\nmode windowed\nkind plain\nlabel clean\nexit 1\n")
+    pm = os.path.join(root, "pm.csv")
+    open(pm, "w").write("Application,ProcessID,AllowsTearing,PresentMode,Dropped,QPCTime,msUntilDisplayed,msBetweenDisplayChange\n"
+                        "dead_or_alive_4.exe,4242,1,Hardware: Independent Flip,0,10000000,1.0,16.7\n")
+    with contextlib.redirect_stdout(io.StringIO()) as buf:
+        code = lag.analyse(out, pm, 0, 3600)
+    check(code == 0 and "pw_r1: windowed plain" in buf.getvalue() and "0 frames" in buf.getvalue(),
+          f"np_lag analyse: a plain run with no round frames and a PresentMon capture: {code}\n{buf.getvalue()[:400]}")
     try:
         lag.launch_plain(os.path.join(HERE, "fake_offline_game.cmd"), run, {}, 30, make_userdata(os.path.join(root, "u2")), None)
         check(False, "np_lag launch_plain refuses an existing run folder")
