@@ -46,7 +46,15 @@ static void Field(std::string& line, int64_t v) {
 std::string CsvHeader() {
   return "frame,t_input_us,t_frame_start_us,t_guest_swap_us,t_host_present_us,guest_swap_index,"
          "np_frame,t_np_done_us,t_frame_fn_done_us,t_swap_call_us,t_swap_return_us,t_present_call_us,"
-         "pad_calls_main,pad_calls_other,swap_calls_main,swap_calls_other,present_flags,fight_state";
+         "pad_calls_main,pad_calls_other,swap_calls_main,swap_calls_other,present_flags,fight_state,"
+         "t_gpu_wait_enter_us,t_vblank_us,t_gpu_wait_wake_us,t_gpu_swap_us,gpu_wait_us,gpu_waits,gpu_wait_poll,"
+         "gpu_wait_ref,gpu_wait_info,gpu_after_wait_packets,gpu_after_wait_sig,gpu_flags";
+}
+
+// A count printed only for a joined row (0 is a real count there; unjoined: an empty field).
+static void Count(std::string& line, bool joined, int64_t v) {
+  line += ',';
+  if (joined) line += std::to_string(v);
 }
 
 std::string CsvLine(const Row& row) {
@@ -70,6 +78,20 @@ std::string CsvLine(const Row& row) {
   line += ',';
   if (row.joined) line += std::to_string(row.present.flags);
   line += ',' + std::to_string(f.fight_state);
+  const Present& p = row.present;
+  const bool j = row.joined;
+  Field(line, j ? p.t_gpu_wait_enter : 0);
+  Field(line, j ? p.t_vblank : 0);
+  Field(line, j ? p.t_gpu_wait_wake : 0);
+  Field(line, j ? p.t_gpu_swap : 0);
+  Count(line, j, p.gpu_wait_us);
+  Count(line, j, p.gpu_waits);
+  Count(line, j, p.gpu_wait_poll);
+  Count(line, j, p.gpu_wait_ref);
+  Count(line, j, p.gpu_wait_info);
+  Count(line, j, p.gpu_after_wait_packets);
+  Count(line, j, p.gpu_after_wait_sig);
+  Count(line, j, p.gpu_flags);
   return line;
 }
 

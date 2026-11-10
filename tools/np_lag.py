@@ -71,6 +71,13 @@ POINTS = {
     "swap return": "t_swap_return_us",
     "host Present call": "t_present_call_us",
     "host Present return": "t_host_present_us",
+    # Task 8 (R56): the GPU command processor thread's marks of the joined present's swap packet (the last WAIT_REG_MEM
+    # that had to wait before it: its entry and wake; the guest vblank before that wake; the swap packet's handler).
+    # Absent in a Task 7 trace: those points are then left out of the order.
+    "GPU wait entry": "t_gpu_wait_enter_us",
+    "guest vblank": "t_vblank_us",
+    "GPU wait wake": "t_gpu_wait_wake_us",
+    "GPU swap packet": "t_gpu_swap_us",
 }
 DISPLAYED = "displayed"  # from PresentMon: the host Present call + msUntilDisplayed
 # What lies inside each stage, as far as the code shows (a "residual" is end minus start with unnamed work inside).
@@ -83,19 +90,29 @@ STAGE_NOTES = {
     ("guest VdSwap", "swap return"): "GPU back-pressure: the guest present blocks until the GPU thread has presented the "
                                      "previous swap (it ends ~6 us after host Present(N-1) returns when the det layer is off)",
     ("guest VdSwap", "host Present call"): "guest GPU command queue up to the swap packet (GPU thread), IssueSwap, the presenter's paint",
-    ("swap return", "host Present call"): "residual on the GPU thread: holds the 60 Hz pacing (likeliest site the vblank-woken "
-                                          "WAIT_REG_MEM, command_processor.cpp:1185-1197; not located by a mark), then IssueSwap "
-                                          "and the paint",
+    ("swap return", "host Present call"): "residual on the GPU thread (a trace without the GPU marks): holds the 60 Hz pacing "
+                                          "(the vblank-woken WAIT_REG_MEM before the swap packet), then IssueSwap and the paint",
     ("host Present call", "host Present return"): "IDXGISwapChain::Present (sync interval 0, RESTART; the flip-model queue)",
+    ("swap return", "GPU wait entry"): "GPU thread: the frame's commands up to the wait before its swap packet (it reaches them "
+                                       "after presenting the previous swap)",
+    ("GPU wait entry", "guest vblank"): "GPU thread: the WAIT_REG_MEM before the swap packet, asleep until the guest vblank "
+                                        "(command_processor.cpp ExecutePacketType3_WAIT_REG_MEM)",
+    ("guest vblank", "GPU wait wake"): "the vblank interrupt (MarkVblank) and the wake of the wait (WakeRegisterWaits)",
+    ("GPU wait wake", "GPU swap packet"): "GPU thread: the packets after the wait up to the swap packet (gpu_after_wait_packets)",
+    ("GPU swap packet", "host Present call"): "GPU thread: IssueSwap (the swap texture) and the presenter's paint",
     ("host Present return", DISPLAYED): "the swap chain to the display (PresentMon msUntilDisplayed from the call, minus the call)",
 }
+GPU_WORK = ("host Present return (previous frame)", "GPU wait entry")  # the GPU thread's own work on a frame (Task 8)
+GPU_WORK_NOTE = ("GPU thread: from presenting the previous swap to the wait before this frame's swap packet (its commands "
+                 "for this frame; consecutive frames only)")
 LOOP_TAIL = ("swap return", "next frame start")  # the rest of the loop pass; holds the 60 Hz pacing wait if it is there
 LOOP_NOTE = "residual: the main loop after the guest present until the next pass starts (any frame pacing wait)"
 # Constraints a frame's points must meet (later - earlier >= 0); a violation is a negative stage time.
 ORDER_CHECKS = [("frame start", "session step done"), ("session step done", "frame function done"),
                 ("frame start", "pad read"), ("frame start", "swap call"), ("swap call", "guest VdSwap"),
                 ("guest VdSwap", "swap return"), ("pad read", "guest VdSwap"), ("guest VdSwap", "host Present call"),
-                ("host Present call", "host Present return")]
+                ("host Present call", "host Present return"), ("GPU wait entry", "GPU wait wake"),
+                ("GPU wait wake", "GPU swap packet")]
 
 
 # ---- statistics -----------------------------------------------------------------------------------------------------
@@ -188,6 +205,16 @@ def loop_tail(rows):
     for r, nxt in zip(rows, rows[1:]):
         if nxt["frame"] == r["frame"] + 1 and r["t_swap_return_us"] is not None:
             out.append((nxt["t_frame_start_us"] - r["t_swap_return_us"]) / 1000.0)
+    return out
+
+
+def gpu_work(rows):
+    """The previous row's host Present return -> this row's GPU wait entry, in ms (consecutive frames with both points):
+    the GPU thread's own work on a frame (Task 8, R56)."""
+    out = []
+    for prev, r in zip(rows, rows[1:]):
+        if r["frame"] == prev["frame"] + 1 and prev.get("t_host_present_us") is not None and r.get("t_gpu_wait_enter_us") is not None:
+            out.append((r["t_gpu_wait_enter_us"] - prev["t_host_present_us"]) / 1000.0)
     return out
 
 
@@ -629,6 +656,8 @@ def analyse(out, presentmon, start, frames):
             note = STAGE_NOTES.get((a, b), "residual: end minus start, the work between is not named by the trace")
             lines.append(row_for(f"{a} -> {b}", [stage_values(g["rows"], a, b) for g in good], note))
         lines.append(row_for(f"{LOOP_TAIL[0]} -> {LOOP_TAIL[1]}", [loop_tail(g["rows"]) for g in good], LOOP_NOTE))
+        if any(gpu_work(g["rows"]) for g in good):
+            lines.append(row_for(f"{GPU_WORK[0]} -> {GPU_WORK[1]}", [gpu_work(g["rows"]) for g in good], GPU_WORK_NOTE))
         for a, b, label in (("pad read", "host Present return", "TOTAL pad read -> host Present return"),
                             ("frame start", "host Present return", "frame start -> host Present return")):
             lines.append(row_for(label, [stage_values(g["rows"], a, b) for g in good], "the sum along the path"))

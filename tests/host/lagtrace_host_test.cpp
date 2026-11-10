@@ -173,20 +173,54 @@ static void TestCsv() {
   r.joined = true;
   r.present = P(9, 300);  // call 300, return 307, flags 1
   r.frame.fight_state = 3;  // the last column; 3, NOT the present flags (1) or swap calls (2) beside it
-  CHECK(h.size() > 12 && h.substr(h.size() - 12) == ",fight_state");
-  CHECK(CsvLine(r) == "12,111,100,222,307,9,-1,101,105,220,230,300,4,0,1,2,1,3");
+  CHECK(h.find(",fight_state,t_gpu_wait_enter_us,") != std::string::npos);
+  // the GPU-thread columns (Task 8) of a joined present whose GPU marks are all 0: empty times, counts printed as 0
+  CHECK(CsvLine(r) == "12,111,100,222,307,9,-1,101,105,220,230,300,4,0,1,2,1,3,,,,,0,0,0,0,0,0,0,0");
   r.joined = false;  // unjoined: the present fields are empty, NOT the stored present's times
   r.frame.t_input = 0;
-  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,3");
+  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,3,,,,,,,,,,,,");
   r.frame.fight_state = -1;  // not read: -1, printed (0 is a real state: outside a match)
-  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,-1");
+  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,-1,,,,,,,,,,,,");
   r.frame.fight_state = 0;
-  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,0");
+  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,0,,,,,,,,,,,,");
   // as many fields as the header has columns
   size_t commas_h = 0, commas_l = 0;
   for (char c : h) commas_h += c == ',';
   for (char c : CsvLine(r)) commas_l += c == ',';
-  CHECK(commas_h == 17 && commas_l == commas_h);
+  CHECK(commas_h == 29 && commas_l == commas_h);
+}
+
+// The GPU thread's marks of the joined present's swap packet (Task 8, R56): each value in its own column, in the
+// header's order; unjoined, every one of them empty. Wrong versions excluded: wait entry and wake swapped (distinct
+// values), the stored present's counts printed for an unjoined row (stale values from a dropped swap).
+static void TestCsvGpuMarks() {
+  const std::string h = CsvHeader();
+  CHECK(h.size() > 180 && h.substr(h.size() - 180) ==
+        ",t_gpu_wait_enter_us,t_vblank_us,t_gpu_wait_wake_us,t_gpu_swap_us,gpu_wait_us,gpu_waits,gpu_wait_poll,"
+        "gpu_wait_ref,gpu_wait_info,gpu_after_wait_packets,gpu_after_wait_sig,gpu_flags");
+  Row r;
+  r.frame.frame = 3;
+  r.frame.np_frame = 40;
+  r.frame.t_frame_start = 1000;
+  r.frame.guest_swap_index = 7;
+  r.frame.fight_state = 2;
+  r.joined = true;
+  r.present = P(7, 5000);
+  r.present.t_gpu_wait_enter = 2100;
+  r.present.t_vblank = 4700;
+  r.present.t_gpu_wait_wake = 4750;
+  r.present.t_gpu_swap = 4800;
+  r.present.gpu_wait_us = 2650;
+  r.present.gpu_waits = 1;
+  r.present.gpu_wait_poll = 0x1F4C3A82;
+  r.present.gpu_wait_ref = 6;
+  r.present.gpu_wait_info = 0x13;
+  r.present.gpu_after_wait_packets = 2;
+  r.present.gpu_after_wait_sig = 0x6480;
+  r.present.gpu_flags = 1;
+  CHECK(CsvLine(r) == "3,,1000,,5007,7,40,,,,,5000,0,0,0,0,1,2,2100,4700,4750,4800,2650,1,525089410,6,19,2,25728,1");
+  r.joined = false;
+  CHECK(CsvLine(r) == "3,,1000,,,7,40,,,,,,0,0,0,0,,2,,,,,,,,,,,,");
 }
 
 // Wrong version excluded: qpc * 1000000 / frequency, which overflows int64 for this tick count.
@@ -206,6 +240,7 @@ int main() {
   TestWaitingCap();
   TestStaleIndexAndNoOutput();
   TestCsv();
+  TestCsvGpuMarks();
   TestQpcToUs();
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);

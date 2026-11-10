@@ -86,6 +86,20 @@ void WriterLoop() {
         p.t_return = QpcToUs(marks[i].qpc_after, g_frequency);
         p.swap_index = marks[i].swap_index;
         p.flags = marks[i].flags;
+        const rex::pace_stats::LagGpuSwap& g = marks[i].gpu;  // the swap packet's GPU-thread marks (Task 8, R56)
+        auto us = [](int64_t qpc) { return qpc ? QpcToUs(qpc, g_frequency) : 0; };
+        p.t_gpu_wait_enter = us(g.qpc_wait_enter);
+        p.t_vblank = us(g.qpc_vblank);
+        p.t_gpu_wait_wake = us(g.qpc_wait_wake);
+        p.t_gpu_swap = us(g.qpc_swap);
+        p.gpu_wait_us = QpcToUs(g.wait_ticks, g_frequency);
+        p.gpu_waits = g.waits;
+        p.gpu_wait_poll = g.wait_poll;
+        p.gpu_wait_ref = g.wait_ref;
+        p.gpu_wait_info = g.wait_info;
+        p.gpu_after_wait_packets = g.after_wait_packets;
+        p.gpu_after_wait_sig = g.after_wait_sig;
+        p.gpu_flags = g.flags;
         joiner.AddPresent(p);
       }
       presents += n;

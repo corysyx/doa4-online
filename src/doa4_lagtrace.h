@@ -52,6 +52,21 @@ struct Present {
   int64_t t_return = 0;
   uint32_t swap_index = 0;  // the guest swap whose output it painted; 0: none
   uint32_t flags = 0;       // bit 0: the swap chain allows tearing
+  // The GPU command processor thread's marks of that swap's packet (LagPresentMark::gpu; Task 8, R56). A "wait" is a
+  // WAIT_REG_MEM whose condition did not hold at its first check; the times are those of the last wait before the
+  // swap packet. 0: none.
+  int64_t t_gpu_wait_enter = 0;  // its first unmet check
+  int64_t t_vblank = 0;          // the last guest vblank before its wake
+  int64_t t_gpu_wait_wake = 0;   // the check at which its condition held
+  int64_t t_gpu_swap = 0;        // the swap packet's handler (IssueSwap, then the paint and this present)
+  int64_t gpu_wait_us = 0;       // every wait since the previous swap packet, summed
+  uint32_t gpu_waits = 0;        // how many
+  uint32_t gpu_wait_poll = 0;    // the last wait's poll address, reference and wait_info
+  uint32_t gpu_wait_ref = 0;
+  uint32_t gpu_wait_info = 0;
+  uint32_t gpu_after_wait_packets = 0;  // packets from that wake up to the swap packet (included; no NOPs)
+  uint32_t gpu_after_wait_sig = 0;      // the first four, a byte each from the low byte (type-3 opcode; 0x80 type 0)
+  uint32_t gpu_flags = 0;               // bit 0: presented early, at the wait before its swap packet (no wake yet)
 };
 
 struct Row {
@@ -84,7 +99,8 @@ class Joiner {
 
 // The CSV: the header line and one row's line (both without the line end). The first six columns are the plan's
 // (frame, t_input_us, t_frame_start_us, t_guest_swap_us, t_host_present_us, guest_swap_index); the rest name the
-// other points and counts, and the last is fight_state. A time of 0 is an empty field.
+// other points and counts up to fight_state, then the GPU thread's marks of the joined present's swap packet (Task 8:
+// t_gpu_wait_enter_us .. gpu_after_wait_sig, empty when unjoined). A time of 0 is an empty field.
 std::string CsvHeader();
 std::string CsvLine(const Row& row);
 

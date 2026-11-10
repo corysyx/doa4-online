@@ -3658,17 +3658,21 @@ def test_pair_session_refused(root):
 # ---------------------------------------------------------------------------------------------------------------------
 # Task 7 (DOA4 Online update): np_lag.py, the input-lag matrix's driver and analyser, on synthetic traces.
 # ---------------------------------------------------------------------------------------------------------------------
-LAG_COLUMNS = ("frame,t_input_us,t_frame_start_us,t_guest_swap_us,t_host_present_us,guest_swap_index,np_frame,t_np_done_us,"
-               "t_frame_fn_done_us,t_swap_call_us,t_swap_return_us,t_present_call_us,pad_calls_main,pad_calls_other,"
-               "swap_calls_main,swap_calls_other,present_flags,fight_state")
+LAG_COLUMNS_T7 = ("frame,t_input_us,t_frame_start_us,t_guest_swap_us,t_host_present_us,guest_swap_index,np_frame,t_np_done_us,"
+                  "t_frame_fn_done_us,t_swap_call_us,t_swap_return_us,t_present_call_us,pad_calls_main,pad_calls_other,"
+                  "swap_calls_main,swap_calls_other,present_flags,fight_state")
+# Task 8 (R56): the GPU thread's marks of the joined present's swap packet, after fight_state
+LAG_COLUMNS = LAG_COLUMNS_T7 + (",t_gpu_wait_enter_us,t_vblank_us,t_gpu_wait_wake_us,t_gpu_swap_us,gpu_wait_us,gpu_waits,"
+                                "gpu_wait_poll,gpu_wait_ref,gpu_wait_info,gpu_after_wait_packets,gpu_after_wait_sig,gpu_flags")
 
 
-def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2):
+def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2, gpu=True):
     """A synthetic lagtrace CSV: `frames` 60 fps frames from np_frame first_np, each with all points (frame start, +0.1 session,
-    +0.3 frame fn, +0.5 pad, +9 swap call, +9.2 VdSwap, +9.4 swap return, +11 Present call, +11.4 return; ms). break_swap_at:
-    that row has no swap index and no present (a join miss); negative_at: that row's Present return is before its call;
-    fight(i): row i's fight_state (2, a round, by default)."""
-    lines = [LAG_COLUMNS]
+    +0.3 frame fn, +0.5 pad, +9 swap call, +9.2 VdSwap, +9.4 swap return, +9.6 GPU wait entry, +10.5 guest vblank, +10.55 GPU
+    wait wake, +10.6 GPU swap packet, +11 Present call, +11.4 return; ms). break_swap_at: that row has no swap index and no
+    present (a join miss); negative_at: that row's Present return is before its call; fight(i): row i's fight_state (2, a
+    round, by default); gpu=False: Task 7's header, without the GPU-thread columns."""
+    lines = [LAG_COLUMNS if gpu else LAG_COLUMNS_T7]
     for i in range(frames):
         t = 1_000_000 + i * 16_667
         swap, call, ret = i + 1, t + 11_000, t + 11_400
@@ -3678,6 +3682,8 @@ def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None,
             ret = call - 50
         v = [i + 1, t + 500, t, t + 9_200, ret, swap, first_np + i, t + 100, t + 300, t + 9_000, t + 9_400, call, 4, 0, 1, 0,
              1 if call else None, fight(i)]
+        if gpu:
+            v += ([t + 9_600, t + 10_500, t + 10_550, t + 10_600, 900, 1, 123, 4, 19, 2, 25728, 0] if call else [None] * 12)
         lines.append(",".join("" if x is None else str(x) for x in v))
     with open(path, "w", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
@@ -3687,8 +3693,9 @@ def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None,
 def test_lag_columns_match_source(root):
     # the analyser's synthetic traces use the game's own header (src/doa4_lagtrace.cpp CsvHeader), read from the source
     src = open(os.path.join(TOOLS, "..", "src", "doa4_lagtrace.cpp")).read()
-    m = re.search(r'return "(frame,[^"]*)"\s*"([^"]*)"\s*"([^"]*)";', src)
-    check(m is not None and "".join(m.groups()) == LAG_COLUMNS, f"np_lag: the CSV header in doa4_lagtrace.cpp is LAG_COLUMNS: {m and m.groups()}")
+    m = re.search(r'std::string CsvHeader\(\) \{\s*return ((?:"[^"]*"\s*)+);', src)
+    header = "".join(re.findall(r'"([^"]*)"', m.group(1))) if m else None
+    check(header == LAG_COLUMNS, f"np_lag: the CSV header in doa4_lagtrace.cpp is LAG_COLUMNS: {header}")
     lag = load("np_lag")
     check(set(lag.POINTS.values()) <= set(LAG_COLUMNS.split(",")), "np_lag: every point column is a trace column")
 
@@ -3747,7 +3754,22 @@ def test_lag_stages(root):
     rows = lag.window_rows(lag.read_trace(lag_trace(os.path.join(root, "t.csv"), 3600)))
     order, offs = lag.measured_order(rows, list(lag.POINTS))
     check(order == ["frame start", "session step done", "frame function done", "pad read", "swap call", "guest VdSwap",
-                    "swap return", "host Present call", "host Present return"], f"np_lag measured order: {order}")
+                    "swap return", "GPU wait entry", "guest vblank", "GPU wait wake", "GPU swap packet", "host Present call",
+                    "host Present return"], f"np_lag measured order: {order}")
+    # Task 8 (R56): the GPU thread's own work on a frame = the PREVIOUS frame's host Present return -> this frame's GPU wait
+    # entry (16.667 - 11.4 + 9.6 = 14.867 ms); NOT this frame's own Present return (-1.8) or the previous Present call (15.267)
+    gw = lag.gpu_work(rows)
+    check(len(gw) == 3599 and all(abs(x - 14.867) < 1e-9 for x in gw), f"np_lag gpu_work = 14.867 ms over 3599 pairs: {gw[:2]} {len(gw)}")
+    gw_gap = lag.gpu_work(rows[:100] + rows[101:])  # a missing frame: no pair across the gap (NOT 31.534 ms)
+    check(len(gw_gap) == 3597 and all(abs(x - 14.867) < 1e-9 for x in gw_gap), f"np_lag gpu_work over a gap: {len(gw_gap)} {max(gw_gap)}")
+    v = lag.stage_values(rows, "GPU wait wake", "GPU swap packet")
+    check(len(v) == 3600 and all(abs(x - 0.05) < 1e-9 for x in v), f"np_lag stage GPU wait wake -> GPU swap packet = 0.05 ms: {v[:2]}")
+    # a Task 7 trace (no GPU-thread columns) still analyses: the GPU points are left out, and there is no GPU work
+    t7 = lag.window_rows(lag.read_trace(lag_trace(os.path.join(root, "t7.csv"), 3600, gpu=False)))
+    order7, _ = lag.measured_order(t7, list(lag.POINTS))
+    check(order7 == ["frame start", "session step done", "frame function done", "pad read", "swap call", "guest VdSwap",
+                     "swap return", "host Present call", "host Present return"] and lag.gpu_work(t7) == [],
+          f"np_lag on a Task 7 trace: {order7} {lag.gpu_work(t7)[:2]}")
     # the order follows the data, not the list: a trace whose pad read comes after the swap call puts it there
     late = os.path.join(root, "late.csv")
     lines = open(lag_trace(late, 3600)).read().splitlines()
@@ -3867,6 +3889,8 @@ def test_lag_display_by_mode(root):
     check(not any(k.startswith(("host Present return -> displayed", "TOTAL pad read -> displayed")) and "[" not in k for k in rows),
           f"np_lag analyse: NO display row pooled across modes: {[k for k in rows if 'displayed' in k]}")
     check(rows.get("pad read -> swap call") == "8.50", f"np_lag analyse: the game-side stages stay pooled: {rows.get('pad read -> swap call')}")
+    check(rows.get("host Present return (previous frame) -> GPU wait entry") == "14.87",
+          f"np_lag analyse: the GPU thread's own work row (Task 8): {rows.get('host Present return (previous frame) -> GPU wait entry')}")
 
 
 def test_lag_plain(root):
