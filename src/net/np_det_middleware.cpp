@@ -36,6 +36,7 @@
 #include <utility>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/memory.h>
@@ -442,6 +443,14 @@ using namespace doa4::np::det;
 // is the boot's opening (frames 20-1000).
 namespace {
 bool MoviesSkipped() { return doa4::np::Active() && On(kMovie); }
+// Offline: the boot's opening movie (18) is skipped when doa4_skip_intro is on (the default). Only that movie: the
+// game's other movies (story endings, attract mode) still play. While it counts as playing, "finished?" says yes
+// and "stop" has nothing to stop, as for the session skip below.
+constexpr uint32_t kOpeningMovie = 18;
+bool g_opening_skipped = false;
+bool SkipOpening(uint32_t movie) {
+  return movie == kOpeningMovie && !doa4::np::Active() && rex::cvar::Query<bool>("doa4_skip_intro");
+}
 }  // namespace
 
 // The frame limiter's slow-motion wait (see AudioStep): note the extra vblanks this frame asks for, then run it.
@@ -528,12 +537,18 @@ REX_HOOK_RAW(sub_8242A168) {
                                   uint32_t(ctx.lr)));
     return;
   }
+  if (SkipOpening(ctx.r3.u32)) {
+    REXLOG_INFO("[doa4] opening movie skipped (doa4_skip_intro)");
+    g_opening_skipped = true;
+    return;
+  }
+  g_opening_skipped = false;  // another movie starts for real
   __imp__sub_8242A168(ctx, base);
 }
 
 // In a session every movie is skipped, so every "finished?" is yes and "stop" has nothing to stop.
 REX_HOOK_RAW(sub_8242A3A8) {
-  if (MoviesSkipped()) {
+  if (MoviesSkipped() || g_opening_skipped) {
     ctx.r3.u64 = 1;
     return;
   }
@@ -542,6 +557,10 @@ REX_HOOK_RAW(sub_8242A3A8) {
 
 REX_HOOK_RAW(sub_8242A0F0) {
   if (MoviesSkipped()) return;
+  if (g_opening_skipped) {
+    g_opening_skipped = false;
+    return;
+  }
   __imp__sub_8242A0F0(ctx, base);
 }
 
