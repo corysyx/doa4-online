@@ -3898,6 +3898,68 @@ def test_lag_run_rules(root):
           f"np_lag session_env with --fix none: {lag.session_env('L', 'none')}")
 
 
+def test_lag_run_bin_dir(root):
+    # Task 11 (R94): --bin-dir DIR runs the measured game from one fixed exe folder (whose Windows Firewall prompt was
+    # answered once) instead of a fresh bin_<run> copy per run. DIR must hold the snapshot's own files, byte for byte
+    # (else refused: a different build); its toml is rewritten for each run; a pair is refused (two exe folders).
+    # Excluded wrong versions: no identity check (a stale exe in DIR runs), the toml left from the previous run, a
+    # bin_<run> copy made anyway.
+    lag = load("np_lag")
+    snap = os.path.join(root, "snap")
+    os.makedirs(snap)
+    for f in lag.SNAPSHOT_FILES:
+        open(os.path.join(snap, f), "w").write("x" + f)
+    fixed = os.path.join(root, "fixed")
+    os.makedirs(fixed)
+    for f in lag.SNAPSHOT_FILES:
+        open(os.path.join(fixed, f), "w").write("x" + f)
+    open(os.path.join(fixed, "dead_or_alive_4.toml"), "w", newline="\n").write("audio_mute = true\nfullscreen = false\n")
+    launched = []
+
+    class FakeSubprocess:
+        def __getattr__(self, name):
+            return getattr(subprocess, name)
+
+        def run(self, cmd, *args, **kwargs):
+            launched.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+    def code_of(argv):
+        try:
+            return lag.main(argv)
+        except SystemExit as e:
+            return f"exit {e.code}"
+
+    real = (lag.tasklist_pids, lag.udp7200_lines, lag.subprocess)
+    lag.tasklist_pids = lambda: {}
+    lag.udp7200_lines = lambda: []
+    lag.subprocess = FakeSubprocess()
+    out = os.path.join(root, "out")
+    try:
+        code = code_of(["run", "vb", "--mode", "borderless", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                        "--out", out, "--set", "present_vsync=true", "--bin-dir", fixed])
+        toml = open(os.path.join(fixed, "dead_or_alive_4.toml"), "rb").read()
+        exe_args = [c for cmd in launched for c in cmd if str(c).endswith("dead_or_alive_4.exe")]
+        # the identity check: a DIR whose exe differs from the snapshot's is refused before anything starts
+        open(os.path.join(fixed, "dead_or_alive_4.exe"), "w").write("other build")
+        n_before = len(launched)
+        code_diff = code_of(["run", "vc", "--mode", "borderless", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                             "--out", out, "--bin-dir", fixed])
+        code_pair = code_of(["run", "vp", "--mode", "borderless", "--kind", "pair", "--repeats", "1", "--bin", snap,
+                             "--out", out, "--bin-dir", fixed])
+    finally:
+        lag.tasklist_pids, lag.udp7200_lines, lag.subprocess = real
+    check(code == 0 and toml == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\n",
+          f"np_lag --bin-dir: the run's toml rewritten in DIR: {code} {toml!r}")
+    check(exe_args == [os.path.join(fixed, "dead_or_alive_4.exe")] and not os.path.exists(os.path.join(out, "bin_vb_r1")),
+          f"np_lag --bin-dir: the game runs from DIR, no bin_<run> copy: {exe_args}")
+    meta = open(os.path.join(out, "vb_r1_meta.txt")).read() if os.path.exists(os.path.join(out, "vb_r1_meta.txt")) else ""
+    check(f"bin_dir {fixed}" in meta, f"np_lag --bin-dir: the meta names DIR: {meta}")
+    check(isinstance(code_diff, str) and len(launched) == n_before and not os.path.exists(os.path.join(out, "lag", "vc_r1")),
+          f"np_lag --bin-dir: a DIR with another build's exe is refused before anything starts: {code_diff}")
+    check(isinstance(code_pair, str) and "pair" in code_pair, f"np_lag --bin-dir: refused for a pair: {code_pair}")
+
+
 def test_lag_run_set_reaches_toml(root):
     # Task 9b review I3: cmd_run itself, with the busy check, the process sampler and the launch stubbed: a --set line is
     # in the measured game's toml (offline: the game; pair: the host) and NOT in a pair joiner's. Excluded wrong

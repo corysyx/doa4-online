@@ -5,7 +5,7 @@ the per-stage breakdown.
   py -3 -I tools/np_lag.py run CONFIG --mode windowed|borderless|exclusive --kind plain|offline|pair --bin <snapshot folder>
       [--seconds 300 (plain)]
       --out <folder> [--repeats 3] [--seed 7] [--affinity MASK] [--script tools/np_scripts/single.txt]
-      [--userdata DIR] [--cache DIR] [--timeout S] [--first N] [--set KEY=VALUE ...]
+      [--userdata DIR] [--cache DIR] [--timeout S] [--first N] [--set KEY=VALUE ...] [--bin-dir DIR]
   py -3 -I tools/np_lag.py analyse --out <folder> [--presentmon <capture.csv>] [--window-start 3394] [--window-frames 3600]
   py -3 -I tools/np_lag.py check <lagtrace csv> [--window-start N --window-frames N] [--min-coverage 99]
 
@@ -22,7 +22,9 @@ deadlock.exe and RocketLeague.exe must not run and UDP 7200 must be free (exit 9
 list is sampled every 10 s, and the run is labelled "shared" if any of those games other than the run's own processes
 appeared, else "clean". <out>/<run>_meta.txt holds the configuration, the toml and its SHA-256, the command and the label;
 <out>/<run>_console.log the runner's output. Exclusive (Task 11) writes fullscreen = true and fullscreen_exclusive = true;
-VSync is --set present_vsync=true. The run line of analyse counts the frames presented exclusive (present_flags bit 1)
+VSync is --set present_vsync=true. --bin-dir DIR (offline, plain): the game runs from the fixed folder DIR instead of a
+fresh copy (DIR must hold the snapshot's files byte for byte; its toml is rewritten per run), because every exe folder
+used for the first time raises a Windows Firewall prompt that takes the foreground. The run line of analyse counts the frames presented exclusive (present_flags bit 1)
 and marks an exclusive-mode run with bit 1 unset on most frames as no exclusive measurement.
 
 analyse: every run with a _meta.txt in --out. Rows are the trace's frames whose np_frame (the session's frame) lies in the
@@ -520,6 +522,27 @@ def make_bin(src, dest, keys):
     return text, hashlib.sha256(open(path, "rb").read()).hexdigest()
 
 
+def check_bin_dir(src, dest):
+    """Exit unless `dest` holds every snapshot file of `src` byte for byte (the same build)."""
+    for f in SNAPSHOT_FILES:
+        a, b = os.path.join(src, f), os.path.join(dest, f)
+        if not os.path.exists(b) or (hashlib.sha256(open(a, "rb").read()).digest() !=
+                                     hashlib.sha256(open(b, "rb").read()).digest()):
+            sys.exit(f"--bin-dir {dest}: {f} differs from the snapshot's (or is missing)")
+
+
+def use_bin(src, dest, keys):
+    """--bin-dir: the measured game runs from the fixed folder `dest` (its Windows Firewall prompt answered once; a fresh
+    folder per run raises a new prompt that takes the foreground, Task 11). `dest` must hold the snapshot's files byte for
+    byte (else exit: another build); its toml is rewritten as make_bin writes it. Returns (toml text, its SHA-256)."""
+    check_bin_dir(src, dest)
+    text = "audio_mute = true\n" + "".join(f"{k} = {v}\n" for k, v in keys.items())
+    path = os.path.join(dest, "dead_or_alive_4.toml")
+    with open(path, "w", newline="\n") as f:
+        f.write(text)
+    return text, hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
 def session_env(lag, fix=None):
     """The KEY=VALUE list a traced session run gets: the trace on into `lag`, and DOA4_NP_FIX=`fix` when given."""
     env = ["DOA4_LAG_TRACE=1", f"DOA4_LAG_DIR={lag}"]
@@ -583,6 +606,10 @@ def cmd_run(a):
         sys.exit("--seconds must be positive")
     if a.kind == "pair" and a.affinity:
         sys.exit("--affinity: np_pair limits only the joiner; the pair configuration is run without it")
+    if a.kind == "pair" and a.bin_dir:
+        sys.exit("--bin-dir: a pair runs two exe folders (host and joiner); not for a pair")
+    if a.bin_dir:
+        check_bin_dir(a.bin, a.bin_dir)  # before any run folder is made
     os.makedirs(a.out, exist_ok=True)
     runs = os.path.join(a.out, "runs")
     for i in range(a.first, a.first + a.repeats):
@@ -599,13 +626,13 @@ def cmd_run(a):
         env = session_env(lag, a.fix)
         tomls = {}
         if a.kind == "plain":
-            b = os.path.join(a.out, f"bin_{name}")
-            tomls["game"] = make_bin(a.bin, b, side_keys["game"])
+            b = a.bin_dir or os.path.join(a.out, f"bin_{name}")
+            tomls["game"] = (use_bin if a.bin_dir else make_bin)(a.bin, b, side_keys["game"])
             run_dirs = [os.path.join(runs, name)]
             cmd = ["launch_plain", os.path.join(b, "dead_or_alive_4.exe"), run_dirs[0], f"{a.seconds:g} s"]
         elif a.kind == "offline":
-            b = os.path.join(a.out, f"bin_{name}")
-            tomls["game"] = make_bin(a.bin, b, side_keys["game"])
+            b = a.bin_dir or os.path.join(a.out, f"bin_{name}")
+            tomls["game"] = (use_bin if a.bin_dir else make_bin)(a.bin, b, side_keys["game"])
             cmd = [sys.executable, "-I", os.path.join(HERE, "np_run.py"), "record", name,
                    "--exe", os.path.join(b, "dead_or_alive_4.exe"), "--userdata", a.userdata, "--runs", runs,
                    "--cache", a.cache, "--script", a.script, "--seed", str(a.seed), "--show-window",
@@ -648,6 +675,8 @@ def cmd_run(a):
         label, foreign = label_run(sampler.samples, own_pids(run_dirs))
         with open(os.path.join(a.out, f"{name}_meta.txt"), "w", newline="\n") as f:
             f.write(f"config {a.config}\nrun {name}\nmode {a.mode}\nkind {a.kind}\nseed {a.seed}\nbin {a.bin}\n")
+            if a.bin_dir:
+                f.write(f"bin_dir {a.bin_dir}\n")
             f.write(f"affinity {a.affinity or 'none'}\nfix {a.fix if a.fix is not None else 'default'}\n")
             f.write(f"exit {p.returncode}\nseconds {time.time() - t0:.0f}\n")
             f.write(f"label {label}\nsamples {len(sampler.samples)}\n")
@@ -898,6 +927,9 @@ def main(argv=None):
     r.add_argument("--timeout", type=float, default=600)
     r.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="an extra toml line for the measured game (repeatable), e.g. present_vsync=true")
+    r.add_argument("--bin-dir", default=None,
+                   help="offline/plain: run the game from this fixed folder (the snapshot's files, byte for byte; its "
+                        "toml is rewritten per run) instead of a fresh copy, so no new Windows Firewall prompt appears")
     an = sub.add_parser("analyse")
     an.add_argument("--out", required=True)
     an.add_argument("--presentmon")
