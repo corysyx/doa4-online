@@ -105,4 +105,8 @@ std::optional<Seen> TakePendingSave() {
   return Seen{uint8_t(v >> 8), uint8_t(v)};
 }
 
+bool SavesChoices(bool session_process, bool host_settings_applied) {
+  return !session_process && !host_settings_applied;
+}
+
 }  // namespace doa4::language

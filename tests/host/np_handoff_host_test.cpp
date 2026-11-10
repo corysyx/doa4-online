@@ -1693,6 +1693,24 @@ static void TestReplayDefaults() {
     CHECK(filled == Filled({{"doa4_suits_full_bust", "<default of doa4_suits_full_bust>"}}));
     CHECK(ho::ApplyGuestSettings(done, record).empty());
   }
+  Group("replay defaults: a replay text without a final newline is completed on new lines; its last line keeps its value");
+  {
+    std::string cut = old_text;
+    CHECK(!cut.empty() && cut.back() == '\n');
+    cut.pop_back();  // the last recorded line (doa4_suits_full_bust) now has no newline
+    CHECK(cut.substr(cut.rfind('\n') + 1).rfind("doa4_suits_full_bust=", 0) == 0);
+    Filled filled;
+    const std::string done = ho::CompleteGuestText(cut, ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled.size() == 2);
+    set.clear();
+    CHECK(ho::ApplyGuestSettings(done, record).empty());  // NOT "doa4_language: missing" (merged into the bust line)
+    CHECK(Val(set, "doa4_suits_full_bust") == Val(Store(), "doa4_suits_full_bust"));
+    CHECK(Val(set, "doa4_language") == "<default of doa4_language>");
+    // nothing to fill: the text is left as it is, and its unterminated last line is refused as before
+    const std::string unfilled = ho::CompleteGuestText(full.substr(0, full.size() - 1), ho::TextSource::kReplay, default_of, &filled);
+    CHECK(unfilled == full.substr(0, full.size() - 1) && filled.empty());
+    CHECK(ho::ApplyGuestSettings(unfilled, record) == "the last guest setting line has no newline");
+  }
 }
 
 static void TestCapture() {

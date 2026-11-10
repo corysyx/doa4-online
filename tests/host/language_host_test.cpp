@@ -224,8 +224,18 @@ static void TestChoiceTracking() {
   CHECK(Same(TakePendingSave(), 5, 2));
 }
 
+// R15: a process started for a session (the hand-off was read, or a host-imposed setting was applied, which also holds
+// after an aborted start) never saves a choice, whatever the session mode says; an offline process does.
+static void TestSavesChoices() {
+  CHECK(SavesChoices(false, false));
+  CHECK(!SavesChoices(true, false));
+  CHECK(!SavesChoices(false, true));  // an aborted session start: the hand-off is gone, the host's values are not
+  CHECK(!SavesChoices(true, true));
+}
+
 int main() {
   TestAddresses();
+  TestSavesChoices();
   TestValid();
   TestResolve();
   TestResolveText();

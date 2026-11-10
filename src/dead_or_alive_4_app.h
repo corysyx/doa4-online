@@ -1135,10 +1135,17 @@ class DeadOrAlive4App : public rex::ReXApp {
   // A language picked on the game's own options screen (doa4_language_hooks.cpp notes it on the game thread, never in a
   // session or a replay): both keys saved as integers, then the cvars set to match, so the SDK's F4 "Save to config"
   // (which writes every changed cvar) keeps them. What this run applied is latched (SavedForThisRun) and does not change.
+  // A process started for a session never saves (R15): session_ (the hand-off was read) or guest_touched_ (a host value
+  // was applied; it stays set after an aborted start). That covers a start that fails before np::Start (ClearFolder ->
+  // RelaunchOffline), where np::Online() is false and the hook's gate is open while the module runs until the quit.
   void SaveLanguageChoice() {
     const std::optional<doa4::language::Seen> seen = doa4::language::TakePendingSave();
     if (!seen) return;
     const std::string text = std::to_string(seen->text), subtitles = std::to_string(seen->subtitles);
+    if (!doa4::language::SavesChoices(session_.has_value(), guest_touched_)) {
+      REXLOG_INFO("[doa4][LANG] text {} subtitles {} not saved (a session process never saves)", text, subtitles);
+      return;
+    }
     std::string error = doa4::SaveTomlKey(ConfigPath(), "doa4_language", text);
     if (error.empty()) error = doa4::SaveTomlKey(ConfigPath(), "doa4_subtitles", subtitles);
     if (!error.empty()) {

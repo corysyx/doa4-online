@@ -61,5 +61,10 @@ Seen Read(const GuestBytes& g);
 void SetBaseline(Seen s);
 void NoteGameChoice(Seen s);
 std::optional<Seen> TakePendingSave();
+// Whether this process may save such a choice (R15): never in a process started for a session. session_process: the
+// hand-off was read (the app's session_); host_settings_applied: a host-imposed setting was applied, which also stays
+// true after a session start was aborted (the app's guest_touched_). The session mode (np::Online) is not enough: a
+// start that fails before np::Start leaves it off while the module still runs until the offline relaunch quits it.
+bool SavesChoices(bool session_process, bool host_settings_applied);
 
 }  // namespace doa4::language

@@ -502,6 +502,7 @@ std::string CompleteGuestText(std::string_view text, TextSource source,
   for (const char* name : kPortSettings) {
     if (GuestSettingValue(text, name)) continue;
     const std::string value = default_of(name);
+    if (!out.empty() && out.back() != '\n') out += '\n';  // a text without a final newline: never merge into its last line
     out += std::string(name) + "=" + value + "\n";
     filled->emplace_back(name, value);
   }
