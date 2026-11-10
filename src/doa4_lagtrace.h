@@ -107,6 +107,31 @@ std::string CsvLine(const Row& row);
 // QueryPerformanceCounter ticks to microseconds (rounded down; no overflow for frequencies below 9e12 Hz).
 int64_t QpcToUs(int64_t qpc, int64_t frequency);
 
+// The SDK's present mark (rex::pace_stats::LagPresentMark: its fields and its `gpu`, a LagGpuSwap) in microseconds; a
+// template so the host test can pin the mapping with a stand-in of the same field names. A GPU time of 0 stays 0.
+template <class Mark>
+Present PresentFromMark(const Mark& m, int64_t frequency) {
+  auto us = [frequency](int64_t qpc) { return qpc ? QpcToUs(qpc, frequency) : 0; };
+  Present p;
+  p.t_call = QpcToUs(m.qpc_before, frequency);
+  p.t_return = QpcToUs(m.qpc_after, frequency);
+  p.swap_index = m.swap_index;
+  p.flags = m.flags;
+  p.t_gpu_wait_enter = us(m.gpu.qpc_wait_enter);
+  p.t_vblank = us(m.gpu.qpc_vblank);
+  p.t_gpu_wait_wake = us(m.gpu.qpc_wait_wake);
+  p.t_gpu_swap = us(m.gpu.qpc_swap);
+  p.gpu_wait_us = QpcToUs(m.gpu.wait_ticks, frequency);
+  p.gpu_waits = m.gpu.waits;
+  p.gpu_wait_poll = m.gpu.wait_poll;
+  p.gpu_wait_ref = m.gpu.wait_ref;
+  p.gpu_wait_info = m.gpu.wait_info;
+  p.gpu_after_wait_packets = m.gpu.after_wait_packets;
+  p.gpu_after_wait_sig = m.gpu.after_wait_sig;
+  p.gpu_flags = m.gpu.flags;
+  return p;
+}
+
 // ---- Live (doa4_lagtrace_live.cpp) ----
 // The gate: DOA4_LAG_TRACE=1, read once by Start(). Off, every call-out below costs its caller this one load and branch
 // (each call site is `if (lagtrace::On()) lagtrace::OnX(...)`).

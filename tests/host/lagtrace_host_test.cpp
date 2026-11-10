@@ -223,6 +223,57 @@ static void TestCsvGpuMarks() {
   CHECK(CsvLine(r) == "3,,1000,,,7,40,,,,,,0,0,0,0,,2,,,,,,,,,,,,");
 }
 
+// The SDK's present mark into the trace's Present (doa4_lagtrace_live.cpp drains rex::pace_stats::LagPresentMark):
+// a stand-in with the SDK's field names (sdk include/rex/pace_stats.h LagPresentMark / LagGpuSwap) and a distinct value
+// in every field, so each field must land in its own member. Wrong versions excluded (Task 8 review M6): the vblank and
+// the wake swapped (their stage is 0.01 ms wide, so no order check would see it), entry and wake swapped, poll and ref
+// swapped, the wait sum not converted to microseconds.
+struct FakeGpuSwap {
+  int64_t qpc_swap, qpc_wait_enter, qpc_wait_wake, qpc_vblank, wait_ticks;
+  uint32_t waits, wait_poll, wait_ref, wait_info, after_wait_packets, after_wait_sig, flags, reserved;
+};
+struct FakeMark {
+  int64_t qpc_before, qpc_after;
+  uint32_t swap_index, flags;
+  int32_t present_hr;
+  uint32_t reserved;
+  FakeGpuSwap gpu;
+};
+static void TestPresentFromMark() {
+  FakeMark m{};
+  m.qpc_before = 10010;
+  m.qpc_after = 10070;
+  m.swap_index = 41;
+  m.flags = 1;
+  m.gpu.qpc_swap = 9930;
+  m.gpu.qpc_wait_enter = 4000;
+  m.gpu.qpc_wait_wake = 9920;
+  m.gpu.qpc_vblank = 9900;
+  m.gpu.wait_ticks = 5920;
+  m.gpu.waits = 2;
+  m.gpu.wait_poll = 0x1F56D006;
+  m.gpu.wait_ref = 7;
+  m.gpu.wait_info = 0x13;
+  m.gpu.after_wait_packets = 3;
+  m.gpu.after_wait_sig = 0x6480;
+  m.gpu.flags = 1;
+  const Present p = PresentFromMark(m, 10);  // 10 ticks per second: us = ticks * 100000
+  CHECK(p.t_call == 1001000000 && p.t_return == 1007000000);
+  CHECK(p.swap_index == 41 && p.flags == 1);
+  CHECK(p.t_gpu_swap == 993000000);
+  CHECK(p.t_gpu_wait_enter == 400000000);
+  CHECK(p.t_gpu_wait_wake == 992000000);  // NOT 990000000 (the vblank)
+  CHECK(p.t_vblank == 990000000);         // NOT 992000000 (the wake)
+  CHECK(p.gpu_wait_us == 592000000);      // converted, NOT 5920 ticks
+  CHECK(p.gpu_waits == 2 && p.gpu_wait_poll == 0x1F56D006 && p.gpu_wait_ref == 7 && p.gpu_wait_info == 0x13);
+  CHECK(p.gpu_after_wait_packets == 3 && p.gpu_after_wait_sig == 0x6480 && p.gpu_flags == 1);
+  // a GPU time of 0 ("did not happen", e.g. an early record's wake) stays 0
+  m.gpu.qpc_wait_wake = 0;
+  m.gpu.qpc_vblank = 0;
+  const Present q = PresentFromMark(m, 10);
+  CHECK(q.t_gpu_wait_wake == 0 && q.t_vblank == 0 && q.t_gpu_swap == 993000000);
+}
+
 // Wrong version excluded: qpc * 1000000 / frequency, which overflows int64 for this tick count.
 static void TestQpcToUs() {
   CHECK(QpcToUs(123456789, 10000000) == 12345678);
@@ -241,6 +292,7 @@ int main() {
   TestStaleIndexAndNoOutput();
   TestCsv();
   TestCsvGpuMarks();
+  TestPresentFromMark();
   TestQpcToUs();
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
