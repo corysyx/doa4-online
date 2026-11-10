@@ -8,12 +8,13 @@
 // At the frame boundary entering frame <at> (the loop head, sub_824F4498: the main loop keeps nothing in registers
 // across it, rb_snap.cpp) the snapshot is taken: every 4 KB page the game's code wrote since the session started
 // (doa4_wmap, milestone 1) in the areas rollback restores (the heaps and the XEX data; not the thread stacks, not
-// physical memory: that is the GPU's command and vertex data, measured in milestone 1) and not the D3D device (it
-// follows the GPU, which is not rolled back). The run goes on <frames> frames, recording their input and a hash of
+// physical memory: that is the GPU's command and vertex data, measured in milestone 1). Some bytes keep their current
+// value at a load: the D3D device's heap block (it follows the GPU, which is not rolled back) and every word seen
+// changing while the game stood still at a save or a load (written by the GPU or by a thread that runs on). The run goes on <frames> frames, recording their input and a hash of
 // the snapshot's pages at every boundary. Then the snapshot is restored, the frame counter goes back to <at>, and the
 // same frames run again with the recorded input. At every boundary the hash must be the one of the first pass; at
-// the end the memory is compared page by page with the first pass's end, and what differs is logged by area and by
-// address ("[doa4][RB] snaptest" lines in np_log.txt and the game log). The replayed frames are drawn again (a short
+// the end the memory is compared word by word with the first pass's end, and what differs is logged by area, by
+// address and by how much the values moved ("[doa4][RB] snaptest" lines in np_log.txt and the game log). The replayed frames are drawn again (a short
 // visible rewind): skipping the draw is the next milestone.
 #pragma once
 
@@ -54,7 +55,7 @@ std::string EqualText(const std::vector<bool>& equal);
 
 #ifndef DOA4_RB_HOST_TEST
 
-// The D3D device (r3 of the swap wrapper sub_8275AEE0, doa4_photo_hook.cpp): kept out of the snapshot.
+// The D3D device (r3 of the swap wrapper sub_8275AEE0, doa4_photo_hook.cpp): its bytes are kept at a load.
 void NoteD3DDevice(uint32_t device);
 
 // What the session does at this boundary (np_session.cpp OnFrame, record mode).

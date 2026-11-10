@@ -127,7 +127,8 @@ std::string EqualText(const std::vector<bool>& equal) {
 
 namespace {
 
-constexpr uint32_t kDeviceBytes = 0x6000;  // excluded from the device's start (Tekken 6's device block: 0x6280)
+constexpr uint32_t kPage = 1u << kPageShift;
+constexpr int kSettleMs = 20;  // how long a save / load watches the stopped game for memory that changes by itself
 
 std::atomic<uint32_t> g_device{0};
 
@@ -137,29 +138,37 @@ struct Chunk {
   size_t off = 0;     // in the buffer
 };
 
+struct Keep {  // guest bytes [lo, hi) a load leaves as they are
+  uint32_t lo = 0, hi = 0;
+};
+
 struct Snap {
   SnapConfig cfg;
   unsigned char seen[kPages] = {};   // pages the game's code wrote since the session started
   unsigned char test[kPages] = {};   // pages written during the current test (both passes)
   unsigned char saved[kPages] = {};  // pages in the snapshot
+  unsigned char keep_page[kPages] = {};  // pages with kept bytes in them
   int phase = 0;                     // 0 waiting, 1 first pass, 2 second pass, 3 done
   uint32_t next_at = 0;
   uint32_t tests_done = 0;
   uint32_t at = 0;
   uint32_t i = 0;  // boundaries since `at` in this pass
-  uint32_t dev_lo = 0, dev_hi = 0;
+  uint32_t dev = 0, dev_end = 0;   // the D3D device's bytes (its heap block)
+  std::vector<uint32_t> live;      // words seen changing while the game stood at a boundary (sorted, unique)
+  std::vector<uint32_t> live_new;  // found at a load: used from the next test on
+  std::vector<Keep> keeps;         // this test's kept bytes: the device and the live words
   std::vector<Chunk> chunks;       // the snapshot
   std::vector<uint8_t> buf;
   std::vector<Chunk> end_chunks;   // the first pass's end (snapshot pages + pages first written in the test)
   std::vector<uint8_t> end_buf;
-  std::vector<uint64_t> h1, h2;    // per boundary: hash of the snapshot's pages
+  std::vector<uint64_t> h1, h2;    // per boundary: hash of the snapshot's pages (kept bytes left out)
   std::vector<np::FrameInput> inputs;
   uint32_t outside = 0;            // pages written in the first pass that the snapshot does not hold
   uint32_t equal_tests = 0;
 };
 
 Snap& G() {
-  static Snap* s = new Snap();  // ~3 MB of maps: made on first use (only in a SnapTest run)
+  static Snap* s = new Snap();  // ~4 MB of maps: made on first use (only in a SnapTest run)
   return *s;
 }
 
@@ -168,6 +177,8 @@ void Out(const std::string& line) { np::LogLine("[doa4][RB] snaptest: " + line);
 double MsSince(std::chrono::steady_clock::time_point t) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
 }
+
+uint32_t Be32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
 
 // Calls fn(addr, len) for the committed, writable parts of [addr, addr + len) of guest memory.
 template <typename Fn>
@@ -186,6 +197,46 @@ void ForCommitted(uint8_t* base, uint32_t addr, uint32_t len, Fn&& fn) {
       fn(uint32_t(a), uint32_t(b - a));
     }
     a = b;
+  }
+}
+
+// Calls fn(addr, len) for the parts of [addr, addr + len) outside the kept bytes.
+template <typename Fn>
+void ForUnkept(const Snap& s, uint32_t addr, uint32_t len, Fn&& fn) {
+  uint64_t a = addr;
+  const uint64_t end = uint64_t(addr) + len;
+  auto it = std::lower_bound(s.keeps.begin(), s.keeps.end(), addr, [](const Keep& k, uint32_t x) { return k.hi <= x; });
+  while (a < end) {
+    if (it == s.keeps.end() || it->lo >= end) {
+      fn(uint32_t(a), uint32_t(end - a));
+      return;
+    }
+    if (it->lo > a) fn(uint32_t(a), uint32_t(it->lo - a));
+    a = std::max<uint64_t>(a, it->hi);
+    ++it;
+  }
+}
+
+bool Kept(const Snap& s, uint32_t addr) {
+  if (!s.keep_page[addr >> kPageShift]) return false;
+  auto it = std::lower_bound(s.keeps.begin(), s.keeps.end(), addr, [](const Keep& k, uint32_t x) { return k.hi <= x; });
+  return it != s.keeps.end() && it->lo <= addr;
+}
+
+void BuildKeeps(Snap& s) {
+  s.keeps.clear();
+  if (s.dev_end > s.dev) s.keeps.push_back(Keep{s.dev, s.dev_end});
+  for (uint32_t w : s.live) s.keeps.push_back(Keep{w, w + 4});
+  std::sort(s.keeps.begin(), s.keeps.end(), [](const Keep& a, const Keep& b) { return a.lo < b.lo; });
+  std::vector<Keep> merged;
+  for (const Keep& k : s.keeps) {
+    if (!merged.empty() && k.lo <= merged.back().hi) merged.back().hi = std::max(merged.back().hi, k.hi);
+    else merged.push_back(k);
+  }
+  s.keeps = std::move(merged);
+  std::memset(s.keep_page, 0, sizeof s.keep_page);
+  for (const Keep& k : s.keeps) {
+    for (uint32_t p = k.lo >> kPageShift; p <= (k.hi - 1) >> kPageShift; ++p) s.keep_page[p] = 1;
   }
 }
 
@@ -219,34 +270,104 @@ size_t Capture(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chun
   return bytes;
 }
 
-uint64_t Hash(uint8_t* base, const std::vector<Chunk>& chunks) {
+uint64_t Hash(const Snap& s, uint8_t* base) {
   uint64_t h = 0;
-  for (const Chunk& c : chunks) h = XXH3_64bits_withSeed(base + c.addr, c.len, h);
+  for (const Chunk& c : s.chunks) {
+    ForUnkept(s, c.addr, c.len, [&](uint32_t a, uint32_t n) { h = XXH3_64bits_withSeed(base + a, n, h); });
+  }
   return h;
 }
 
-std::string Hex(const uint8_t* p, size_t n) {
-  std::string t;
-  for (size_t i = 0; i < n; ++i) t += fmt::format("{:02X}", p[i]);
-  return t;
+// The words of the chunks that differ between the copy and memory now (kept bytes left out when skip_kept).
+std::vector<uint32_t> ChangedWords(const Snap& s, uint8_t* base, const std::vector<Chunk>& chunks,
+                                   const std::vector<uint8_t>& copy, bool skip_kept) {
+  std::vector<uint32_t> out;
+  for (const Chunk& c : chunks) {
+    for (uint32_t o = 0; o < c.len; o += kPage) {
+      const uint8_t* was = copy.data() + c.off + o;
+      const uint8_t* now = base + c.addr + o;
+      if (std::memcmp(was, now, kPage) == 0) continue;
+      for (uint32_t w = 0; w < kPage; w += 4) {
+        if (std::memcmp(was + w, now + w, 4) == 0) continue;
+        const uint32_t addr = c.addr + o + w;
+        if (skip_kept && Kept(s, addr)) continue;
+        out.push_back(addr);
+      }
+    }
+  }
+  return out;
+}
+
+std::string PagesText(const std::vector<uint32_t>& words, size_t max) {
+  std::vector<unsigned char> map(kPages, 0);
+  for (uint32_t w : words) map[w >> kPageShift] = 1;
+  std::string text;
+  for (const Range& r : Ranges(map.data(), kPages, max)) text += (text.empty() ? "" : ", ") + RangeText(r);
+  return text;
+}
+
+void AddLive(std::vector<uint32_t>* live, const std::vector<uint32_t>& words) {
+  live->insert(live->end(), words.begin(), words.end());
+  std::sort(live->begin(), live->end());
+  live->erase(std::unique(live->begin(), live->end()), live->end());
+}
+
+uint32_t Be16(const uint8_t* p) { return (uint32_t(p[0]) << 8) | p[1]; }
+
+// The device's heap block. The guest heap's entries (sub_82794AC0, the free path) hold the block's size at +0 and the
+// previous block's at +2, in 16-byte units; the entry is 8 or 16 bytes before the device. The block is the device's
+// when the next entry's previous size is this one's size.
+void FindDevice(Snap& s, uint8_t* base) {
+  const uint32_t dev = g_device.load(std::memory_order_acquire);
+  if (!dev || s.dev) return;
+  uint32_t end = 0;
+  std::string how;
+  for (uint32_t back : {8u, 16u}) {
+    const uint32_t entry = dev - back;
+    const uint32_t units = Be16(base + entry);
+    const uint32_t next = entry + units * 16;
+    if (units * 16 >= 0x1000 && units * 16 <= 0x40000 && Be16(base + next + 2) == units) {
+      end = next;
+      how = fmt::format("heap entry {:08X}: {} x 16 bytes", entry, units);
+      break;
+    }
+  }
+  if (!end) {
+    end = dev + 0x4000;
+    std::string t;
+    for (int k = -16; k < 0; ++k) t += fmt::format("{:02X}", base[dev + k]);
+    how = "a guess: no heap entry found before it (" + t + ")";
+  }
+  s.dev = dev;
+  s.dev_end = end;
+  Out(fmt::format("the D3D device {:08X}-{:08X} ({} bytes, {}) keeps its current bytes at a load", dev, end, end - dev,
+                  how));
 }
 
 void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   const auto t0 = std::chrono::steady_clock::now();
-  if (const uint32_t dev = g_device.load(std::memory_order_acquire); dev && !s.dev_hi) {
-    s.dev_lo = dev >> kPageShift;
-    s.dev_hi = (dev + kDeviceBytes + (1u << kPageShift) - 1) >> kPageShift;
-    Out(fmt::format("the D3D device {:08X}: pages {:08X}-{:08X} stay out of the snapshot", dev, s.dev_lo << kPageShift,
-                    s.dev_hi << kPageShift));
-  }
+  FindDevice(s, base);
+  AddLive(&s.live, s.live_new);
+  s.live_new.clear();
+  BuildKeeps(s);
   uint32_t pages = 0;
   for (uint32_t p = 0; p < kPages; ++p) {
-    s.saved[p] = s.seen[p] && SnapPage(p, s.dev_lo, s.dev_hi);
+    s.saved[p] = s.seen[p] && SnapPage(p, 0, 0);
     pages += s.saved[p];
   }
   const size_t bytes = Capture(base, s.saved, &s.chunks, &s.buf);
+  const double copy_ms = MsSince(t0);
+  // memory that changes while the game stands at the boundary: written by the GPU or by threads that run on (kept)
+  Sleep(kSettleMs);
+  const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
+  if (!moved.empty()) {
+    AddLive(&s.live, moved);
+    BuildKeeps(s);
+    Out(fmt::format("{} words changed by themselves in {} ms at the save (kept from now on): {}", moved.size(),
+                    kSettleMs, PagesText(moved, 12)));
+  }
   std::memset(s.test, 0, sizeof s.test);
-  s.h1.assign(1, Hash(base, s.chunks));
+  s.h1.assign(1, Hash(s, base));
   s.h2.clear();
   s.inputs.clear();
   Census c = Count(s.saved, kPages);
@@ -255,9 +376,9 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     if (c.by_area[a]) areas += fmt::format("{}{} {} KB", areas.empty() ? "" : ", ", AreaName(Area(a)), c.by_area[a] * 4u);
   }
   Out(fmt::format("test {} of {}: saved the state entering frame {} (fight state {}): {} pages, {:.1f} MB in {} chunks, "
-                  "{:.1f} ms ({})",
+                  "{:.1f} ms ({}); {} kept words",
                   s.tests_done + 1, s.cfg.count, frame, fight_state, pages, double(bytes) / (1024.0 * 1024.0),
-                  s.chunks.size(), MsSince(t0), areas));
+                  s.chunks.size(), copy_ms, areas, s.live.size()));
 }
 
 void EndFirstPass(Snap& s, uint8_t* base) {
@@ -266,7 +387,7 @@ void EndFirstPass(Snap& s, uint8_t* base) {
   std::vector<unsigned char> outside(kPages, 0);
   s.outside = 0;
   for (uint32_t p = 0; p < kPages; ++p) {
-    if (s.test[p] && !s.saved[p] && SnapPage(p, s.dev_lo, s.dev_hi)) {
+    if (s.test[p] && !s.saved[p] && SnapPage(p, 0, 0)) {
       outside[p] = 1;
       end[p] = 1;
       ++s.outside;
@@ -284,6 +405,9 @@ void EndFirstPass(Snap& s, uint8_t* base) {
 
 void Load(Snap& s, uint8_t* base) {
   const auto t0 = std::chrono::steady_clock::now();
+  // the kept bytes as they are now
+  std::vector<uint8_t> kept;
+  for (const Keep& k : s.keeps) kept.insert(kept.end(), base + k.lo, base + k.hi);
   size_t restored = 0, skipped = 0;
   for (const Chunk& c : s.chunks) {
     size_t done = 0;
@@ -294,8 +418,22 @@ void Load(Snap& s, uint8_t* base) {
     restored += done;
     skipped += c.len - done;
   }
-  Out(fmt::format("restored the state of frame {} ({:.1f} MB) in {:.1f} ms{}", s.at, double(restored) / (1024.0 * 1024.0),
-                  MsSince(t0), skipped ? fmt::format("; {} KB no longer committed, not restored", skipped / 1024) : ""));
+  size_t off = 0;
+  for (const Keep& k : s.keeps) {
+    std::memcpy(base + k.lo, kept.data() + off, k.hi - k.lo);
+    off += k.hi - k.lo;
+  }
+  const double ms = MsSince(t0);
+  Sleep(kSettleMs);
+  const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
+  Out(fmt::format("restored the state of frame {} ({:.1f} MB, {} kept ranges) in {:.1f} ms{}{}", s.at,
+                  double(restored) / (1024.0 * 1024.0), s.keeps.size(), ms,
+                  skipped ? fmt::format("; {} KB no longer committed, not restored", skipped / 1024) : "",
+                  moved.empty() ? std::string()
+                                : fmt::format("; {} words changed by themselves in {} ms after it (kept from the next "
+                                              "test on): {}",
+                                              moved.size(), kSettleMs, PagesText(moved, 12))));
+  AddLive(&s.live_new, moved);
 }
 
 void Report(Snap& s, uint8_t* base) {
@@ -305,55 +443,69 @@ void Report(Snap& s, uint8_t* base) {
     equal.push_back(s.h1[k] == s.h2[k]);
     all = all && equal.back();
   }
-  // page by page against the first pass's end
-  std::vector<unsigned char> differs(kPages, 0);
-  struct First {
-    uint32_t addr;
-    std::string was, now;
-  };
-  std::vector<First> firsts;
-  uint32_t pages = 0;
-  for (const Chunk& c : s.end_chunks) {
-    for (uint32_t o = 0; o < c.len; o += 1u << kPageShift) {
-      const uint8_t* was = s.end_buf.data() + c.off + o;
-      const uint8_t* now = base + c.addr + o;
-      if (std::memcmp(was, now, 1u << kPageShift) == 0) continue;
-      differs[(c.addr + o) >> kPageShift] = 1;
-      ++pages;
-      if (firsts.size() < 16) {
-        uint32_t b = 0;
-        while (b < (1u << kPageShift) && was[b] == now[b]) ++b;
-        const uint32_t from = b & ~7u;
-        const uint32_t n = std::min<uint32_t>(16, (1u << kPageShift) - from);
-        firsts.push_back(First{c.addr + o + b, Hex(was + from, n), Hex(now + from, n)});
-      }
-    }
-  }
-  const bool pass = all && pages == 0;
+  const std::vector<uint32_t> words = ChangedWords(s, base, s.end_chunks, s.end_buf, true);
+  const bool pass = all && words.empty();
   s.equal_tests += pass;
-  Out(fmt::format("test {} of {} (frames {}-{}): {} - hashes {}; {} pages differ at the end{}", s.tests_done + 1,
-                  s.cfg.count, s.at, s.at + s.cfg.frames - 1, pass ? "PASS" : "FAIL", EqualText(equal), pages,
+  std::vector<unsigned char> differs(kPages, 0);
+  for (uint32_t w : words) differs[w >> kPageShift] = 1;
+  const Census c = Count(differs.data(), kPages);
+  Out(fmt::format("test {} of {} (frames {}-{}): {} - hashes {}; {} words in {} pages differ at the end{}",
+                  s.tests_done + 1, s.cfg.count, s.at, s.at + s.cfg.frames - 1, pass ? "PASS" : "FAIL",
+                  EqualText(equal), words.size(), c.total,
                   s.outside ? fmt::format(" ({} pages were outside the snapshot)", s.outside) : ""));
-  if (pages) {
-    const Census c = Count(differs.data(), kPages);
-    std::string areas;
-    for (size_t a = 0; a < size_t(Area::kCount); ++a) {
-      if (c.by_area[a]) areas += fmt::format("{}{} {}", areas.empty() ? "" : ", ", AreaName(Area(a)), c.by_area[a]);
+  if (words.empty()) return;
+  std::string areas;
+  for (size_t a = 0; a < size_t(Area::kCount); ++a) {
+    if (c.by_area[a]) areas += fmt::format("{}{} {}", areas.empty() ? "" : ", ", AreaName(Area(a)), c.by_area[a]);
+  }
+  Out("  differing pages by area: " + areas);
+  Out("  differing runs: " + PagesText(words, 24));
+  // the differing words by how much the second pass's value is above the first's (big-endian u32)
+  struct Delta {
+    uint32_t delta = 0;
+    std::vector<uint32_t> addrs;
+    uint32_t max_now = 0;
+  };
+  std::vector<Delta> deltas;
+  auto value = [&](uint32_t addr, bool now) -> uint32_t {
+    if (now) return Be32(base + addr);
+    for (const Chunk& ch : s.end_chunks) {
+      if (addr >= ch.addr && addr < ch.addr + ch.len) return Be32(s.end_buf.data() + ch.off + (addr - ch.addr));
     }
-    Out("  differing pages by area: " + areas);
-    const std::vector<Range> r = Ranges(differs.data(), kPages, 40);
-    std::string line;
-    for (size_t k = 0; k < r.size(); ++k) {
-      line += (line.empty() ? "" : ", ") + RangeText(r[k]);
-      if ((k + 1) % 8 == 0 || k + 1 == r.size()) {
-        Out("  differing runs: " + line);
-        line.clear();
+    return 0;
+  };
+  for (uint32_t w : words) {
+    const uint32_t was = value(w, false), now = value(w, true);
+    const uint32_t d = now - was;
+    auto it = std::find_if(deltas.begin(), deltas.end(), [&](const Delta& x) { return x.delta == d; });
+    if (it == deltas.end()) {
+      deltas.push_back(Delta{d, {}, 0});
+      it = deltas.end() - 1;
+    }
+    it->addrs.push_back(w);
+    it->max_now = std::max(it->max_now, now);
+  }
+  std::stable_sort(deltas.begin(), deltas.end(), [](const Delta& a, const Delta& b) { return a.addrs.size() > b.addrs.size(); });
+  for (size_t k = 0; k < deltas.size() && k < 10; ++k) {
+    const Delta& d = deltas[k];
+    std::string ex;
+    for (size_t j = 0; j < d.addrs.size() && j < 6; ++j) {
+      ex += fmt::format("{}{:08X} {:08X}->{:08X}", j ? ", " : "", d.addrs[j], value(d.addrs[j], false),
+                        value(d.addrs[j], true));
+    }
+    Out(fmt::format("  {} words +{:X} (e.g. {})", d.addrs.size(), d.delta, ex));
+  }
+  if (deltas.size() > 10) Out(fmt::format("  ... and {} other differences", deltas.size() - 10));
+  // a counter behind the largest group: device words a little above its values (the D3D fence counter?)
+  if (s.dev && deltas.front().addrs.size() >= 4) {
+    std::string at;
+    for (uint32_t a = s.dev; a + 4 <= s.dev_end; a += 4) {
+      const uint32_t v = Be32(base + a);
+      if (v >= deltas.front().max_now && v - deltas.front().max_now <= 64) {
+        at += fmt::format("{}+{:X}={:08X}", at.empty() ? "" : ", ", a - s.dev, v);
       }
     }
-    for (const First& f : firsts) {
-      Out(fmt::format("  first difference in page {:08X} at {:08X}: first pass {} second {}", f.addr & ~0xFFFu, f.addr,
-                      f.was, f.now));
-    }
+    if (!at.empty()) Out(fmt::format("  device words just above the largest group ({:08X}): {}", deltas.front().max_now, at));
   }
 }
 
@@ -396,7 +548,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
     return step;
   }
   if (s.phase == 1) {
-    s.h1.push_back(Hash(base, s.chunks));
+    s.h1.push_back(Hash(s, base));
     if (s.i < s.cfg.frames) {
       ++s.i;
       step.record = true;
@@ -405,7 +557,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
     // the end of the first pass: keep it, put the snapshot back, run the same frames again
     EndFirstPass(s, base);
     Load(s, base);
-    s.h2.assign(1, Hash(base, s.chunks));
+    s.h2.assign(1, Hash(s, base));
     s.phase = 2;
     s.i = 1;
     step.rewind = true;
@@ -415,7 +567,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
     return step;
   }
   if (s.phase == 2) {
-    s.h2.push_back(Hash(base, s.chunks));
+    s.h2.push_back(Hash(s, base));
     if (s.i < s.cfg.frames) {
       step.replay = true;
       step.input = &s.inputs[s.i];
