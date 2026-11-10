@@ -20,6 +20,11 @@ namespace doa4 {
 std::string UpsertTomlKey(std::string_view text, std::string_view key,
                           std::string_view value_literal);
 
+// `text` without the top-level line(s) for `key` (same top-level-only rule as UpsertTomlKey: nothing after the
+// first [table] header is matched). Every other byte is unchanged. *removed (if not null) says whether a line went;
+// when none did the result is `text` itself.
+std::string RemoveTomlKey(std::string_view text, std::string_view key, bool* removed);
+
 // A TOML basic string: "..." with \ and " escaped.
 std::string TomlString(std::string_view value);
 
@@ -28,5 +33,11 @@ std::string TomlString(std::string_view value);
 // description of the failure.
 std::string SaveTomlKey(const std::filesystem::path& path, std::string_view key,
                         std::string_view value_literal);
+
+// RemoveTomlKey on the file at `path`. Writes only if a line was removed, through the same temp-file-and-rename
+// writer as SaveTomlKey and the same loadability check (the result must parse and no longer hold the key). A
+// missing file or a file without the key is left alone. Returns "" or a description of the failure; *removed is
+// true only if the file now lacks a line it had.
+std::string RemoveTomlKeyFromFile(const std::filesystem::path& path, std::string_view key, bool* removed);
 
 }  // namespace doa4

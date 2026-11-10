@@ -452,8 +452,27 @@ class DeadOrAlive4App : public rex::ReXApp {
     return rex::filesystem::GetExecutableFolder() / (GetName() + ".toml");
   }
 
+  // Speakers are always Automatic (update G3). Runs from OnPostInitLogging: the config is loaded by then and the
+  // audio driver, which reads audio_speakers when it opens, is created later in the runtime setup. The cvar is set
+  // by name (an unknown name fails silently, so the result is checked) and a saved audio_speakers line is removed
+  // from the toml; nothing is written when the file has no such line.
+  void ForceSpeakersAuto() {
+    const std::string saved = rex::cvar::Query<std::string>("audio_speakers");
+    if (!rex::cvar::SetFlagByName("audio_speakers", "auto")) {
+      REXLOG_WARN("[doa4][UI] audio_speakers: could not force auto (cvar not found)");
+    }
+    bool removed = false;
+    const std::string error = doa4::RemoveTomlKeyFromFile(ConfigPath(), "audio_speakers", &removed);
+    if (!error.empty()) {
+      REXLOG_WARN("[doa4][UI] audio_speakers: saved value not removed ({})", error);
+    } else if (removed) {
+      REXLOG_INFO("[doa4][UI] audio_speakers: always auto (saved value {} removed from the settings)", saved);
+    }
+  }
+
   // Override virtual hooks for customization:
   void OnPostInitLogging() override {
+    ForceSpeakersAuto();
     // The dot-product NaN redirect is compile-time, and the build id hashes bytes, not features: this line says
     // whether this exe has it (netplay phase 1, Task 1; the gate reads it from every run's game.log).
     REXLOG_INFO("[doa4][LIFE] dot products: canonical NaN {}", doa4::np::DotProductSelfTest());

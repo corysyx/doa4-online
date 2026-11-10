@@ -1,4 +1,4 @@
-// Host test for src/doa4_config.cpp (UpsertTomlKey, TomlString, SaveTomlKey).
+// Host test for src/doa4_config.cpp (UpsertTomlKey, TomlString, SaveTomlKey, RemoveTomlKey).
 // Built and run by run_toml_upsert_test.bat.
 
 #include "../../src/doa4_config.h"
@@ -80,6 +80,105 @@ static void TestSave() {
   auto blocked = dir / "blocked.toml";
   std::filesystem::create_directories(blocked);
   CHECK(!doa4::SaveTomlKey(blocked, "a", "1").empty());
+  std::filesystem::remove_all(dir);
+}
+
+// RemoveTomlKey: the pure counterpart of UpsertTomlKey.
+static void TestRemove() {
+  bool removed = false;
+  CHECK(doa4::RemoveTomlKey("# c\naudio_speakers = \"surround\"\nvsync = true\n", "audio_speakers", &removed) ==
+        "# c\nvsync = true\n");
+  CHECK(removed);
+
+  const std::string same = "# c\naudio_speakers = \"surround\"\nvsync = true\n";
+  removed = true;
+  CHECK(doa4::RemoveTomlKey(same, "x", &removed) == same);
+  CHECK(!removed);
+
+  // A key inside a table is not top-level.
+  const std::string in_table = "[s]\naudio_speakers = \"stereo\"\n";
+  removed = true;
+  CHECK(doa4::RemoveTomlKey(in_table, "audio_speakers", &removed) == in_table);
+  CHECK(!removed);
+  // The top-level line goes and the one in the table stays.
+  CHECK(doa4::RemoveTomlKey("audio_speakers = 1\n[s]\naudio_speakers = 2\n", "audio_speakers", &removed) ==
+        "[s]\naudio_speakers = 2\n");
+  CHECK(removed);
+
+  // CRLF: exactly one line goes and the others keep their \r\n (exact bytes).
+  CHECK(doa4::RemoveTomlKey("# c\r\naudio_speakers = \"surround\"\r\nvsync = true\r\n", "audio_speakers", &removed) ==
+        "# c\r\nvsync = true\r\n");
+  CHECK(removed);
+  // LF input stays LF: no \r appears.
+  CHECK(doa4::RemoveTomlKey("# c\naudio_speakers = \"surround\"\nvsync = true\n", "audio_speakers", &removed)
+            .find('\r') == std::string::npos);
+
+  // Whole-key match, comments, odd spacing, no final newline, null removed pointer, empty text.
+  const std::string near = "audio_speakers_x = 1\n# audio_speakers = 2\n";
+  CHECK(doa4::RemoveTomlKey(near, "audio_speakers", &removed) == near && !removed);
+  CHECK(doa4::RemoveTomlKey("a = 1\n  audio_speakers=\"x\"  \nb = 2", "audio_speakers", &removed) == "a = 1\nb = 2" && removed);
+  CHECK(doa4::RemoveTomlKey("a = 1\naudio_speakers = \"x\"", "audio_speakers", &removed) == "a = 1\n" && removed);
+  CHECK(doa4::RemoveTomlKey("audio_speakers = 1\n", "audio_speakers", nullptr) == "");
+  CHECK(doa4::RemoveTomlKey("", "audio_speakers", &removed).empty() && !removed);
+  // A BOM is kept and the first line is still matched after it.
+  CHECK(doa4::RemoveTomlKey("\xEF\xBB\xBF" "audio_speakers = 1\na = 2\n", "audio_speakers", &removed) ==
+        "\xEF\xBB\xBF" "a = 2\n" && removed);
+}
+
+static void WriteRaw(const std::filesystem::path& path, const std::string& bytes) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << bytes;
+}
+
+static void TestRemoveFromFile() {
+  auto dir = std::filesystem::temp_directory_path() / "doa4_toml_remove_test_data";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  auto path = dir / "dead_or_alive_4.toml";
+  auto tmp = path;
+  tmp += ".tmp";
+
+  // Comments and other keys stay, byte for byte; only the one line goes.
+  WriteRaw(path, "# my settings\r\naudio_mute = true\r\naudio_speakers = \"surround\"\r\nvsync = false\r\n");
+  bool removed = false;
+  CHECK(doa4::RemoveTomlKeyFromFile(path, "audio_speakers", &removed).empty());
+  CHECK(removed);
+  CHECK(ReadAll(path) == "# my settings\r\naudio_mute = true\r\nvsync = false\r\n");
+  CHECK(!std::filesystem::exists(tmp));
+
+  // The key is gone now: a second call does not rewrite (bytes, time and a leftover .tmp all unchanged).
+  const auto before_time = std::filesystem::last_write_time(path);
+  removed = true;
+  CHECK(doa4::RemoveTomlKeyFromFile(path, "audio_speakers", &removed).empty());
+  CHECK(!removed);
+  CHECK(ReadAll(path) == "# my settings\r\naudio_mute = true\r\nvsync = false\r\n");
+  CHECK(std::filesystem::last_write_time(path) == before_time);
+  CHECK(!std::filesystem::exists(tmp));
+
+  // A missing file is not created.
+  auto missing = dir / "missing.toml";
+  removed = true;
+  CHECK(doa4::RemoveTomlKeyFromFile(missing, "audio_speakers", &removed).empty());
+  CHECK(!removed && !std::filesystem::exists(missing) && !std::filesystem::exists(dir / "missing.toml.tmp"));
+
+  // A file toml++ rejects is left as it is, with an error.
+  const std::string broken = "audio_speakers = \"x\"\nbroken = = 1\n";
+  WriteRaw(path, broken);
+  removed = true;
+  CHECK(!doa4::RemoveTomlKeyFromFile(path, "audio_speakers", &removed).empty());
+  CHECK(!removed && ReadAll(path) == broken && !std::filesystem::exists(tmp));
+
+  // A directory in the file's place cannot be read: an error, not a crash.
+  auto blocked = dir / "blocked.toml";
+  std::filesystem::create_directories(blocked);
+  CHECK(!doa4::RemoveTomlKeyFromFile(blocked, "a", &removed).empty() && !removed);
+
+  // Save and remove share one writer: a save after a remove leaves no .tmp and the new line.
+  WriteRaw(path, "audio_speakers = \"surround\"\n");
+  CHECK(doa4::RemoveTomlKeyFromFile(path, "audio_speakers", &removed).empty() && removed);
+  CHECK(ReadAll(path).empty());
+  CHECK(doa4::SaveTomlKey(path, "vsync", "true").empty());
+  CHECK(ReadAll(path) == "vsync = true\n");
   std::filesystem::remove_all(dir);
 }
 
@@ -187,7 +286,9 @@ static void TestGameFilesSurvivesTheSdkWriter() {
 int main() {
   TestUpsert();
   TestTomlString();
+  TestRemove();
   try {
+    TestRemoveFromFile();
     TestSave();
     TestSaveKeepsFileLoadable();
     TestGameFilesPathRoundTrip();
