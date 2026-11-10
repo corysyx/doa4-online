@@ -197,6 +197,13 @@ cmake --preset win-amd64-release -DREXSDK_DIR=C:/doa4/rexglue-sdk "-DCMAKE_C_FLA
 cmake --build --preset win-amd64-release
 ```
 
+Then, in this fork (corysyx/doa4-online), put the rollback write marks back into the regenerated files (codegen
+writes them without the marks; the script changes nothing when they are already there):
+
+```bat
+py -3 -I tools/np_wmap_patch.py
+```
+
 The generator reads `../xex/DOA4/default.xex` (the folder layout in section 3). Reconfiguring is needed
 only if new `.cpp` files were generated. `commands.txt` has the upstream author's notes on this loop.
 

@@ -101,6 +101,12 @@ extern PPCFuncMapping PPCFuncMappings[];
 #endif
 
 #define REX_RAW_ADDR(x) (base + (u32)(x) + REX_PHYS_HOST_OFFSET(x))
+// DOA4 rollback (corysyx/doa4-online, tools/np_wmap_patch.py): every guest store marks its 4 KB page in doa4_wmap
+// (src/net/rb_wmap.h). REX_WMARK marks the pages of a store's first and last byte.
+extern "C" unsigned char doa4_wmap[1u << 20];
+#define REX_WMARK1(x) (doa4_wmap[(u32)(x) >> 12] = 1)
+#define REX_WMARK(x, n) (doa4_wmap[(u32)(x) >> 12] = 1, doa4_wmap[((u32)(x) + ((n) - 1)) >> 12] = 1)
+#define REX_RAW_ADDR_W(x) (REX_WMARK1(x), REX_RAW_ADDR(x))
 
 #define REX_LOAD_U8(x) (*(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
 #define REX_LOAD_U16(x) __builtin_bswap16(*(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
@@ -109,10 +115,10 @@ extern PPCFuncMapping PPCFuncMappings[];
 #define REX_LOAD_STRING(x, len) \
   std::string_view(reinterpret_cast<const char*>(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)), (len))
 
-#define REX_STORE_U8(x, y)  (*(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = (y))
-#define REX_STORE_U16(x, y) (*(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap16(y))
-#define REX_STORE_U32(x, y) (*(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y))
-#define REX_STORE_U64(x, y) (*(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y))
+#define REX_STORE_U8(x, y)  (REX_WMARK1(x), *(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = (y))
+#define REX_STORE_U16(x, y) (REX_WMARK(x, 2), *(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap16(y))
+#define REX_STORE_U32(x, y) (REX_WMARK(x, 4), *(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y))
+#define REX_STORE_U64(x, y) (REX_WMARK(x, 8), *(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y))
 
 #define REX_MEMORY_SIZE 0x100000000ull
 

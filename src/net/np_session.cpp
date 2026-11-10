@@ -10,6 +10,7 @@
 // Outside a session every hook calls the original at once.
 
 #include "np_session.h"
+#include "rb_wmap.h"
 #include "np_digest.h"
 
 #include <algorithm>
@@ -1940,6 +1941,7 @@ void Shutdown() {
 
 REX_HOOK_RAW(sub_824F4498) {
   if (doa4::np::Active()) doa4::np::OnFrame(ctx, base);
+  else if (doa4::rb::WmapOn()) doa4::rb::WmapFrame(base);  // rollback milestone 1: offline write measurement
   __imp__sub_824F4498(ctx, base);
   // The frame function stores the host-timed GPU frame time into 0x831008E8 / 0x831008E4, which the
   // game reads (HoldFrameTiming): in a session they hold a 60 fps frame's values.

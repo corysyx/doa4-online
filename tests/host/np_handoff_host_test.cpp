@@ -294,7 +294,7 @@ static const NotCarried kSdkNotCarried[] = {
 // doa4_skip_intro: offline only (a session skips every movie through kMovie), so it is never carried.
 static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_skip_intro", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
                                               "netplay_port", "netplay_delay_auto", "netplay_delay", "netplay_last_join",
-                                              "netplay_show_stats", "netplay_upnp", "netplay_autohost", "netplay_autojoin"};
+                                              "netplay_show_stats", "netplay_upnp", "netplay_autohost", "netplay_autojoin", "doa4_rb_wmap"};
 // the trust class: carried settings whose non-default value weakens a boundary of the PC that applies it
 struct Trusted {
   const char* name;

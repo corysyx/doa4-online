@@ -62,6 +62,9 @@ REXCVAR_DEFINE_BOOL(netplay_autohost, false, "DOA4",
                     "Online play: host as soon as the game allows it, then start the session once the other player is in");
 REXCVAR_DEFINE_STRING(netplay_autojoin, "", "DOA4",
                       "Online play: join this code as soon as the game allows it (retried for 2 minutes)");
+// Rollback, milestone 1 (src/net/rb_wmap.h): measure which guest pages the game writes per frame (offline only).
+REXCVAR_DEFINE_BOOL(doa4_rb_wmap, false, "DOA4",
+                    "Rollback research: log which memory pages the game writes each frame (offline play only)");
 // Extras tab: DOAX2 swimsuits (doa4_suits_bust.h).
 REXCVAR_DEFINE_BOOL(doa4_suits_full_bust, false, "DOA4",
                     "DOAX2 swimsuits: full DOAX2 up and down breast movement");
