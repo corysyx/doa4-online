@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cfloat>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
@@ -18,6 +19,8 @@
 #include <rex/input/input_system.h>
 #include <rex/input/pad_remap.h>
 #include <rex/logging.h>
+#include <rex/ui/d3d12/d3d12_presenter.h>
+#include <rex/ui/display_mode.h>
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/ui_event.h>
@@ -33,6 +36,7 @@
 #include <windows.h>
 
 #include "doa4_config.h"
+#include "doa4_display.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
 #include "doa4_language.h"
@@ -263,23 +267,13 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
 // The Game tab's first part: display mode, Show FPS, render scale, anti-aliasing, texture filtering.
 void MenuDialog::DrawVideoSettings() {
   ImGui::SeparatorText("Display mode");
-  const bool fullscreen = host_.window->IsFullscreen();
-  bool want = fullscreen;
-  if (ImGui::RadioButton("Windowed", !fullscreen)) want = false;
-  if (ImGui::RadioButton("Borderless fullscreen", fullscreen)) want = true;
-  if (want != fullscreen) {
-    rex::ui::Window* window = host_.window;
-    host_.defer([window, want] { window->SetFullscreen(want); });
-    SetAndSave("fullscreen", want ? "true" : "false", false);
-  }
+  DrawDisplayRows();
 
   bool show_fps = rex::cvar::Query<bool>("doa4_show_fps");
   if (ImGui::Checkbox("Show FPS over the game (F7)", &show_fps)) {
-    // Near a session nothing is written to the config (it is restored at the session's end): only in memory, as F7 does.
-    const char* value = show_fps ? "true" : "false";
-    const bool ok = SessionLocked() ? rex::cvar::SetFlagByName("doa4_show_fps", value)
-                                    : SaveThenSet("doa4_show_fps", value, false);
-    if (ok && host_.online.shown_changed) host_.online.shown_changed();
+    if (SetPresentationSetting("doa4_show_fps", show_fps ? "true" : "false", false) && host_.online.shown_changed) {
+      host_.online.shown_changed();
+    }
   }
 
   ImGui::SeparatorText("Render scale");
@@ -796,13 +790,134 @@ void MenuDialog::DrawIntroSettings() {
 }
 
 void MenuDialog::SetSkipIntro(bool on) {
-  // Near a session nothing is written to the config (it is restored at the session's end): only in memory, as Show FPS does.
-  const char* value = on ? "true" : "false";
-  if (SessionLocked()) {
-    rex::cvar::SetFlagByName("doa4_skip_intro", value);
-  } else {
-    SaveThenSet("doa4_skip_intro", value, false);
+  SetPresentationSetting("doa4_skip_intro", on ? "true" : "false", false);
+}
+
+// R60. Near a session nothing is written to the config (the session restores it at its end): only in memory, as F7 does.
+bool MenuDialog::SetPresentationSetting(std::string_view name, std::string_view value, bool quote) {
+  if (!SessionLocked()) return SaveThenSet(name, value, quote);
+  if (rex::cvar::SetFlagByName(name, value)) return true;
+  status_ = fmt::format("Could not set {} to {}.", name, value);
+  return false;
+}
+
+// The display rows of the Game tab. None is locked in a session (presentation only). Every Window call goes through
+// host_.defer (the UI thread, after the frame), never from this draw.
+void MenuDialog::DrawDisplayRows() {
+  rex::ui::Window* window = host_.window;
+  enum Mode { kWindowed, kBorderless, kExclusive };
+  // The live state: IsFullscreenExclusiveActive is true only while DXGI exclusive is on, so a lost one shows as Borderless.
+  const bool fullscreen = window->IsFullscreen();
+  const Mode mode = !fullscreen ? kWindowed : window->IsFullscreenExclusiveActive() ? kExclusive : kBorderless;
+
+  ImGui::PushID("display_mode");
+  Mode want = mode;
+  if (ImGui::RadioButton("Windowed", mode == kWindowed)) want = kWindowed;
+  if (ImGui::RadioButton("Borderless fullscreen", mode == kBorderless)) want = kBorderless;
+  if (ImGui::RadioButton("Exclusive fullscreen (experimental)", mode == kExclusive)) want = kExclusive;
+  // A click on Borderless while the wish is still exclusive (entry refused or lost) also clears the wish.
+  if (want != mode || (want == kBorderless && window->IsFullscreenExclusive())) {
+    const bool fs = want != kWindowed;
+    const bool exclusive = want == kExclusive;
+    if (exclusive) {
+      // Fullscreen first, then the wish: the window is in fullscreen when the exclusive entry is posted.
+      host_.defer([window] {
+        window->SetFullscreen(true);
+        window->SetFullscreenExclusive(true);
+      });
+    } else {
+      // The wish first, so leaving exclusive (SetFullscreen(false) leaves it itself) or entering fullscreen is as asked.
+      host_.defer([window, fs] {
+        window->SetFullscreenExclusive(false);
+        window->SetFullscreen(fs);
+      });
+    }
+    SetPresentationSetting("fullscreen", fs ? "true" : "false", false);
+    SetPresentationSetting("fullscreen_exclusive", exclusive ? "true" : "false", false);
   }
+  ImGui::TextDisabled("Experimental: may not lower input lag.");
+  ImGui::PopID();
+
+  ImGui::PushID("vsync");
+  bool vsync = rex::cvar::Query<bool>("present_vsync");
+  if (ImGui::Checkbox("VSync", &vsync)) SetPresentationSetting("present_vsync", vsync ? "true" : "false", false);
+  ImGui::TextDisabled("Removes tearing on monitors without G-Sync/FreeSync; adds input lag.");
+  ImGui::PopID();
+
+  ImGui::PushID("output_size");
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Output size");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(260.0f);
+  if (mode == kBorderless) {
+    ImGui::BeginDisabled();
+    if (ImGui::BeginCombo("##size", "Desktop size")) ImGui::EndCombo();
+    ImGui::EndDisabled();
+  } else {
+    display::OutputSizeList list;
+    if (mode == kWindowed) {
+      // The window's live client size is the current size (a drag or a maximize shows truthfully); the saved one only
+      // before the window has a size.
+      uint32_t w = window->GetActualPhysicalWidth(), h = window->GetActualPhysicalHeight();
+      if (!w || !h) {
+        unsigned sw = 0, sh = 0;
+        const std::string saved = rex::cvar::Query<std::string>("window_client_size");
+        if (std::sscanf(saved.c_str(), "%ux%u", &sw, &sh) == 2) w = sw, h = sh;
+      }
+      list = display::WindowedSizeList(window->ListWindowedClientSizes(), w, h);
+    } else {
+      EnsureExclusiveModes();
+      list = display::ExclusiveSizeList(exclusive_modes_, rex::cvar::Query<std::string>("fullscreen_exclusive_mode"));
+    }
+    const char* preview = list.selected >= 0 ? list.entries[size_t(list.selected)].label.c_str() : "";
+    if (ImGui::BeginCombo("##size", preview)) {
+      for (size_t i = 0; i < list.entries.size(); ++i) {
+        const display::OutputSizeEntry& e = list.entries[i];
+        ImGui::PushID(int(i));
+        if (ImGui::Selectable(e.label.c_str(), int(i) == list.selected) && int(i) != list.selected) {
+          if (mode == kWindowed) {
+            SetPresentationSetting("window_client_size", e.value, true);
+            const uint32_t w = e.width, h = e.height;
+            host_.defer([window, w, h] { window->SetWindowedClientSize(w, h); });
+          } else {
+            // While exclusive the mode changes in place through the reapply call: SetFullscreenExclusive(false) then (true)
+            // would coalesce into nothing.
+            SetPresentationSetting("fullscreen_exclusive_mode", e.value, true);
+            host_.defer([window] { window->ReapplyFullscreenExclusiveMode(); });
+          }
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+  }
+  ImGui::TextDisabled("The size the picture is shown at. Render scale sets how sharp the game draws.");
+  ImGui::PopID();
+}
+
+// The monitor's exclusive modes, listed once per menu opening and kept: the listing builds a DXGI factory, and while
+// exclusive its desktop entry is the scaled mode. Run from host_.defer (never DXGI inside the draw); a listing made
+// while exclusive is made again once the window leaves it.
+void MenuDialog::EnsureExclusiveModes() {
+  const bool active = host_.window->IsFullscreenExclusiveActive();
+  if (exclusive_modes_pending_ || (exclusive_modes_built_ && !(exclusive_modes_from_active_ && !active))) return;
+  exclusive_modes_pending_ = true;
+  GuardedDefer()([this] {
+    std::vector<rex::ui::display_mode::DisplayMode> modes;
+    rex::ui::display_mode::DisplayMode desktop;
+    const bool active_now = host_.window->IsFullscreenExclusiveActive();
+    exclusive_modes_.clear();
+    if (rex::ui::d3d12::D3D12Presenter::ListExclusiveFullscreenModes(host_.window->GetNativeWindowHandle(), modes,
+                                                                    desktop)) {
+      for (const auto& m : modes) {
+        exclusive_modes_.push_back({m.width, m.height, rex::ui::display_mode::RefreshHz(m),
+                                    rex::ui::display_mode::ModeText(m)});
+      }
+    }
+    exclusive_modes_built_ = true;
+    exclusive_modes_from_active_ = active_now;
+    exclusive_modes_pending_ = false;
+  });
 }
 
 void MenuDialog::DrawGameTab() {

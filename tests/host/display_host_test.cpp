@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -85,7 +86,81 @@ static void TestCursor() {
 // The name the user chose for the window (rebrand 2026-11-05); the exe keeps its name.
 static void TestWindowTitle() { CHECK(std::string(kWindowTitle) == "Dead or Alive 4 Online"); }
 
+// The Output size row's lists (Game tab).
+static std::vector<std::string> Labels(const OutputSizeList& l) {
+  std::vector<std::string> out;
+  for (const auto& e : l.entries) out.push_back(e.label);
+  return out;
+}
+
+static void TestRefreshText() {
+  CHECK(RefreshText(60.0) == "60");
+  CHECK(RefreshText(59.94) == "59.94");
+  CHECK(RefreshText(59.940059) == "59.94");
+  CHECK(RefreshText(164.834) == "164.83");
+  CHECK(RefreshText(59.9) == "59.90");  // fractional: two decimals
+  CHECK(RefreshText(59.999) == "60");   // rounds to a whole rate
+  CHECK(RefreshText(144.0) == "144");
+}
+
+static void TestWindowedSizeList() {
+  // A work area that fits only 1280x720 and 1600x900 (the SDK gives them largest first); the current size is one of them.
+  OutputSizeList l = WindowedSizeList({{1600, 900}, {1280, 720}}, 1600, 900);
+  CHECK((Labels(l) == std::vector<std::string>{"1280 x 720", "1600 x 900"}));
+  CHECK(l.selected == 1);
+  CHECK(l.entries[0].value == "1280x720" && l.entries[0].width == 1280 && l.entries[0].height == 720);
+  CHECK(l.entries[1].value == "1600x900");
+
+  // A current size that is not in the list is shown, selected, at its place by size.
+  l = WindowedSizeList({{1920, 1080}, {1600, 900}, {1280, 720}}, 1700, 950);
+  CHECK((Labels(l) == std::vector<std::string>{"1280 x 720", "1600 x 900", "1700 x 950", "1920 x 1080"}));
+  CHECK(l.selected == 2);
+  CHECK(l.entries[2].value == "1700x950");
+  // ...also below and above every entry.
+  l = WindowedSizeList({{1600, 900}, {1280, 720}}, 800, 600);
+  CHECK(l.selected == 0 && l.entries.size() == 3 && l.entries[0].label == "800 x 600");
+  l = WindowedSizeList({{1600, 900}, {1280, 720}}, 3000, 2000);
+  CHECK(l.selected == 2 && l.entries.size() == 3 && l.entries[2].label == "3000 x 2000");
+
+  // An empty SDK list (no window yet) still shows the current size; an unknown current size selects nothing.
+  l = WindowedSizeList({}, 1280, 720);
+  CHECK((Labels(l) == std::vector<std::string>{"1280 x 720"}) && l.selected == 0);
+  l = WindowedSizeList({{1280, 720}}, 0, 0);
+  CHECK(l.entries.size() == 1 && l.selected == -1);
+  // A duplicate in the SDK list is one entry.
+  l = WindowedSizeList({{1280, 720}, {1280, 720}}, 1280, 720);
+  CHECK(l.entries.size() == 1);
+}
+
+static void TestExclusiveSizeList() {
+  const std::vector<ExclusiveMode> modes = {{2560, 1440, 164.834, "2560x1440@164.834"},
+                                            {1920, 1080, 59.94, "1920x1080@59.94"},
+                                            {1920, 1080, 60.0, "1920x1080@60"}};
+  // Saved "": the desktop entry first and selected; a fractional rate shows two decimals, a whole one none.
+  OutputSizeList l = ExclusiveSizeList(modes, "");
+  CHECK((Labels(l) == std::vector<std::string>{"Desktop (current mode)", "2560 x 1440 @ 164.83 Hz",
+                                                "1920 x 1080 @ 59.94 Hz", "1920 x 1080 @ 60 Hz"}));
+  CHECK(l.selected == 0);
+  CHECK(l.entries[0].value.empty());
+  CHECK(l.entries[2].value == "1920x1080@59.94");  // the saved text is the SDK's, not the label's
+  CHECK(l.entries[2].width == 1920 && l.entries[2].height == 1080);
+  // A saved mode is selected by its text.
+  l = ExclusiveSizeList(modes, "1920x1080@60");
+  CHECK(l.selected == 3);
+  l = ExclusiveSizeList(modes, "1920x1080@59.94");
+  CHECK(l.selected == 2);
+  // A saved mode the monitor does not offer falls back to the desktop entry, as the SDK does.
+  l = ExclusiveSizeList(modes, "800x600@60");
+  CHECK(l.selected == 0);
+  // No modes at all: the desktop entry alone.
+  l = ExclusiveSizeList({}, "1920x1080@60");
+  CHECK(l.entries.size() == 1 && l.selected == 0 && l.entries[0].label == "Desktop (current mode)");
+}
+
 int main() {
+  TestRefreshText();
+  TestWindowedSizeList();
+  TestExclusiveSizeList();
   TestWindowTitle();
   TestFpsMeter();
   TestCursor();

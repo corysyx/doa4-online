@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace doa4::display {
 
@@ -33,5 +35,36 @@ struct CursorInputs {
 };
 enum class CursorAction { kLeave, kShow, kHide };
 CursorAction DecideCursor(const CursorInputs& in);
+
+// The Game tab's Output size row: the choices and which one is selected. Pure (the menu fills it from the SDK).
+struct OutputSizeEntry {
+  std::string label;
+  std::string value;  // what is saved: "WxH" (windowed), "WxH@Hz" in the SDK's ModeText (exclusive), "" (desktop mode)
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+struct OutputSizeList {
+  std::vector<OutputSizeEntry> entries;
+  int selected = -1;  // an index into entries, -1 for none
+};
+
+// A refresh rate for a label: "60" when it rounds to a whole number at two decimals, else two decimals ("59.94").
+std::string RefreshText(double hz);
+
+// Windowed: the sizes that fit the work area (the SDK's list, any order), smallest first; the current size (0 x 0 = unknown)
+// is added at its place when the list lacks it, and is the selected entry either way.
+OutputSizeList WindowedSizeList(const std::vector<std::pair<uint32_t, uint32_t>>& fitting, uint32_t current_width,
+                                uint32_t current_height);
+
+// One exclusive mode as the SDK lists it: `text` is the saved "WxH@Hz".
+struct ExclusiveMode {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  double hz = 0;
+  std::string text;
+};
+// Exclusive: "Desktop (current mode)" (saved "") first, then the modes in the order given. `saved` is the saved
+// fullscreen_exclusive_mode; one the list lacks selects the desktop entry, as the SDK falls back to the desktop mode.
+OutputSizeList ExclusiveSizeList(const std::vector<ExclusiveMode>& modes, const std::string& saved);
 
 }  // namespace doa4::display

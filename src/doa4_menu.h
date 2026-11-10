@@ -22,6 +22,7 @@
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/window_listener.h>
 
+#include "doa4_display.h"
 #include "doa4_extras.h"
 #include "doa4_guest.h"
 #include "doa4_online_tab.h"
@@ -129,6 +130,7 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
 
  protected:
   void OnDraw(ImGuiIO& io) override;
+  void OnShow() override { exclusive_modes_built_ = exclusive_modes_pending_ = exclusive_modes_from_active_ = false; }
   void OnKeyDown(rex::ui::KeyEvent& e) override;
   void OnMouseDown(rex::ui::MouseEvent& e) override;
 
@@ -136,6 +138,13 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   enum class Listen { kNone, kPad, kKey };
 
   void DrawVideoSettings();
+  // The three display-mode radios, VSync and Output size (R60: never locked, memory only near a session).
+  void DrawDisplayRows();
+  // Fills exclusive_modes_ (once per menu opening, from host_.defer).
+  void EnsureExclusiveModes();
+  // Saves `name` then sets it; near a session (SessionLocked) only sets it in memory. The one choice every
+  // presentation row and the start-up box share.
+  bool SetPresentationSetting(std::string_view name, std::string_view value, bool quote);
   void DrawSpeakerSettings();
   void DrawLanguageSettings();
   // The Game tab's "Skip the intro at start-up" box (doa4_skip_intro, read at the next start; doa4_intro_skip.h).
@@ -190,6 +199,10 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   bool pad_connected_ = false;  // last non-busy GetRawState answer for slot_
   double next_save_poll_ = 0.0;  // ImGui time of the next "has the game saved?" check
   bool wipe_armed_ = false;      // the first press of "Wipe unlocks..." happened
+  std::vector<display::ExclusiveMode> exclusive_modes_;  // the Output size row's cache, see EnsureExclusiveModes
+  bool exclusive_modes_built_ = false;
+  bool exclusive_modes_pending_ = false;
+  bool exclusive_modes_from_active_ = false;  // listed while exclusive was on (its desktop entry is then unreliable)
   std::string status_;     // last error, shown in red
   OnlineTab online_tab_;
   std::string logged_tab_line_;  // the last "[doa4][NET] tab: ..." line written
