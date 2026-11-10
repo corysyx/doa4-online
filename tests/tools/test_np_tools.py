@@ -3844,7 +3844,14 @@ def test_lag_run_rules(root):
     for f in lag.SNAPSHOT_FILES:
         open(os.path.join(snap, f), "w").write("x")
     for extra, needle in ((["--mode", "exclusive", "--kind", "offline"], "Task 11"),
-                          (["--mode", "borderless", "--kind", "pair", "--affinity", "0x3"], "only the joiner")):
+                          (["--mode", "borderless", "--kind", "pair", "--affinity", "0x3"], "only the joiner"),
+                          # Task 9b --set: a mode key, a malformed item, a key twice
+                          (["--mode", "borderless", "--kind", "offline", "--set", "fullscreen=false"], "already set"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync"], "not KEY=VALUE"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "Present_Vsync=true"], "not KEY=VALUE"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "audio_mute=false"], "already set"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=true", "--set",
+                            "present_vsync=false"], "already set")):
         p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_lag.py"), "run", "c", "--bin", snap, "--out",
                             os.path.join(root, "out"), *extra], capture_output=True, text=True, timeout=60)
         check(p.returncode != 0 and needle in p.stderr and not os.path.exists(os.path.join(root, "out", "lag")),
@@ -3855,6 +3862,15 @@ def test_lag_run_rules(root):
     check(on_disk == b"audio_mute = true\nfullscreen = true\n" and sha == hashlib.sha256(on_disk).hexdigest(),
           f"np_lag make_bin: the toml {on_disk!r}")
     check(lag.MODE_KEYS["windowed"] == {"fullscreen": "false"}, "np_lag: windowed is fullscreen = false")
+    # Task 9b --set: the measured game's toml gets the mode's key, then each --set line as written, in order
+    keys = lag.run_keys(lag.MODE_KEYS["borderless"], ["present_vsync=true", "x_y=2"])
+    check(list(keys.items()) == [("fullscreen", "true"), ("present_vsync", "true"), ("x_y", "2")], f"np_lag run_keys: {keys}")
+    check(lag.MODE_KEYS["borderless"] == {"fullscreen": "true"}, "np_lag run_keys: the mode's keys are not changed")
+    text2, sha2 = lag.make_bin(snap, os.path.join(root, "bin_v"), keys)
+    on_disk2 = open(os.path.join(root, "bin_v", "dead_or_alive_4.toml"), "rb").read()
+    check(on_disk2 == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\nx_y = 2\n" and
+          sha2 == hashlib.sha256(on_disk2).hexdigest(), f"np_lag make_bin with --set: the toml {on_disk2!r}")
+    check(lag.run_keys(lag.MODE_KEYS["windowed"], []) == {"fullscreen": "false"}, "np_lag run_keys: no --set, the mode's keys")
     # a session run's environment: the trace into its folder; --fix none adds DOA4_NP_FIX=none, nothing without it
     check(lag.session_env("L") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L"], f"np_lag session_env: {lag.session_env('L')}")
     check(lag.session_env("L", "none") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L", "DOA4_NP_FIX=none"],

@@ -5,12 +5,13 @@ the per-stage breakdown.
   py -3 -I tools/np_lag.py run CONFIG --mode windowed|borderless|exclusive --kind plain|offline|pair --bin <snapshot folder>
       [--seconds 300 (plain)]
       --out <folder> [--repeats 3] [--seed 7] [--affinity MASK] [--script tools/np_scripts/single.txt]
-      [--userdata DIR] [--cache DIR] [--timeout S] [--first N]
+      [--userdata DIR] [--cache DIR] [--timeout S] [--first N] [--set KEY=VALUE ...]
   py -3 -I tools/np_lag.py analyse --out <folder> [--presentmon <capture.csv>] [--window-start 3394] [--window-frames 3600]
   py -3 -I tools/np_lag.py check <lagtrace csv> [--window-start N --window-frames N] [--min-coverage 99]
 
 run: one configuration per invocation, --repeats runs (named CONFIG_r1.. from --first). Each run gets a fresh copy of the
-snapshot (<out>/bin_<run>[_host|_joiner]/) with a dead_or_alive_4.toml written here (audio_mute = true, the mode's keys), and
+snapshot (<out>/bin_<run>[_host|_joiner]/) with a dead_or_alive_4.toml written here (audio_mute = true, the mode's keys,
+then each --set KEY=VALUE line as written, e.g. --set present_vsync=true; the measured game only, never a pair's joiner), and
 a fresh trace folder <out>/lag/<run>/ (DOA4_LAG_DIR). plain: an ordinary launch, visible, with no netplay session (no
 DOA4_NP: no record/replay, no determinism layer), ended by the driver after --seconds; the title idles into the game's own
 attract demo, whose rounds are the measured frames (launch_plain). offline: a record SESSION (the harness reference: the
@@ -450,6 +451,21 @@ def label_run(samples, ours):
     return ("shared" if foreign else "clean"), foreign
 
 
+def run_keys(mode_keys, sets):
+    """The toml keys of the measured game: the mode's keys, then each --set "KEY=VALUE" (KEY lower-case letters, digits
+    and _, VALUE written as given). Refused (exit, nothing started): a malformed item, a key the mode or audio_mute
+    already sets, a key given twice."""
+    keys = dict(mode_keys)
+    for item in sets:
+        k, sep, v = item.partition("=")
+        if not sep or not k or not v or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in k):
+            sys.exit(f"--set {item}: not KEY=VALUE")
+        if k in keys or k == "audio_mute":
+            sys.exit(f"--set {item}: {k} is already set (by the mode, audio_mute or an earlier --set)")
+        keys[k] = v
+    return keys
+
+
 def make_bin(src, dest, keys):
     if os.path.exists(dest):
         sys.exit(f"bin folder exists: {dest}")
@@ -521,6 +537,7 @@ def cmd_run(a):
     keys = MODE_KEYS[a.mode]
     if keys is None:
         sys.exit(f"--mode {a.mode}: no setting for it yet (Task 11 adds its toml keys to MODE_KEYS)")
+    keys = run_keys(keys, a.set)
     if a.kind == "plain" and a.seconds <= 0:
         sys.exit("--seconds must be positive")
     if a.kind == "pair" and a.affinity:
@@ -832,6 +849,8 @@ def main(argv=None):
     r.add_argument("--userdata", default=os.path.join(np_run.DOA4_ROOT, "np_phase0", "ud_pristine"))
     r.add_argument("--cache", default=os.path.join(np_run.DOA4_ROOT, "ou_runs", "cache"))
     r.add_argument("--timeout", type=float, default=600)
+    r.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                   help="an extra toml line for the measured game (repeatable), e.g. present_vsync=true")
     an = sub.add_parser("analyse")
     an.add_argument("--out", required=True)
     an.add_argument("--presentmon")
