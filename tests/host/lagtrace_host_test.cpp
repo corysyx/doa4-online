@@ -172,15 +172,21 @@ static void TestCsv() {
   r.frame.swap_calls_other = 2;
   r.joined = true;
   r.present = P(9, 300);  // call 300, return 307, flags 1
-  CHECK(CsvLine(r) == "12,111,100,222,307,9,-1,101,105,220,230,300,4,0,1,2,1");
+  r.frame.fight_state = 3;  // the last column; 3, NOT the present flags (1) or swap calls (2) beside it
+  CHECK(h.size() > 12 && h.substr(h.size() - 12) == ",fight_state");
+  CHECK(CsvLine(r) == "12,111,100,222,307,9,-1,101,105,220,230,300,4,0,1,2,1,3");
   r.joined = false;  // unjoined: the present fields are empty, NOT the stored present's times
   r.frame.t_input = 0;
-  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,");
+  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,3");
+  r.frame.fight_state = -1;  // not read: -1, printed (0 is a real state: outside a match)
+  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,-1");
+  r.frame.fight_state = 0;
+  CHECK(CsvLine(r) == "12,,100,222,,9,-1,101,105,220,230,,4,0,1,2,,0");
   // as many fields as the header has columns
   size_t commas_h = 0, commas_l = 0;
   for (char c : h) commas_h += c == ',';
   for (char c : CsvLine(r)) commas_l += c == ',';
-  CHECK(commas_h == 16 && commas_l == commas_h);
+  CHECK(commas_h == 17 && commas_l == commas_h);
 }
 
 // Wrong version excluded: qpc * 1000000 / frequency, which overflows int64 for this tick count.

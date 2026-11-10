@@ -146,7 +146,7 @@ void Stop() {
   g_csv = nullptr;
 }
 
-void OnFrameStart() {
+void OnFrameStart(int32_t fight_state, bool session, bool det_audio) {
   const int64_t now = NowUs();
   const DWORD self = GetCurrentThreadId();
   void* const fiber = GetCurrentFiber();
@@ -154,6 +154,8 @@ void OnFrameStart() {
     g_main.store(self, std::memory_order_relaxed);
     g_main_fiber.store(fiber, std::memory_order_relaxed);
     REXLOG_INFO("[doa4][LAG] lagtrace: the frame hook runs on host thread {}, fiber {}", self, fiber);
+    REXLOG_INFO("[doa4][LAG] lagtrace: at the first frame, netplay session {}, determinism layer audio lockstep {}",
+                session ? "on" : "off", det_audio ? "on" : "off");
   } else if (!OnMain()) {
     if (!g_warned_thread) {
       g_warned_thread = true;
@@ -170,6 +172,7 @@ void OnFrameStart() {
   g_frame = Frame{};
   g_frame.frame = ++g_frames_seen;
   g_frame.t_frame_start = now;
+  g_frame.fight_state = fight_state;
 }
 
 void OnFrameNpDone(int64_t np_frame) {

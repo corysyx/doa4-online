@@ -1964,7 +1964,10 @@ void Shutdown() {
 // ---- Hooks ----
 
 REX_HOOK_RAW(sub_824F4498) {
-  if (doa4::lagtrace::On()) doa4::lagtrace::OnFrameStart();  // the latency trace (doa4_lagtrace.h): the frame's start
+  if (doa4::lagtrace::On()) {  // the latency trace (doa4_lagtrace.h): the frame's start
+    doa4::lagtrace::OnFrameStart(base[doa4::np::kFightState], doa4::np::Active(),
+                                 doa4::np::det::On(doa4::np::det::kAudio));
+  }
   // The language code's frame step (doa4_language_hooks.h): every frame, in a session or not, before the frame's hash.
   doa4::language::OnFrame(base);
   if (doa4::np::Active()) doa4::np::OnFrame(ctx, base);

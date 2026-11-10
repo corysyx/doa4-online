@@ -43,6 +43,7 @@ struct Frame {
   uint32_t pad_calls_other = 0;   // pad reads on other threads while this pass ran
   uint32_t swap_calls_main = 0;   // VdSwap wrapper calls on the main thread in this pass
   uint32_t swap_calls_other = 0;  // VdSwap wrapper calls on other threads (the D3D kick thread) while it ran
+  int32_t fight_state = -1;       // the game's fight sequence byte entering the pass (np_digest.h kFightState; 2: a round)
 };
 
 // One host present (the SDK's rex::pace_stats::LagPresentMark, in microseconds).
@@ -83,7 +84,7 @@ class Joiner {
 
 // The CSV: the header line and one row's line (both without the line end). The first six columns are the plan's
 // (frame, t_input_us, t_frame_start_us, t_guest_swap_us, t_host_present_us, guest_swap_index); the rest name the
-// other points and counts. A time of 0 is an empty field.
+// other points and counts, and the last is fight_state. A time of 0 is an empty field.
 std::string CsvHeader();
 std::string CsvLine(const Row& row);
 
@@ -105,7 +106,9 @@ void Stop();
 
 // The call-outs (main thread unless named): the frame hook's entry, after np::OnFrame, after the frame function;
 // the pad read (any thread); the VdSwap wrapper's entry and return (any thread).
-void OnFrameStart();
+// OnFrameStart: fight_state = the fight sequence byte; session / det_audio = whether a netplay session runs and whether
+// the determinism layer's audio lockstep (its frame pacing wait) is on, logged once at the first frame.
+void OnFrameStart(int32_t fight_state, bool session, bool det_audio);
 void OnFrameNpDone(int64_t np_frame);
 void OnFrameFnDone();
 void OnPad();

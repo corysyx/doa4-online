@@ -46,7 +46,7 @@ static void Field(std::string& line, int64_t v) {
 std::string CsvHeader() {
   return "frame,t_input_us,t_frame_start_us,t_guest_swap_us,t_host_present_us,guest_swap_index,"
          "np_frame,t_np_done_us,t_frame_fn_done_us,t_swap_call_us,t_swap_return_us,t_present_call_us,"
-         "pad_calls_main,pad_calls_other,swap_calls_main,swap_calls_other,present_flags";
+         "pad_calls_main,pad_calls_other,swap_calls_main,swap_calls_other,present_flags,fight_state";
 }
 
 std::string CsvLine(const Row& row) {
@@ -69,6 +69,7 @@ std::string CsvLine(const Row& row) {
   line += ',' + std::to_string(f.swap_calls_other);
   line += ',';
   if (row.joined) line += std::to_string(row.present.flags);
+  line += ',' + std::to_string(f.fight_state);
   return line;
 }
 

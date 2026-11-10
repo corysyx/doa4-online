@@ -3660,13 +3660,14 @@ def test_pair_session_refused(root):
 # ---------------------------------------------------------------------------------------------------------------------
 LAG_COLUMNS = ("frame,t_input_us,t_frame_start_us,t_guest_swap_us,t_host_present_us,guest_swap_index,np_frame,t_np_done_us,"
                "t_frame_fn_done_us,t_swap_call_us,t_swap_return_us,t_present_call_us,pad_calls_main,pad_calls_other,"
-               "swap_calls_main,swap_calls_other,present_flags")
+               "swap_calls_main,swap_calls_other,present_flags,fight_state")
 
 
-def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None):
+def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2):
     """A synthetic lagtrace CSV: `frames` 60 fps frames from np_frame first_np, each with all points (frame start, +0.1 session,
     +0.3 frame fn, +0.5 pad, +9 swap call, +9.2 VdSwap, +9.4 swap return, +11 Present call, +11.4 return; ms). break_swap_at:
-    that row has no swap index and no present (a join miss); negative_at: that row's Present return is before its call."""
+    that row has no swap index and no present (a join miss); negative_at: that row's Present return is before its call;
+    fight(i): row i's fight_state (2, a round, by default)."""
     lines = [LAG_COLUMNS]
     for i in range(frames):
         t = 1_000_000 + i * 16_667
@@ -3676,7 +3677,7 @@ def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None)
         if i == negative_at:
             ret = call - 50
         v = [i + 1, t + 500, t, t + 9_200, ret, swap, first_np + i, t + 100, t + 300, t + 9_000, t + 9_400, call, 4, 0, 1, 0,
-             1 if call else None]
+             1 if call else None, fight(i)]
         lines.append(",".join("" if x is None else str(x) for x in v))
     with open(path, "w", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
