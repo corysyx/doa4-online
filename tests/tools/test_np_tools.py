@@ -3827,6 +3827,56 @@ def test_lag_run_rules(root):
     check(on_disk == b"audio_mute = true\nfullscreen = true\n" and sha == hashlib.sha256(on_disk).hexdigest(),
           f"np_lag make_bin: the toml {on_disk!r}")
     check(lag.MODE_KEYS["windowed"] == {"fullscreen": "false"}, "np_lag: windowed is fullscreen = false")
+    # a session run's environment: the trace into its folder; --fix none adds DOA4_NP_FIX=none, nothing without it
+    check(lag.session_env("L") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L"], f"np_lag session_env: {lag.session_env('L')}")
+    check(lag.session_env("L", "none") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L", "DOA4_NP_FIX=none"],
+          f"np_lag session_env with --fix none: {lag.session_env('L', 'none')}")
+
+
+def test_lag_plain(root):
+    # Task 7 Resume 1 (R47): a plain launch has no session (np_frame -1); its window is the frames of a round (fight_state 2)
+    lag = load("np_lag")
+    # 100 frames: 0-19 title (0), 20-49 a round (2), 50-59 round over (3), 60-89 a round again (2), 90-99 the result (5)
+    states = [0] * 20 + [2] * 30 + [3] * 10 + [2] * 30 + [5] * 10
+    rows = lag.read_trace(lag_trace(os.path.join(root, "p.csv"), 100, first_np=-1, fight=lambda i: states[i]))
+    for r in rows:
+        r["np_frame"] = -1
+    win = lag.window_rows(rows, 0, 45, fight=True)
+    check(len(win) == 45 and [r["frame"] for r in win[:2]] == [21, 22] and win[30]["frame"] == 61 and
+          all(r["fight_state"] == 2 for r in win), f"np_lag fight window: the first 45 round frames: {[r['frame'] for r in win][:3]} .. {len(win)}")
+    check(lag.window_rows(rows, 0, 3600, fight=True) == [r for r in rows if r["fight_state"] == 2],
+          "np_lag fight window: fewer round frames than asked: all of them")
+    check(lag.window_rows(rows) == [], "np_lag: the np_frame window of a plain trace is empty (NOT the fight frames)")
+    # fps over a window of two rounds counts only consecutive frames: the 10-frame gap is not a long frame
+    check(abs(lag.fps(win) - 1e6 / 16_667) < 1e-6, f"np_lag fps over two rounds: {lag.fps(win)}")
+    check(lag.loop_tail(win) and len(lag.loop_tail(win)) == 43, f"np_lag loop tail over two rounds: {len(lag.loop_tail(win))} intervals")
+    # check --fight end to end
+    path = os.path.join(root, "p2.csv")
+    lag_trace(path, 100, first_np=-1, fight=lambda i: states[i])
+    p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_lag.py"), "check", path, "--fight", "--window-frames", "60"],
+                       capture_output=True, text=True, timeout=60)
+    check(p.returncode == 0 and "the first 60 frames with fight_state 2: 60 frames" in p.stdout and "check ok" in p.stdout,
+          f"np_lag check --fight: {p.returncode} {p.stdout}")
+    # launch_plain: no DOA4_NP (no session), the trace switch passed, no real controller, shown; the stand-in exits at once
+    run = os.path.join(root, "plain_r1")
+    os.environ["FAKE_GAME_PYTHON"] = sys.executable  # the stand-in's .cmd runs this interpreter (launch_plain passes os.environ on)
+    try:
+        code, how = lag.launch_plain(os.path.join(HERE, "fake_offline_game.cmd"), run,
+                                     {"DOA4_LAG_TRACE": "1", "DOA4_LAG_DIR": root}, 30, make_userdata(root), None, show=True)
+    finally:
+        del os.environ["FAKE_GAME_PYTHON"]
+    log = open(os.path.join(run, "game.log")).read()
+    cmd = open(os.path.join(run, "command.txt")).read()
+    check(code == 0 and "exited by itself" in how, f"np_lag launch_plain: the stand-in ran and exited: {code} {how}")
+    check("DOA4_NP=(unset)" in log and "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0000/0x0000" in log,
+          f"np_lag launch_plain: no session switch, no real controller: {log}")
+    check("DOA4_LAG_TRACE=1" in cmd and "DOA4_NP=" not in cmd and os.path.isdir(os.path.join(run, "ud")) and
+          open(os.path.join(run, "pid.txt")).read().strip().isdigit(), f"np_lag launch_plain: command.txt, ud, pid.txt: {cmd}")
+    try:
+        lag.launch_plain(os.path.join(HERE, "fake_offline_game.cmd"), run, {}, 30, make_userdata(os.path.join(root, "u2")), None)
+        check(False, "np_lag launch_plain refuses an existing run folder")
+    except SystemExit as e:
+        check("run folder exists" in str(e), f"np_lag launch_plain refuses an existing run folder: {e}")
 
 
 def main():

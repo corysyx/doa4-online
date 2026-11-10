@@ -2,7 +2,8 @@
 trace on (DOA4_LAG_TRACE=1, src/doa4_lagtrace.h), and turns the traces (lagtrace_<pid>.csv) and a PresentMon capture into
 the per-stage breakdown.
 
-  py -3 -I tools/np_lag.py run CONFIG --mode windowed|borderless|exclusive --kind offline|pair --bin <snapshot folder>
+  py -3 -I tools/np_lag.py run CONFIG --mode windowed|borderless|exclusive --kind plain|offline|pair --bin <snapshot folder>
+      [--seconds 300 (plain)]
       --out <folder> [--repeats 3] [--seed 7] [--affinity MASK] [--script tools/np_scripts/single.txt]
       [--userdata DIR] [--cache DIR] [--timeout S] [--first N]
   py -3 -I tools/np_lag.py analyse --out <folder> [--presentmon <capture.csv>] [--window-start 3394] [--window-frames 3600]
@@ -10,7 +11,10 @@ the per-stage breakdown.
 
 run: one configuration per invocation, --repeats runs (named CONFIG_r1.. from --first). Each run gets a fresh copy of the
 snapshot (<out>/bin_<run>[_host|_joiner]/) with a dead_or_alive_4.toml written here (audio_mute = true, the mode's keys), and
-a fresh trace folder <out>/lag/<run>/ (DOA4_LAG_DIR). offline: tools/np_run.py record --show-window with --script and --seed
+a fresh trace folder <out>/lag/<run>/ (DOA4_LAG_DIR). plain: an ordinary launch, visible, with no netplay session (no
+DOA4_NP: no record/replay, no determinism layer), ended by the driver after --seconds; the title idles into the game's own
+attract demo, whose rounds are the measured frames (launch_plain). offline: a record SESSION (the harness reference: the
+determinism layer paces it): tools/np_run.py record --show-window with --script and --seed
 (--affinity passed through). pair: tools/np_pair.py --show-host (the host is measured, in the mode; the joiner stays
 minimized, windowed); --affinity is refused (np_pair limits only the joiner). Before each run: dead_or_alive_4.exe,
 deadlock.exe and RocketLeague.exe must not run and UDP 7200 must be free (exit 9, nothing started); during it the process
@@ -19,7 +23,8 @@ appeared, else "clean". <out>/<run>_meta.txt holds the configuration, the toml a
 <out>/<run>_console.log the runner's output. Exclusive fullscreen has no setting yet (Task 11 adds its toml keys here).
 
 analyse: every run with a _meta.txt in --out. Rows are the trace's frames whose np_frame (the session's frame) lies in the
-window (default 3394..6993: the single.txt fight's 60 s of random input). The points of a frame are put in their measured
+window (default 3394..6993: the single.txt fight's 60 s of random input); for a plain run, the first --window-frames
+frames whose fight_state is 2 (a round being fought). The points of a frame are put in their measured
 order (median offset from the frame start) and every stage between consecutive points gets its median, p95 and p99 (ms),
 per run and pooled, with the per-run medians and their spread (max - min). PresentMon rows (--presentmon, a capture made
 with --v1_metrics --qpc_time) of the run's game process are joined to the game's presents by the present call's QPC time
@@ -48,6 +53,7 @@ import np_run  # noqa: E402
 
 WINDOW_START = 3394  # single.txt: the first frame of "random 600" (the fight is on; shot f003394 shows it)
 WINDOW_FRAMES = 3600  # 60 s of random fighting at 60 fps; the script quits at frame 6994
+FIGHT_ROUND = 2  # src/net/np_digest.h kFightState: 2 = a round being fought (the trace's fight_state column)
 BUSY_IMAGES = ("dead_or_alive_4.exe", "deadlock.exe", "RocketLeague.exe")
 SAMPLE_S = 10
 SNAPSHOT_FILES = ("dead_or_alive_4.exe", "rexruntime.dll", "TracyClient.dll")
@@ -126,7 +132,11 @@ def read_trace(path):
     return rows
 
 
-def window_rows(rows, start=WINDOW_START, frames=WINDOW_FRAMES):
+def window_rows(rows, start=WINDOW_START, frames=WINDOW_FRAMES, fight=False):
+    """The measured rows. Default: np_frame start..start+frames-1 (a session's script frames). fight=True (a plain launch,
+    no session, so no np_frame): the first `frames` rows whose fight_state is FIGHT_ROUND (a round being fought)."""
+    if fight:
+        return [r for r in rows if r.get("fight_state") == FIGHT_ROUND][:frames]
     return [r for r in rows if r["np_frame"] is not None and start <= r["np_frame"] < start + frames]
 
 
@@ -179,10 +189,10 @@ def loop_tail(rows):
 
 
 def fps(rows):
-    if len(rows) < 2:
-        return None
-    span = rows[-1]["t_frame_start_us"] - rows[0]["t_frame_start_us"]
-    return (len(rows) - 1) * 1e6 / span if span > 0 else None
+    """1e6 / the mean interval between consecutive frames' starts (rows that follow each other in the trace only, so a
+    window made of several fights does not count the gaps between them)."""
+    d = [b["t_frame_start_us"] - a["t_frame_start_us"] for a, b in zip(rows, rows[1:]) if b["frame"] == a["frame"] + 1]
+    return 1e6 * len(d) / sum(d) if d and sum(d) > 0 else None
 
 
 # ---- PresentMon -----------------------------------------------------------------------------------------------------
@@ -330,10 +340,66 @@ def make_bin(src, dest, keys):
     return text, hashlib.sha256(open(path, "rb").read()).hexdigest()
 
 
+def session_env(lag, fix=None):
+    """The KEY=VALUE list a traced session run gets: the trace on into `lag`, and DOA4_NP_FIX=`fix` when given."""
+    env = ["DOA4_LAG_TRACE=1", f"DOA4_LAG_DIR={lag}"]
+    if fix is not None:
+        env.append(f"DOA4_NP_FIX={fix}")
+    return env
+
+
+def launch_plain(exe, run, extra_env, seconds, userdata, cache, affinity=None, show=True):
+    """An ordinary launch (no netplay session: no DOA4_NP, so no record/replay and no determinism layer): a fresh copy of
+    `userdata` in <run>/ud, the game log in <run>/game.log, command.txt and pid.txt as np_run writes them. The game's
+    environment is this one without its DOA4_ variables, plus SDL_PADS (no real controller) and `extra_env`. show: the
+    window state the game asks for (else minimized without activation). The game runs `seconds`, then this ends it
+    (TerminateProcess: its shutdown code does not run). Returns (exit code, how it ended)."""
+    if os.path.exists(run):
+        sys.exit(f"run folder exists: {run}")
+    ud = os.path.join(run, "ud")
+    shutil.copytree(userdata, ud)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DOA4_")}
+    env.setdefault(*np_run.SDL_PADS)
+    env.update(extra_env)
+    args = [exe, f"--game_data_root={np_run.GAME_DIR}", f"--user_data_root={ud}", f"--log_file={os.path.join(run, 'game.log')}"]
+    if cache:
+        os.makedirs(cache, exist_ok=True)
+        args.append(f"--cache_path={cache}")
+    with open(os.path.join(run, "command.txt"), "w") as f:
+        f.write(" ".join(args) + "\n")
+        for k in sorted(env):
+            if k.startswith("DOA4_") or k == np_run.SDL_PADS[0]:
+                f.write(f"{k}={env[k]}\n")
+    flags = 0x00000004 if affinity else 0  # CREATE_SUSPENDED: limit the CPUs before any thread runs
+    p = subprocess.Popen(args, env=env, cwd=os.path.dirname(os.path.abspath(exe)), creationflags=flags,
+                         startupinfo=None if show else np_run.hidden_startupinfo(),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if affinity:
+        try:
+            job = np_run.limit_cpus(int(p._handle), int(affinity, 0))  # noqa: F841 (the job lives while this runs)
+        except OSError as e:
+            p.kill()
+            sys.exit(f"affinity {affinity} refused, the game was not run: {e}")
+        import ctypes
+        ctypes.windll.ntdll.NtResumeProcess(ctypes.c_void_p(int(p._handle)))
+        with open(os.path.join(run, "command.txt"), "a") as f:
+            f.write(f"affinity {affinity}\n")
+    with open(os.path.join(run, "pid.txt"), "w") as f:
+        f.write(str(p.pid))
+    try:
+        code = p.wait(timeout=seconds)
+        return code, f"the game exited by itself ({code}) before {seconds:g} s"
+    except subprocess.TimeoutExpired:
+        p.kill()
+        return p.wait(), f"ended by the driver after {seconds:g} s (TerminateProcess)"
+
+
 def cmd_run(a):
     keys = MODE_KEYS[a.mode]
     if keys is None:
         sys.exit(f"--mode {a.mode}: no setting for it yet (Task 11 adds its toml keys to MODE_KEYS)")
+    if a.kind == "plain" and a.seconds <= 0:
+        sys.exit("--seconds must be positive")
     if a.kind == "pair" and a.affinity:
         sys.exit("--affinity: np_pair limits only the joiner; the pair configuration is run without it")
     os.makedirs(a.out, exist_ok=True)
@@ -349,9 +415,14 @@ def cmd_run(a):
             return 9
         lag = os.path.join(a.out, "lag", name)
         os.makedirs(lag)
-        env = ["DOA4_LAG_TRACE=1", f"DOA4_LAG_DIR={lag}"]
+        env = session_env(lag, a.fix)
         tomls = {}
-        if a.kind == "offline":
+        if a.kind == "plain":
+            b = os.path.join(a.out, f"bin_{name}")
+            tomls["game"] = make_bin(a.bin, b, keys)
+            run_dirs = [os.path.join(runs, name)]
+            cmd = ["launch_plain", os.path.join(b, "dead_or_alive_4.exe"), run_dirs[0], f"{a.seconds:g} s"]
+        elif a.kind == "offline":
             b = os.path.join(a.out, f"bin_{name}")
             tomls["game"] = make_bin(a.bin, b, keys)
             cmd = [sys.executable, "-I", os.path.join(HERE, "np_run.py"), "record", name,
@@ -376,14 +447,21 @@ def cmd_run(a):
         with open(os.path.join(a.out, f"{name}_console.log"), "wb") as f:
             f.write((" ".join(cmd) + "\n").encode())
             f.flush()
-            p = subprocess.run(cmd, cwd=REPO, stdout=f, stderr=subprocess.STDOUT, creationflags=0x08000000)
+            if a.kind == "plain":
+                code, how = launch_plain(cmd[1], cmd[2], {"DOA4_LAG_TRACE": "1", "DOA4_LAG_DIR": lag}, a.seconds,
+                                         a.userdata, a.cache, a.affinity, show=True)
+                f.write(f"{how}\n".encode())
+                p = subprocess.CompletedProcess(cmd, code)
+            else:
+                p = subprocess.run(cmd, cwd=REPO, stdout=f, stderr=subprocess.STDOUT, creationflags=0x08000000)
             f.write(f"exit {p.returncode}\n".encode())
         sampler.stop.set()
         sampler.join()
         label, foreign = label_run(sampler.samples, own_pids(run_dirs))
         with open(os.path.join(a.out, f"{name}_meta.txt"), "w", newline="\n") as f:
             f.write(f"config {a.config}\nrun {name}\nmode {a.mode}\nkind {a.kind}\nseed {a.seed}\nbin {a.bin}\n")
-            f.write(f"affinity {a.affinity or 'none'}\nexit {p.returncode}\nseconds {time.time() - t0:.0f}\n")
+            f.write(f"affinity {a.affinity or 'none'}\nfix {a.fix if a.fix is not None else 'default'}\n")
+            f.write(f"exit {p.returncode}\nseconds {time.time() - t0:.0f}\n")
             f.write(f"label {label}\nsamples {len(sampler.samples)}\n")
             for what in foreign:
                 f.write(f"seen {what}\n")
@@ -410,7 +488,7 @@ def read_meta(path):
 def trace_for_run(out, meta):
     """(trace path, game pid) of a run: offline the np_run game's pid, pair the host's session process (ctl/pids.txt)."""
     runs = os.path.join(out, "runs")
-    if meta["kind"] == "offline":
+    if meta["kind"] in ("offline", "plain"):
         pid = int(open(os.path.join(runs, meta["run"], "pid.txt")).read().strip())
     else:
         pid = None
@@ -444,8 +522,12 @@ def analyse_run(out, meta, presentmon, start, frames):
     if not path or not os.path.exists(path):
         res["error"] = f"no trace ({path})"
         return res
-    rows = window_rows(read_trace(path), start, frames)
+    all_rows = read_trace(path)
+    rows = window_rows(all_rows, start, frames, fight=meta["kind"] == "plain")
     res["rows"] = rows
+    res["fight_rows"] = sum(1 for r in rows if r.get("fight_state") == FIGHT_ROUND)
+    res["fight_total"] = sum(1 for r in all_rows if r.get("fight_state") == FIGHT_ROUND)
+    res["has_fight"] = any(r.get("fight_state") is not None for r in all_rows)
     n, ws, joined, neg = check_trace(rows)
     res.update(frames=n, with_swap=ws, joined=joined, negatives=neg, fps=fps(rows))
     res["pad_main"] = statistics.median([r["pad_calls_main"] for r in rows]) if rows else None
@@ -454,7 +536,7 @@ def analyse_run(out, meta, presentmon, start, frames):
     res["swap_main_hist"] = {}
     for r in rows:
         res["swap_main_hist"][r["swap_calls_main"]] = res["swap_main_hist"].get(r["swap_calls_main"], 0) + 1
-    run_dir = os.path.join(out, "runs", meta["run"] if meta["kind"] == "offline" else meta["run"] + "_host")
+    run_dir = os.path.join(out, "runs", meta["run"] if meta["kind"] in ("offline", "plain") else meta["run"] + "_host")
     game_log = os.path.join(run_dir, "game.log")
     res["game_log"] = game_log
     res["pm"] = None
@@ -502,6 +584,8 @@ def analyse(out, presentmon, start, frames):
             cov = 100.0 * r["joined"] / r["frames"] if r["frames"] else 0.0
             lines.append(f"- {m['run']}: {m['mode']} {m['kind']}, pid {r['pid']}, {m.get('label')}, exit {m.get('exit')}, "
                          f"{r['frames']} frames, fps {fmt(r['fps'])}, join {r['joined']}/{r['frames']} ({cov:.2f}%), "
+                         + (f"in a round (fight_state {FIGHT_ROUND}) {r['fight_rows']} of the window's frames, {r['fight_total']} in "
+                            f"the whole trace, " if r["has_fight"] else "no fight_state column, ") +
                          f"negative stage times {len(r['negatives'])}, pad reads per frame (main, median) {r['pad_main']}, "
                          f"pad reads on other threads {r['pad_other']}, guest swaps per frame (main) {r['swap_main_hist']}, "
                          f"swap calls on other threads {r['swaps_other']}")
@@ -552,10 +636,12 @@ def _s(s):
 
 
 def cmd_check(a):
-    rows = window_rows(read_trace(a.csv), a.window_start, a.window_frames)
+    rows = window_rows(read_trace(a.csv), a.window_start, a.window_frames, fight=a.fight)
     n, ws, joined, neg = check_trace(rows)
     cov = 100.0 * joined / n if n else 0.0
-    print(f"{a.csv}: window np_frame {a.window_start}..{a.window_start + a.window_frames - 1}: {n} frames, "
+    where = (f"window: the first {a.window_frames} frames with fight_state {FIGHT_ROUND}" if a.fight else
+             f"window np_frame {a.window_start}..{a.window_start + a.window_frames - 1}")
+    print(f"{a.csv}: {where}: {n} frames, "
           f"{ws} with a guest swap, {joined} joined to a host present ({cov:.2f}% of the frames); "
           f"negative stage times {len(neg)}")
     for f, x, y, ms in neg[:10]:
@@ -577,12 +663,15 @@ def main(argv=None):
     r = sub.add_parser("run")
     r.add_argument("config")
     r.add_argument("--mode", required=True, choices=list(MODE_KEYS))
-    r.add_argument("--kind", required=True, choices=["offline", "pair"])
+    r.add_argument("--kind", required=True, choices=["plain", "offline", "pair"])
+    r.add_argument("--seconds", type=float, default=300, help="plain: how long the game runs before the driver ends it")
     r.add_argument("--bin", required=True, help="the snapshot folder (np_bin/<tag>: exe, rexruntime.dll, TracyClient.dll)")
     r.add_argument("--out", required=True)
     r.add_argument("--repeats", type=int, default=3)
     r.add_argument("--first", type=int, default=1, help="the first repeat's number (a re-run continues the count)")
     r.add_argument("--seed", type=int, default=7)
+    r.add_argument("--fix", help="offline/pair: the session's DOA4_NP_FIX (e.g. none: the determinism layer off, so "
+                                 "the record session keeps the script input but not the layer's pacing)")
     r.add_argument("--affinity", help="logical CPU mask passed to np_run.py --affinity (offline only)")
     r.add_argument("--script", default=os.path.join(HERE, "np_scripts", "single.txt"))
     r.add_argument("--userdata", default=os.path.join(np_run.DOA4_ROOT, "np_phase0", "ud_pristine"))
@@ -598,6 +687,7 @@ def main(argv=None):
     c.add_argument("--window-start", type=int, default=WINDOW_START)
     c.add_argument("--window-frames", type=int, default=WINDOW_FRAMES)
     c.add_argument("--min-coverage", type=float, default=99.0)
+    c.add_argument("--fight", action="store_true", help="window: the first --window-frames frames of a round (plain launch)")
     a = ap.parse_args(argv)
     if a.cmd == "run":
         return cmd_run(a)
