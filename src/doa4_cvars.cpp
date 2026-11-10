@@ -55,6 +55,13 @@ REXCVAR_DEFINE_BOOL(netplay_show_stats, false, "DOA4",
                     "Online play: show the connection stats line");
 REXCVAR_DEFINE_BOOL(netplay_upnp, true, "DOA4",
                     "Online play: open the port on the router (UPnP) when hosting");
+// Lobby launcher (DOA4 Lobby): set on the command line for one start, never saved. They press Host / Join once the
+// Online tab would allow it, and the host presses Start online session once the other player is in; only in the
+// process the player started (a session process and the lobby it returns to are relaunches: no rematch loop).
+REXCVAR_DEFINE_BOOL(netplay_autohost, false, "DOA4",
+                    "Online play: host as soon as the game allows it, then start the session once the other player is in");
+REXCVAR_DEFINE_STRING(netplay_autojoin, "", "DOA4",
+                      "Online play: join this code as soon as the game allows it (retried for 2 minutes)");
 // Extras tab: DOAX2 swimsuits (doa4_suits_bust.h).
 REXCVAR_DEFINE_BOOL(doa4_suits_full_bust, false, "DOA4",
                     "DOAX2 swimsuits: full DOAX2 up and down breast movement");

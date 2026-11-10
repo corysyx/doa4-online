@@ -501,6 +501,12 @@ class DeadOrAlive4App : public rex::ReXApp {
                  std::chrono::system_clock::now().time_since_epoch()).count()
           << '\n';
     }
+    // Auto host / join (lobby launcher): only the process the player started. A session process (hand-off), the
+    // lobby it returns to (after session) and any other relaunch (DOA4_WAIT_PID, cleared later in OnPreSetup) do not.
+    {
+      const char* wait_pid = std::getenv("DOA4_WAIT_PID");
+      auto_first_process_ = !had_handoff && !AfterSession() && !(wait_pid && *wait_pid);
+    }
     // fix round M2: like DOA4_WAIT_PID, the marker is for this process only (its own relaunches start clean)
     SetEnvironmentVariableW(L"DOA4_NP_AFTER_SESSION", nullptr);
     _wputenv(L"DOA4_NP_AFTER_SESSION=");
@@ -1093,6 +1099,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     SyncCostumeCounts();
     LatchSuitsRestart();  // the Esc import ended (a timer, not a painted frame)
     PollExtrasRequest();
+    AutoConnectTick();
     if (rex::cvar::Query<bool>("doa4_show_fps")) {
       const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
       fps_meter_.Sample(GpuSwaps(), now);
@@ -1102,6 +1109,85 @@ class DeadOrAlive4App : public rex::ReXApp {
       }
     } else {
       fps_meter_ = {};  // on again later: a new window, not an average over the time it was off
+    }
+  }
+
+  // Lobby launcher: --netplay_autohost presses Host, then Start online session once the joiner is in and the tab
+  // would enable it; --netplay_autojoin=<code> presses Join, again after each failed attempt (the host may not be
+  // listening yet), for up to 2 minutes. The same callbacks as the Online tab's buttons, gated on the same view
+  // (join_host_enabled: no update check or swimsuit import running). UI thread (UiTick, every 100 ms).
+  void AutoConnectTick() {
+    using Clock = std::chrono::steady_clock;
+    if (auto_stage_ == AutoStage::kDone) return;
+    const Clock::time_point now = Clock::now();
+    if (auto_stage_ == AutoStage::kIdle) {
+      auto_host_ = rex::cvar::Query<bool>("netplay_autohost");
+      auto_join_ = rex::cvar::Query<std::string>("netplay_autojoin");
+      if ((!auto_host_ && auto_join_.empty()) || !auto_first_process_) {
+        if (auto_host_ || !auto_join_.empty()) REXLOG_INFO("[doa4][NET] auto connect: not in a relaunched process");
+        auto_stage_ = AutoStage::kDone;
+        return;
+      }
+      if (auto_host_ && !auto_join_.empty()) {
+        REXLOG_WARN("[doa4][NET] auto connect: both netplay_autohost and netplay_autojoin given; hosting");
+        auto_join_.clear();
+      }
+      auto_since_ = now;
+      auto_stage_ = AutoStage::kWaiting;
+      REXLOG_INFO("[doa4][NET] auto connect: {}", auto_host_ ? "host" : "join " + auto_join_);
+    }
+    if (now - auto_since_ > std::chrono::minutes(2)) {
+      REXLOG_WARN("[doa4][NET] auto connect: gave up after 2 minutes (use the Online tab)");
+      auto_stage_ = AutoStage::kDone;
+      return;
+    }
+    const doa4::online_view::In in = OnlineViewIn(false);
+    if (in.in_session) {
+      auto_stage_ = AutoStage::kDone;
+      return;
+    }
+    const doa4::online_view::View view = doa4::online_view::Describe(in);
+    using St = doa4::np::online::State;
+    const St state = in.lobby_open ? in.lobby.state : St::kOffline;
+    // Host / Join are queued to the lobby's thread: its state can read Offline for a moment after a press
+    const bool settled = now - auto_pressed_at_ > std::chrono::seconds(3);
+    switch (auto_stage_) {
+      case AutoStage::kWaiting:
+        if (!view.join_host_enabled || state != St::kOffline || now < auto_retry_at_) return;
+        EnsureLobby();
+        if (!lobby_) return;
+        auto_pressed_at_ = now;
+        if (auto_host_) {
+          lobby_->Host(0);
+          auto_stage_ = AutoStage::kHosting;
+          REXLOG_INFO("[doa4][NET] auto connect: Host pressed");
+        } else {
+          lobby_->Join(auto_join_);
+          auto_stage_ = AutoStage::kJoining;
+          REXLOG_INFO("[doa4][NET] auto connect: Join pressed ({})", auto_join_);
+        }
+        break;
+      case AutoStage::kHosting:
+        if (state == St::kOffline && settled) {  // the host stopped (the player pressed Disconnect, or it failed): stop helping
+          REXLOG_INFO("[doa4][NET] auto connect: the lobby went offline; stopped");
+          auto_stage_ = AutoStage::kDone;
+        } else if (lobby_ && view.show_start && view.start_enabled) {
+          lobby_->StartSession();
+          auto_stage_ = AutoStage::kDone;
+          REXLOG_INFO("[doa4][NET] auto connect: Start online session pressed");
+        }
+        break;
+      case AutoStage::kJoining:
+        if (state == St::kOffline && settled) {  // no answer yet (the host's game may still be starting): try again shortly
+          auto_retry_at_ = now + std::chrono::seconds(2);
+          auto_stage_ = AutoStage::kWaiting;
+        } else if (state != St::kOffline && state != St::kConnecting) {
+          auto_stage_ = AutoStage::kDone;  // connected: the host starts the session
+          REXLOG_INFO("[doa4][NET] auto connect: joined");
+        }
+        break;
+      default:
+        break;
     }
   }
 
@@ -1701,6 +1787,13 @@ class DeadOrAlive4App : public rex::ReXApp {
   // The cursor's last decision; none of the three values at first, so the first tick applies its answer.
   doa4::display::CursorAction cursor_action_ = static_cast<doa4::display::CursorAction>(-1);
   uint64_t net_build_id_ = 0;                      // np::BuildIdValue(), hashed on first use (UI thread)
+  // Auto host / join (AutoConnectTick; UI thread). auto_first_process_ is set in NetplayAtStart.
+  enum class AutoStage { kIdle, kWaiting, kHosting, kJoining, kDone };
+  AutoStage auto_stage_ = AutoStage::kIdle;
+  bool auto_first_process_ = false;
+  bool auto_host_ = false;
+  std::string auto_join_;
+  std::chrono::steady_clock::time_point auto_since_{}, auto_retry_at_{}, auto_pressed_at_{};
   std::unique_ptr<doa4::MenuDialog> menu_;
   std::atomic<bool> menu_open_{false};
   rex::ui::ImGuiDrawer* drawer_ = nullptr;
