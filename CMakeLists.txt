@@ -25,6 +25,8 @@ set(DEADORALIVE4_SOURCES
     src/doa4_afs_overlay.cpp
     src/doa4_afs_vfs.cpp
     src/doa4_display.cpp
+    src/doa4_lagtrace.cpp
+    src/doa4_lagtrace_live.cpp
     src/doa4_language.cpp
     src/doa4_language_hooks.cpp
     src/doa4_title_word.cpp

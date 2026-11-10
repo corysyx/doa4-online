@@ -19,6 +19,7 @@
 
 #include "generated/default/dead_or_alive_4_init.h"
 
+#include "doa4_lagtrace.h"
 #include "doa4_photo.h"
 #include "doa4_photo_hook.h"
 #include "doa4_photo_watch.h"
@@ -40,11 +41,13 @@ REX_EXTERN(__imp__sub_823078C8);
 }
 
 REX_HOOK_RAW(sub_8275AEE0) {
+  if (doa4::lagtrace::On()) doa4::lagtrace::OnSwapCall();  // the latency trace (doa4_lagtrace.h): the guest swap
   // Netplay (keepalive fix): in a session the D3D kick thread's timeout re-present returns at once (false offline).
   if (doa4::np::det::SkipKeepAliveSwap(uint32_t(ctx.lr))) return;
   const uint32_t state =
       rex::memory::load_and_swap<uint32_t>(base + doa4::photo::kSnapshotStateAddress);
   __imp__sub_8275AEE0(ctx, base);
+  if (doa4::lagtrace::On()) doa4::lagtrace::OnSwapReturn();
   if (auto* watcher = g_watcher.load(std::memory_order_acquire)) watcher->OnSwap(state);
 }
 

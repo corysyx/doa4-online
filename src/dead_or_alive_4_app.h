@@ -48,6 +48,7 @@
 #include "doa4_extras.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
+#include "doa4_lagtrace.h"
 #include "doa4_language.h"
 #include "doa4_lowmem.h"
 #include "doa4_net_overlay.h"
@@ -1205,6 +1206,8 @@ class DeadOrAlive4App : public rex::ReXApp {
       TerminateProcess(GetCurrentProcess(), 0);
     }
     REXLOG_INFO("[doa4][LIFE] OnPreLaunchModule: about to spawn main guest thread");
+    // The latency trace (DOA4_LAG_TRACE=1, doa4_lagtrace.h): on before the guest's first VdSwap.
+    doa4::lagtrace::Start(rex::filesystem::GetExecutableFolder());
   }
   void OnPostLaunchModule(rex::system::XThread* thread) override {
     REXLOG_INFO("[doa4][LIFE] OnPostLaunchModule: main thread tid={} created (suspended)",
@@ -1216,6 +1219,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   }
   void OnShutdown() override {
     doa4_arm_shutdown_watchdog();
+    doa4::lagtrace::Stop();  // the latency trace's last rows (<= 50 ms; nothing without DOA4_LAG_TRACE)
     // the very first step (plan 1b Task 4, fix round M-1): no further download or swap; a swap in progress (milliseconds
     // of renames) gets at most 1 s to finish, so the process never ends between two of its renames by our own exit; the
     // updater's may_swap question reads the lobby, which is stopped below

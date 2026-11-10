@@ -1,0 +1,115 @@
+// The latency trace (DOA4_LAG_TRACE=1): one CSV row per main-loop pass, from the frame hook to the host present that
+// shows the frame's guest swap. Pure parts here (the row, the swap-index join, the CSV text; host-tested by
+// tests/host/lagtrace_host_test.cpp); the hook call-outs, the SDK's present marks and the writer thread are in
+// doa4_lagtrace_live.cpp.
+//
+// The path of one frame, as the call-outs see it (all on the game's main thread unless named):
+//   t_frame_start    the frame hook (np_session.cpp sub_824F4498 pre-wrap), the main-loop head
+//   t_np_done        after the session's frame step (np::OnFrame: staging, and online the wait for the peer's input)
+//   t_frame_fn_done  after the frame function sub_824F4498 returned
+//   t_input          the first pad read of the pass (np_session.cpp sub_82792040, the game's XamInputGetState path)
+//   t_swap_call      the first call of the VdSwap wrapper sub_8275AEE0 (doa4_photo_hook.cpp)
+//   t_guest_swap     the SDK's VdSwap inside it (rex_lag_last_guest_swap), with its ordinal guest_swap_index
+//   t_swap_return    the wrapper returned
+//   t_present_call / t_host_present   the host present (another thread) that painted that swap's output: just before
+//                    IDXGISwapChain::Present and just after it returned (the SDK's lag marks, joined by swap index)
+// Times are microseconds on the QueryPerformanceCounter clock; 0 means "did not happen" (an empty CSV field).
+
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace doa4::lagtrace {
+
+// One pass of the main loop.
+struct Frame {
+  uint64_t frame = 0;         // the trace's own count of frame-hook calls, from 1
+  int64_t np_frame = -1;      // the session's frame (np::CurrentFrame after its frame step); -1 without a session
+  int64_t t_frame_start = 0;
+  int64_t t_np_done = 0;
+  int64_t t_frame_fn_done = 0;
+  int64_t t_input = 0;
+  int64_t t_swap_call = 0;
+  int64_t t_guest_swap = 0;
+  int64_t t_swap_return = 0;
+  uint32_t guest_swap_index = 0;  // 0: no VdSwap on the main thread in this pass
+  uint32_t pad_calls_main = 0;    // pad reads on the main thread in this pass
+  uint32_t pad_calls_other = 0;   // pad reads on other threads while this pass ran
+  uint32_t swap_calls_main = 0;   // VdSwap wrapper calls on the main thread in this pass
+  uint32_t swap_calls_other = 0;  // VdSwap wrapper calls on other threads (the D3D kick thread) while it ran
+};
+
+// One host present (the SDK's rex::pace_stats::LagPresentMark, in microseconds).
+struct Present {
+  int64_t t_call = 0;
+  int64_t t_return = 0;
+  uint32_t swap_index = 0;  // the guest swap whose output it painted; 0: none
+  uint32_t flags = 0;       // bit 0: the swap chain allows tearing
+};
+
+struct Row {
+  Frame frame;
+  bool joined = false;  // a present of the frame's swap was found; `present` is the first one
+  Present present;
+};
+
+// Joins frames to presents by swap index. Frames are added in order, presents in order (their swap indices never
+// decrease: the presenter's mailbox always hands out the newest guest output). A frame's row is ready when the first
+// present of its swap is known (joined), or when a present of a later swap shows that its own output was never
+// painted (dropped for a newer one), or when it has no swap; Take(true) also hands out the frames still waiting.
+class Joiner {
+ public:
+  explicit Joiner(size_t max_waiting = 600) : max_waiting_(max_waiting) {}
+  void AddFrame(const Frame& frame);
+  void AddPresent(const Present& present);
+  // The rows that are ready, in frame order. flush: also every waiting frame (unjoined). A frame that has waited
+  // while more than max_waiting frames queued behind it is handed out unjoined too.
+  std::vector<Row> Take(bool flush);
+  size_t waiting() const { return frames_.size(); }
+
+ private:
+  size_t max_waiting_;
+  std::deque<Frame> frames_;
+  std::map<uint32_t, Present> first_;  // the first present of each swap index not yet handed out
+  uint32_t newest_ = 0;                // the highest swap index any present painted
+  uint32_t done_ = 0;                  // swap indices up to this one were handed out (their presents dropped)
+};
+
+// The CSV: the header line and one row's line (both without the line end). The first six columns are the plan's
+// (frame, t_input_us, t_frame_start_us, t_guest_swap_us, t_host_present_us, guest_swap_index); the rest name the
+// other points and counts. A time of 0 is an empty field.
+std::string CsvHeader();
+std::string CsvLine(const Row& row);
+
+// QueryPerformanceCounter ticks to microseconds (rounded down; no overflow for frequencies below 9e12 Hz).
+int64_t QpcToUs(int64_t qpc, int64_t frequency);
+
+// ---- Live (doa4_lagtrace_live.cpp) ----
+// The gate: DOA4_LAG_TRACE=1, read once by Start(). Off, every call-out below costs its caller this one load and branch
+// (each call site is `if (lagtrace::On()) lagtrace::OnX(...)`).
+extern bool g_on;
+inline bool On() { return g_on; }
+
+// Before the guest's first thread: reads DOA4_LAG_TRACE; when it is 1, turns the SDK's lag marks on, opens
+// <DOA4_LAG_DIR, else default_dir>/lagtrace_<pid>.csv, starts the writer thread and logs "[doa4][LAG] lagtrace on: ...".
+void Start(const std::filesystem::path& default_dir);
+// At shutdown: the writer's last drain (every waiting frame, unjoined) and its summary line. The rows written before
+// are already on disk (flushed every pass), so a process ended by the watchdog keeps them.
+void Stop();
+
+// The call-outs (main thread unless named): the frame hook's entry, after np::OnFrame, after the frame function;
+// the pad read (any thread); the VdSwap wrapper's entry and return (any thread).
+void OnFrameStart();
+void OnFrameNpDone(int64_t np_frame);
+void OnFrameFnDone();
+void OnPad();
+void OnSwapCall();
+void OnSwapReturn();
+
+}  // namespace doa4::lagtrace

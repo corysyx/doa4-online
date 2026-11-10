@@ -44,6 +44,7 @@
 #include "generated/default/dead_or_alive_4_init.h"
 
 #include "../doa4_gamefiles.h"
+#include "../doa4_lagtrace.h"
 #include "../doa4_language_hooks.h"
 #include "../doa4_photo_win.h"
 #include "../doa4_tweaks.h"
@@ -1963,10 +1964,15 @@ void Shutdown() {
 // ---- Hooks ----
 
 REX_HOOK_RAW(sub_824F4498) {
+  if (doa4::lagtrace::On()) doa4::lagtrace::OnFrameStart();  // the latency trace (doa4_lagtrace.h): the frame's start
   // The language code's frame step (doa4_language_hooks.h): every frame, in a session or not, before the frame's hash.
   doa4::language::OnFrame(base);
   if (doa4::np::Active()) doa4::np::OnFrame(ctx, base);
+  if (doa4::lagtrace::On()) {
+    doa4::lagtrace::OnFrameNpDone(doa4::np::Active() ? int64_t(doa4::np::CurrentFrame()) : -1);
+  }
   __imp__sub_824F4498(ctx, base);
+  if (doa4::lagtrace::On()) doa4::lagtrace::OnFrameFnDone();
   // The frame function stores the host-timed GPU frame time into 0x831008E8 / 0x831008E4, which the
   // game reads (HoldFrameTiming): in a session they hold a 60 fps frame's values.
   if (doa4::np::Active() && doa4::np::det::On(doa4::np::det::kClock)) doa4::np::HoldFrameTiming(base);
@@ -1975,6 +1981,7 @@ REX_HOOK_RAW(sub_824F4498) {
 // r3 = user (0-3), r4 = X_INPUT_STATE* (be32 packet number, then the 12-byte
 // XINPUT_GAMEPAD). Returns r3 = 0 (connected) or ERROR_DEVICE_NOT_CONNECTED.
 REX_HOOK_RAW(sub_82792040) {
+  if (doa4::lagtrace::On()) doa4::lagtrace::OnPad();  // the latency trace: the pad read
   const doa4::np::FrameInput* in = doa4::np::StagedInput();
   if (!in) {
     __imp__sub_82792040(ctx, base);
