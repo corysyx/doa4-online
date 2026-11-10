@@ -3833,6 +3833,42 @@ def test_lag_run_rules(root):
           f"np_lag session_env with --fix none: {lag.session_env('L', 'none')}")
 
 
+def test_lag_display_by_mode(root):
+    # Task 7 fix round 1 (R53, review I2): the display stage and the total to the screen are reported per PresentMode (each run
+    # by its majority mode), never pooled across modes. Run a: independent flip, 1.0 ms from the Present call to the screen;
+    # run b: composed, 11.0 ms. The trace's Present return is 0.4 ms after the call, so the display stage is 0.6 / 10.6 ms.
+    lag = load("np_lag")
+    out = os.path.join(root, "out")
+    freq = 10_000_000
+    pm_lines = ["Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,Dropped,TimeInSeconds,msInPresentAPI,"
+                "msBetweenPresents,AllowsTearing,PresentMode,msUntilRenderComplete,msUntilDisplayed,msBetweenDisplayChange,QPCTime"]
+    for name, pid, mode, tear, until in (("ra", 101, "Hardware Composed: Independent Flip", 1, 1.0), ("rb", 202, "Composed: Flip", 0, 11.0)):
+        os.makedirs(os.path.join(out, "runs", name))
+        os.makedirs(os.path.join(out, "lag", name))
+        open(os.path.join(out, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out, "runs", name, "game.log"), "w").write(f"[doa4][LAG] lagtrace on: x (QPC frequency {freq} Hz)\n")
+        lag_trace(os.path.join(out, "lag", name, f"lagtrace_{pid}.csv"), 3600)
+        open(os.path.join(out, f"{name}_meta.txt"), "w").write(f"config c\nrun {name}\nmode windowed\nkind offline\nlabel clean\nexit 0\n")
+        for i in range(3600):
+            call_us = 1_000_000 + i * 16_667 + 11_000
+            pm_lines.append(f"dead_or_alive_4.exe,{pid},0x1,DXGI,0,512,0,0,0.1,16.7,{tear},{mode},0.5,{until},16.67,{call_us * 10}")
+    pm = os.path.join(root, "pm.csv")
+    open(pm, "w").write("\n".join(pm_lines) + "\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out, pm, 3394, 3600)
+    text = open(os.path.join(out, "analysis.md")).read()
+    rows = {l.split("|")[1].strip(): l.split("|")[2].strip() for l in text.splitlines() if l.startswith("| ") and "->" in l}
+    check(rows.get("host Present return -> displayed [Hardware Composed: Independent Flip]") == "0.60" and
+          rows.get("host Present return -> displayed [Composed: Flip]") == "10.60",
+          f"np_lag analyse: a display row per PresentMode (0.60 and 10.60): {rows}")
+    check(rows.get("TOTAL pad read -> displayed [Hardware Composed: Independent Flip]") == "11.50" and
+          rows.get("TOTAL pad read -> displayed [Composed: Flip]") == "21.50",
+          f"np_lag analyse: the total to the screen per PresentMode (11.50 and 21.50): {rows}")
+    check(not any(k.startswith(("host Present return -> displayed", "TOTAL pad read -> displayed")) and "[" not in k for k in rows),
+          f"np_lag analyse: NO display row pooled across modes: {[k for k in rows if 'displayed' in k]}")
+    check(rows.get("pad read -> swap call") == "8.50", f"np_lag analyse: the game-side stages stay pooled: {rows.get('pad read -> swap call')}")
+
+
 def test_lag_plain(root):
     # Task 7 Resume 1 (R47): a plain launch has no session (np_frame -1); its window is the frames of a round (fight_state 2)
     lag = load("np_lag")

@@ -80,9 +80,12 @@ STAGE_NOTES = {
     ("frame function done", "pad read"): "residual: the main loop from the frame function to the first XamInputGetState",
     ("pad read", "swap call"): "residual: the game's update and draw after the pad read, up to its present call",
     ("swap call", "guest VdSwap"): "the guest D3D present path before VdSwap (sub_8275AEE0; any wait for a free front buffer)",
-    ("guest VdSwap", "swap return"): "the rest of the guest present after VdSwap",
+    ("guest VdSwap", "swap return"): "GPU back-pressure: the guest present blocks until the GPU thread has presented the "
+                                     "previous swap (it ends ~6 us after host Present(N-1) returns when the det layer is off)",
     ("guest VdSwap", "host Present call"): "guest GPU command queue up to the swap packet (GPU thread), IssueSwap, the presenter's paint",
-    ("swap return", "host Present call"): "residual: GPU thread catching up to the swap packet, IssueSwap and the paint, minus the guest present's tail",
+    ("swap return", "host Present call"): "residual on the GPU thread: holds the 60 Hz pacing (likeliest site the vblank-woken "
+                                          "WAIT_REG_MEM, command_processor.cpp:1185-1197; not located by a mark), then IssueSwap "
+                                          "and the paint",
     ("host Present call", "host Present return"): "IDXGISwapChain::Present (sync interval 0, RESTART; the flip-model queue)",
     ("host Present return", DISPLAYED): "the swap chain to the display (PresentMon msUntilDisplayed from the call, minus the call)",
 }
@@ -569,7 +572,8 @@ def analyse(out, presentmon, start, frames):
     metas = [read_meta(os.path.join(out, f)) for f in sorted(os.listdir(out)) if f.endswith("_meta.txt")]
     results = [analyse_run(out, m, presentmon, start, frames) for m in metas]
     lines = [f"# Lag analysis: {out}", "",
-             f"Window: np_frame {start}..{start + frames - 1} ({frames} frames). Times in ms. PresentMon: {presentmon or 'none'}.", ""]
+             f"Window: session runs (offline, pair) np_frame {start}..{start + frames - 1} ({frames} frames); plain runs the "
+             f"first {frames} frames with fight_state {FIGHT_ROUND}. Times in ms. PresentMon: {presentmon or 'none'}.", ""]
     configs = {}
     for r in results:
         configs.setdefault(r["meta"]["config"], []).append(r)
@@ -600,10 +604,17 @@ def analyse(out, presentmon, start, frames):
         if not good:
             lines += ["", "No clean run with a trace.", ""]
             continue
-        names = list(POINTS) + ([DISPLAYED] if any(any(x.get("displayed_us") for x in g["rows"]) for g in good) else [])
-        order, offs = measured_order([x for g in good for x in g["rows"]], names)
+        # The game-side points are pooled over the runs; the display point is not (R53): a run's display stage depends on
+        # its presentation mode, so every row that ends at the screen is given per majority PresentMode.
+        order, offs = measured_order([x for g in good for x in g["rows"]], list(POINTS))
+        by_mode = {}
+        for g in good:
+            if any(x.get("displayed_us") for x in g["rows"]):
+                by_mode.setdefault(majority_mode(g), []).append(g)
         lines += ["", "Measured order (median offset from the frame start, ms): " +
-                  ", ".join(f"{n} {offs[n] / 1000.0:.2f}" for n in order), ""]
+                  ", ".join(f"{n} {offs[n] / 1000.0:.2f}" for n in order) +
+                  "".join(f"; displayed [{mode}] {measured_order([x for g in gs for x in g['rows']], [DISPLAYED])[1][DISPLAYED] / 1000.0:.2f}"
+                          f" ({', '.join(g['meta']['run'] for g in gs)})" for mode, gs in by_mode.items()), ""]
         stages = list(zip(order, order[1:]))
         lines += ["| stage | median | p95 | p99 | per-run medians | spread | inside |", "|---|---|---|---|---|---|---|"]
 
@@ -619,16 +630,26 @@ def analyse(out, presentmon, start, frames):
             lines.append(row_for(f"{a} -> {b}", [stage_values(g["rows"], a, b) for g in good], note))
         lines.append(row_for(f"{LOOP_TAIL[0]} -> {LOOP_TAIL[1]}", [loop_tail(g["rows"]) for g in good], LOOP_NOTE))
         for a, b, label in (("pad read", "host Present return", "TOTAL pad read -> host Present return"),
-                            ("pad read", DISPLAYED, "TOTAL pad read -> displayed"),
                             ("frame start", "host Present return", "frame start -> host Present return")):
-            if b in order or b in POINTS:
-                lines.append(row_for(label, [stage_values(g["rows"], a, b) for g in good], "the sum along the path"))
+            lines.append(row_for(label, [stage_values(g["rows"], a, b) for g in good], "the sum along the path"))
+        for mode, gs in by_mode.items():
+            lines.append(row_for(f"host Present return -> displayed [{mode}]",
+                                 [stage_values(g["rows"], "host Present return", DISPLAYED) for g in gs],
+                                 STAGE_NOTES[("host Present return", DISPLAYED)] + f"; runs {', '.join(g['meta']['run'] for g in gs)}"))
+            lines.append(row_for(f"TOTAL pad read -> displayed [{mode}]", [stage_values(g["rows"], "pad read", DISPLAYED) for g in gs],
+                                 "the sum along the path, runs of this presentation mode only"))
         lines.append("")
     text = "\n".join(lines) + "\n"
     with open(os.path.join(out, "analysis.md"), "w", newline="\n") as f:
         f.write(text)
     print(text)
     return 0
+
+
+def majority_mode(res):
+    """The PresentMode of most of a run's PresentMon rows in its window ("no PresentMon" without a capture)."""
+    modes = (res.get("pm") or {}).get("modes") or {}
+    return max(modes, key=modes.get) if modes else "no PresentMon"
 
 
 def _s(s):
