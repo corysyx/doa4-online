@@ -157,10 +157,58 @@ static void TestExclusiveSizeList() {
   CHECK(l.entries.size() == 1 && l.selected == 0 && l.entries[0].label == "Desktop (current mode)");
 }
 
+// Task 10 fix round 1 (review I1): when the menu builds the exclusive mode list. The full table, then the cases by name.
+static void TestExclusiveModesStep() {
+  int builds = 0;
+  for (int first = 0; first < 2; ++first) {
+    for (int built = 0; built < 2; ++built) {
+      for (int from_active = 0; from_active < 2; ++from_active) {
+        for (int active = 0; active < 2; ++active) {
+          const bool build = ExclusiveModesStep(first, built, from_active, active) == ModesStep::kBuild;
+          const bool want = active ? !built : (first || !built || from_active);
+          CHECK(build == want);
+          builds += build ? 1 : 0;
+        }
+      }
+    }
+  }
+  // exclusive off: 7 of 8 (all but a later frame with a list made while off); exclusive on: the 4 without a list
+  CHECK(builds == 7 + 4);
+  // exclusive off, the opening's first frame: a fresh list, even with one kept
+  CHECK(ExclusiveModesStep(true, true, false, false) == ModesStep::kBuild);
+  // exclusive off, later frames: use the list this opening made
+  CHECK(ExclusiveModesStep(false, true, false, false) == ModesStep::kUse);
+  // exclusive off with only a list made during exclusive: replace it (once; the menu's pending flag)
+  CHECK(ExclusiveModesStep(false, true, true, false) == ModesStep::kBuild);
+  // the I1 case: an opening while exclusive at a non-desktop mode, a list from before the entry kept: use it, NEVER list
+  // during exclusive (its desktop entry would be the scaled 2560x1440 @ 59 Hz)
+  CHECK(ExclusiveModesStep(true, true, false, true) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(false, true, false, true) == ModesStep::kUse);
+  // the game started in exclusive: no list yet, build one during exclusive (the desktop entry dropped), then use it
+  CHECK(ExclusiveModesStep(true, false, false, true) == ModesStep::kBuild);
+  CHECK(ExclusiveModesStep(false, true, true, true) == ModesStep::kUse);
+}
+
+static void TestDropModeText() {
+  std::vector<ExclusiveMode> modes = {{2560, 1440, 164.834, "2560x1440@164.834"},
+                                      {2560, 1440, 59.951, "2560x1440@59.951"},
+                                      {1920, 1080, 60.0, "1920x1080@60"}};
+  DropModeText(modes, "2560x1440@59.951");
+  CHECK(modes.size() == 2 && modes[0].text == "2560x1440@164.834" && modes[1].text == "1920x1080@60");
+  DropModeText(modes, "1280x720@60");  // not listed: nothing changes
+  CHECK(modes.size() == 2);
+  // the dropped entry is no longer offered by the row; "Desktop (current mode)" still leads it
+  const OutputSizeList l = ExclusiveSizeList(modes, "");
+  CHECK(l.entries.size() == 3 && l.entries[0].value.empty());
+  for (const OutputSizeEntry& e : l.entries) CHECK(e.value != "2560x1440@59.951");
+}
+
 int main() {
   TestRefreshText();
   TestWindowedSizeList();
   TestExclusiveSizeList();
+  TestExclusiveModesStep();
+  TestDropModeText();
   TestWindowTitle();
   TestFpsMeter();
   TestCursor();

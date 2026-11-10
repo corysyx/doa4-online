@@ -83,4 +83,9 @@ OutputSizeList ExclusiveSizeList(const std::vector<ExclusiveMode>& modes, const 
   return out;
 }
 
+void DropModeText(std::vector<ExclusiveMode>& modes, const std::string& text) {
+  modes.erase(std::remove_if(modes.begin(), modes.end(), [&](const ExclusiveMode& m) { return m.text == text; }),
+              modes.end());
+}
+
 }  // namespace doa4::display

@@ -218,6 +218,9 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   // The Online tab's state and the session locks are logged whichever tab is shown (the log is the test hook:
   // the session's shots never hold the menu).
   PollNetState();
+  // The exclusive mode list, whichever tab is shown and before any radio (Task 10 review I1): made while exclusive
+  // fullscreen is off, at this opening's first frame.
+  EnsureExclusiveModes();
   // On every tab: the Game and Online tabs show the unsaved warning too.
   if (ImGui::GetTime() >= next_save_poll_) {
     if (host_.guest && host_.extras) PollSaved(*host_.guest, host_.save_dir, host_.extras);
@@ -866,8 +869,8 @@ void MenuDialog::DrawDisplayRows() {
       }
       list = display::WindowedSizeList(window->ListWindowedClientSizes(), w, h);
     } else {
-      EnsureExclusiveModes();
-      list = display::ExclusiveSizeList(exclusive_modes_, rex::cvar::Query<std::string>("fullscreen_exclusive_mode"));
+      list = display::ExclusiveSizeList(ExclusiveModes().modes,
+                                        rex::cvar::Query<std::string>("fullscreen_exclusive_mode"));
     }
     const char* preview = list.selected >= 0 ? list.entries[size_t(list.selected)].label.c_str() : "";
     if (ImGui::BeginCombo("##size", preview)) {
@@ -895,28 +898,38 @@ void MenuDialog::DrawDisplayRows() {
   ImGui::PopID();
 }
 
-// The monitor's exclusive modes, listed once per menu opening and kept: the listing builds a DXGI factory, and while
-// exclusive its desktop entry is the scaled mode. Run from host_.defer (never DXGI inside the draw); a listing made
-// while exclusive is made again once the window leaves it.
+// The monitor's exclusive modes (Task 10 review I1). The listing builds a DXGI factory, so it runs from host_.defer, never
+// inside the draw, and at most once per opening while exclusive is off (display::ExclusiveModesStep). The SDK merges the
+// output's live mode in as the desktop entry: made while exclusive is off that is the desktop mode; made while it is on
+// (only when the game started in exclusive and no list exists yet) it is the mode exclusive set, so it is dropped.
 void MenuDialog::EnsureExclusiveModes() {
-  const bool active = host_.window->IsFullscreenExclusiveActive();
-  if (exclusive_modes_pending_ || (exclusive_modes_built_ && !(exclusive_modes_from_active_ && !active))) return;
+  const bool first_frame = exclusive_modes_first_frame_;
+  exclusive_modes_first_frame_ = false;
+  if (exclusive_modes_pending_ || !host_.window) return;
+  const display::ExclusiveModesCache& cache = ExclusiveModes();
+  if (display::ExclusiveModesStep(first_frame, cache.built, cache.from_active,
+                                  host_.window->IsFullscreenExclusiveActive()) != display::ModesStep::kBuild) {
+    return;
+  }
   exclusive_modes_pending_ = true;
   GuardedDefer()([this] {
+    exclusive_modes_pending_ = false;
     std::vector<rex::ui::display_mode::DisplayMode> modes;
     rex::ui::display_mode::DisplayMode desktop;
-    const bool active_now = host_.window->IsFullscreenExclusiveActive();
-    exclusive_modes_.clear();
-    if (rex::ui::d3d12::D3D12Presenter::ListExclusiveFullscreenModes(host_.window->GetNativeWindowHandle(), modes,
-                                                                    desktop)) {
-      for (const auto& m : modes) {
-        exclusive_modes_.push_back({m.width, m.height, rex::ui::display_mode::RefreshHz(m),
-                                    rex::ui::display_mode::ModeText(m)});
-      }
+    if (!rex::ui::d3d12::D3D12Presenter::ListExclusiveFullscreenModes(host_.window->GetNativeWindowHandle(), modes,
+                                                                     desktop)) {
+      return;  // no output for the window now: the cache stays as it was (tried again at the next opening)
     }
-    exclusive_modes_built_ = true;
-    exclusive_modes_from_active_ = active_now;
-    exclusive_modes_pending_ = false;
+    const bool active_now = host_.window->IsFullscreenExclusiveActive();
+    display::ExclusiveModesCache& cache = ExclusiveModes();
+    if (active_now && cache.built) return;  // exclusive came on before this ran: keep the list made with it off
+    cache.modes.clear();
+    for (const auto& m : modes) {
+      cache.modes.push_back({m.width, m.height, rex::ui::display_mode::RefreshHz(m), rex::ui::display_mode::ModeText(m)});
+    }
+    if (active_now) display::DropModeText(cache.modes, rex::ui::display_mode::ModeText(desktop));
+    cache.built = true;
+    cache.from_active = active_now;
   });
 }
 

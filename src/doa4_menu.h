@@ -92,6 +92,9 @@ struct MenuHost {
   // its saves from.
   std::filesystem::path backup_root;
   ExtrasState* extras = nullptr;   // owned by the app: survives closing the menu
+  // The Output size row's exclusive mode list (Task 10 review I1): owned by the app, so a list made while exclusive
+  // fullscreen was off serves the openings made while it is on. Null: the menu keeps its own, per opening.
+  display::ExclusiveModesCache* exclusive_modes = nullptr;
   // Netplay (Task 12 fix round I3): asked before an Extras action (an unlock, a tweak toggle); true = refused (in an
   // online session: *status says why, a log line is written). Empty: never refused.
   std::function<bool(std::string_view action, std::string* status)> refuse;
@@ -130,7 +133,6 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
 
  protected:
   void OnDraw(ImGuiIO& io) override;
-  void OnShow() override { exclusive_modes_built_ = exclusive_modes_pending_ = exclusive_modes_from_active_ = false; }
   void OnKeyDown(rex::ui::KeyEvent& e) override;
   void OnMouseDown(rex::ui::MouseEvent& e) override;
 
@@ -140,8 +142,13 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   void DrawVideoSettings();
   // The three display-mode radios, VSync and Output size (R60: never locked, memory only near a session).
   void DrawDisplayRows();
-  // Fills exclusive_modes_ (once per menu opening, from host_.defer).
+  // Keeps the exclusive mode list (ExclusiveModes()) as display::ExclusiveModesStep says: called at the top of every
+  // frame the menu draws, before any radio; a build runs from host_.defer (never DXGI inside the draw).
   void EnsureExclusiveModes();
+  // The app's cache (host_.exclusive_modes), or this menu's own when the app gave none.
+  display::ExclusiveModesCache& ExclusiveModes() {
+    return host_.exclusive_modes ? *host_.exclusive_modes : own_exclusive_modes_;
+  }
   // Saves `name` then sets it; near a session (SessionLocked) only sets it in memory. The one choice every
   // presentation row and the start-up box share.
   bool SetPresentationSetting(std::string_view name, std::string_view value, bool quote);
@@ -199,10 +206,9 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   bool pad_connected_ = false;  // last non-busy GetRawState answer for slot_
   double next_save_poll_ = 0.0;  // ImGui time of the next "has the game saved?" check
   bool wipe_armed_ = false;      // the first press of "Wipe unlocks..." happened
-  std::vector<display::ExclusiveMode> exclusive_modes_;  // the Output size row's cache, see EnsureExclusiveModes
-  bool exclusive_modes_built_ = false;
-  bool exclusive_modes_pending_ = false;
-  bool exclusive_modes_from_active_ = false;  // listed while exclusive was on (its desktop entry is then unreliable)
+  display::ExclusiveModesCache own_exclusive_modes_;  // used only without host_.exclusive_modes
+  bool exclusive_modes_first_frame_ = true;  // this opening's first drawn frame is still to come (the dialog is per opening)
+  bool exclusive_modes_pending_ = false;     // a build is queued on host_.defer (dropped with the dialog if it closes)
   std::string status_;     // last error, shown in red
   OnlineTab online_tab_;
   std::string logged_tab_line_;  // the last "[doa4][NET] tab: ..." line written

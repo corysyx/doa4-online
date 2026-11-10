@@ -1599,7 +1599,8 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.save_dir = SaveFolder();
     host.backup_root = BackupFolder();
     host.extras = &extras_;
-    host.refuse = [this](std::string_view action, std::string* status) {
+    host.exclusive_modes = &exclusive_modes_;
+    host.refuse =[this](std::string_view action, std::string* status) {
       // the same predicate as the Extras controls' disabled state (online_view::LockedInSession)
       return doa4::online_view::Refuse(doa4::online_view::Control::kExtras, SessionLocked(), action, status,
                                        [](const std::string& line) { REXLOG_INFO("{}", line); });
@@ -1760,6 +1761,8 @@ class DeadOrAlive4App : public rex::ReXApp {
   std::shared_ptr<const doa4::afs::Overlay> title_spr_;  // spr.afs as the title word serves it (SetUpLabels goes on top)
   doa4::tweaks::ProtectFn protect_;
   doa4::ExtrasState extras_;
+  // The Esc menu's exclusive mode list (Task 10 review I1): kept across menu openings (MenuHost::exclusive_modes).
+  doa4::display::ExclusiveModesCache exclusive_modes_;
   std::atomic<bool> extras_stop_{false};
   std::thread extras_thread_;  // DOA4_EXTRAS_TEST only
   std::atomic<bool> gfx_stop_{false};

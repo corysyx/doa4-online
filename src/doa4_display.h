@@ -67,4 +67,25 @@ struct ExclusiveMode {
 // fullscreen_exclusive_mode; one the list lacks selects the desktop entry, as the SDK falls back to the desktop mode.
 OutputSizeList ExclusiveSizeList(const std::vector<ExclusiveMode>& modes, const std::string& saved);
 
+// The Output size row's exclusive mode list, owned by the app so it outlives the menu (rebuilt at every opening) (Task 10
+// review I1). The SDK's listing merges the output's live mode in as its desktop entry, and while exclusive fullscreen is
+// active that is the mode exclusive fullscreen set (GPU-scaled: 2560x1440 @ 59 Hz on the run PC), not a mode the monitor
+// offers: so the list is made while exclusive is off, and kept for the openings made while it is on.
+struct ExclusiveModesCache {
+  std::vector<ExclusiveMode> modes;
+  bool built = false;
+  bool from_active = false;  // made while exclusive was active (the game started in it): its desktop entry dropped
+};
+enum class ModesStep { kUse, kBuild };
+// What the menu does with the cache in a frame. Exclusive off: build at the opening's first frame (a fresh list for this
+// opening, made before any radio can turn exclusive on), and whenever no list made with exclusive off exists; else use.
+// Exclusive on: use any list (a pre-entry one, or one made during exclusive); build only if there is none, which is the
+// game started in exclusive (that build drops the desktop entry: DropModeText).
+constexpr ModesStep ExclusiveModesStep(bool first_frame, bool built, bool from_active, bool exclusive_active) {
+  if (!exclusive_active) return (first_frame || !built || from_active) ? ModesStep::kBuild : ModesStep::kUse;
+  return built ? ModesStep::kUse : ModesStep::kBuild;
+}
+// Removes every mode whose text is `text` (the listing's desktop entry when it was made during exclusive).
+void DropModeText(std::vector<ExclusiveMode>& modes, const std::string& text);
+
 }  // namespace doa4::display
