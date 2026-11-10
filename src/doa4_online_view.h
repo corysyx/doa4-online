@@ -71,7 +71,7 @@ bool NeedsBuildId(bool tab_shown, bool lobby_open, bool in_session);
 
 // The game-state controls a session locks (spec 6): every one of them reads its disabled state from here, and the
 // refusal behind them (Refuse) reads the same answer, so the UI and the refusal cannot disagree.
-enum class Control : uint8_t { kExtras, kVideoRestart, kAudioRestart, kGameChange, kUpdateRestart };
+enum class Control : uint8_t { kExtras, kVideoRestart, kAudioRestart, kLanguage, kGameChange, kUpdateRestart };
 bool LockedInSession(Control control, bool in_session);
 inline constexpr const char* kLockedText = "Not during an online session";
 // True = refused: *status (may be null) gets kLockedText and `log` (may be empty) gets
@@ -79,7 +79,7 @@ inline constexpr const char* kLockedText = "Not during an online session";
 bool Refuse(Control control, bool in_session, std::string_view action, std::string* status,
             const std::function<void(const std::string&)>& log);
 // The one line the menu logs when in_session turns true:
-// "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 game_change=1".
+// "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 language=1 game_change=1".
 std::string LockedLine(bool in_session);
 
 // The banner (spec 7): how a session ended, as the overlay's own enum (the overlay maps live::End onto it).

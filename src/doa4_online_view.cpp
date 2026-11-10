@@ -192,7 +192,7 @@ std::string LockedLine(bool in_session) {
   auto flag = [&](Control c) { return LockedInSession(c, in_session) ? "1" : "0"; };
   return std::string("[doa4][NET] menu: locked in session: extras=") + flag(Control::kExtras) +
          " video_restart=" + flag(Control::kVideoRestart) + " audio_restart=" + flag(Control::kAudioRestart) +
-         " game_change=" + flag(Control::kGameChange);
+         " language=" + flag(Control::kLanguage) + " game_change=" + flag(Control::kGameChange);
 }
 
 Ending PeerLeftEnding(int reason, int32_t frame, bool refused) {

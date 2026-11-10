@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -233,6 +234,52 @@ static void TestSavesChoices() {
   CHECK(!SavesChoices(true, true));
 }
 
+// The Esc menu's dropdown: RequestLiveText (UI thread) leaves one id; ApplyLiveRequest (game thread, in the frame step) takes
+// it once and writes the text only, and moves the choice baseline so the options hook never saves it a second time.
+static void TestLiveText() {
+  FakeGuest f;
+  f.bytes[kSubtitlesAddress] = 8;  // the game's own subtitles value: the dropdown must leave it alone
+  SetBaseline(Seen{1, 8});
+  // nothing requested: nothing written, nothing returned
+  CHECK(!ApplyLiveRequest(f.guest, false));
+  CHECK(f.writes == 0);
+  // a request is applied: text and its copy, never the subtitles byte or the boot default; returned once
+  RequestLiveText(2);
+  const std::optional<uint8_t> got = ApplyLiveRequest(f.guest, false);
+  CHECK(got && *got == 2);
+  CHECK(f.bytes[kTextAddress] == 2 && f.bytes[kTextCopyAddress] == 2);
+  CHECK(f.bytes[kSubtitlesAddress] == 8 && f.bytes[kBootDefaultAddress] == 0xEE);
+  CHECK(!ApplyLiveRequest(f.guest, false));  // taken once
+  // the baseline moved: the options hook seeing the same bytes notes no player's choice (else it would save the subtitles)
+  const int writes_after = f.writes;
+  NoteGameChoice(Seen{2, 8});
+  CHECK(!TakePendingSave());
+  CHECK(f.writes == writes_after);
+  // two requests before a frame: the latest; Japanese (0) is a value, not "none"
+  RequestLiveText(3);
+  RequestLiveText(0);
+  const std::optional<uint8_t> japanese = ApplyLiveRequest(f.guest, false);
+  CHECK(japanese && *japanese == 0 && f.bytes[kTextAddress] == 0 && f.bytes[kTextCopyAddress] == 0);
+  // an id that is no text language is never stored
+  const int writes_before_bad = f.writes;
+  RequestLiveText(8);
+  RequestLiveText(200);
+  CHECK(!ApplyLiveRequest(f.guest, false));
+  CHECK(f.writes == writes_before_bad);
+  // in a session (or a replay or a recording) the request is dropped, not kept for later
+  RequestLiveText(5);
+  CHECK(!ApplyLiveRequest(f.guest, true));
+  CHECK(f.bytes[kTextAddress] == 0 && f.writes == writes_before_bad);
+  CHECK(!ApplyLiveRequest(f.guest, false));  // still nothing after the session check
+  CHECK(f.writes == writes_before_bad);
+  // a stale request from a pick that landed before the stop is not applied by a later offline frame
+  RequestLiveText(4);
+  CHECK(!ApplyLiveRequest(f.guest, true));
+  RequestLiveText(1);
+  const std::optional<uint8_t> english = ApplyLiveRequest(f.guest, false);
+  CHECK(english && *english == 1 && f.bytes[kTextAddress] == 1);
+}
+
 int main() {
   TestAddresses();
   TestSavesChoices();
@@ -243,6 +290,7 @@ int main() {
   TestRead();
   TestChoices();
   TestChoiceTracking();
+  TestLiveText();  // after TestChoiceTracking: that one needs the baseline unset
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
     return 1;

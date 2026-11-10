@@ -1,4 +1,4 @@
-// In-game menu (Escape): Video, Controls and Extras tabs. See doa4_menu.h.
+// In-game menu (Escape): Game, Controls, Photo, Extras and Online tabs. See doa4_menu.h.
 
 #include "doa4_menu.h"
 
@@ -35,6 +35,7 @@
 #include "doa4_config.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
+#include "doa4_language.h"
 #include "doa4_photo_win.h"
 #include "doa4_suits_import_view.h"
 #include "doa4_speakers.h"
@@ -223,12 +224,8 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
   if (ImGui::Begin("DOA4###doa4_menu", nullptr, ImGuiWindowFlags_NoCollapse)) {
     if (ImGui::BeginTabBar("tabs")) {
-      if (ImGui::BeginTabItem("Video")) {
-        DrawVideoTab();
-        ImGui::EndTabItem();
-      }
-      if (ImGui::BeginTabItem("Audio")) {
-        DrawAudioTab();
+      if (ImGui::BeginTabItem("Game")) {
+        DrawGameTab();
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Controls")) {
@@ -249,10 +246,6 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
         DrawOnlineTab();
         ImGui::EndTabItem();
       }
-      if (ImGui::BeginTabItem("Game")) {
-        DrawGameTab();
-        ImGui::EndTabItem();
-      }
       ImGui::EndTabBar();
     }
     if (!status_.empty()) {
@@ -267,7 +260,8 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   ImGui::End();
 }
 
-void MenuDialog::DrawVideoTab() {
+// The Game tab's first part: display mode, Show FPS, render scale, anti-aliasing, texture filtering.
+void MenuDialog::DrawVideoSettings() {
   ImGui::SeparatorText("Display mode");
   const bool fullscreen = host_.window->IsFullscreen();
   bool want = fullscreen;
@@ -355,7 +349,8 @@ void MenuDialog::DrawVideoTab() {
   ImGui::TextDisabled("next screen loads.");
 }
 
-void MenuDialog::DrawAudioTab() {
+// The Game tab's speakers part: the Speakers choice (its own separator) and the Output device block.
+void MenuDialog::DrawSpeakerSettings() {
   ImGui::SeparatorText("Speakers");
   if (!host_.saved_speakers) return;
   std::string& saved = *host_.saved_speakers;
@@ -722,6 +717,8 @@ void MenuDialog::TestAction(std::string_view action) {
       }
       StartSuitsImport();
     }
+  } else if (action.rfind("language ", 0) == 0 && action.size() == 10 && action[9] >= '0' && action[9] <= '9') {
+    PickLanguage(uint8_t(action[9] - '0'));  // as a pick in the dropdown: "language 2"
   } else if (action.rfind("tweak", 0) == 0 && action.size() == 8 && host_.guest) {  // tweak<index><0|1>, as "tweak 21"
     const size_t index = size_t(action[6] - '0');
     if (index < tweaks::AllTweaks().size()) SetTweak(index, action[7] == '1');
@@ -750,7 +747,51 @@ void MenuDialog::DrawOnlineTab() {
       [this] { Restart(online_view::Control::kUpdateRestart); }, UnsavedUnlocksWarning(*host_.extras));
 }
 
+// The Language dropdown: the game's text language. The selected row is the saved choice when it is a text id, else what the
+// game is showing now (a never-saved game shows its actual language).
+void MenuDialog::DrawLanguageSettings() {
+  const std::optional<uint8_t> saved = language::ValidText(rex::cvar::Query<int32_t>("doa4_language"));
+  std::optional<uint8_t> shown = saved;
+  if (!shown && host_.guest) shown = language::ValidText(language::Read(*host_.guest).text);
+  const char* preview = "";
+  for (const language::Choice& choice : language::kTextChoices) {
+    if (shown && choice.id == *shown) preview = choice.label;
+  }
+  const bool locked = Locked(online_view::Control::kLanguage);
+  ImGui::BeginDisabled(locked);
+  ImGui::SetNextItemWidth(220.0f);
+  if (ImGui::BeginCombo("##language", preview)) {
+    for (const language::Choice& choice : language::kTextChoices) {
+      const bool selected = shown && choice.id == *shown;
+      if (ImGui::Selectable(choice.label, selected) && !selected) PickLanguage(uint8_t(choice.id));
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  if (locked) {
+    ImGui::SameLine();
+    ImGui::TextColored(kNoteColor, "%s", online_view::kLockedText);
+  }
+}
+
+// A pick in the dropdown (and the test action's): refused exactly when the dropdown is disabled; saves the choice, then asks the
+// game thread to apply the text (language::RequestLiveText).
+void MenuDialog::PickLanguage(uint8_t id) {
+  if (online_view::Refuse(online_view::Control::kLanguage, SessionLocked(), "change language", &status_,
+                          [](const std::string& line) { REXLOG_INFO("{}", line); })) {
+    return;
+  }
+  if (!language::ValidText(id)) return;
+  if (SaveThenSet("doa4_language", std::to_string(id), false)) language::RequestLiveText(id);
+}
+
 void MenuDialog::DrawGameTab() {
+  DrawVideoSettings();
+  ImGui::Spacing();
+  DrawSpeakerSettings();
+  ImGui::SeparatorText("Language");
+  DrawLanguageSettings();
   const gamefiles::GameTab tab = gamefiles::DescribeGameTab(
       host_.game_files, host_.game_files_from_command_line,
       PathFromUtf8(rex::cvar::Query<std::string>("doa4_game_files")));

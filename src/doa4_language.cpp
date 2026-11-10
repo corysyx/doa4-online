@@ -109,4 +109,27 @@ bool SavesChoices(bool session_process, bool host_settings_applied) {
   return !session_process && !host_settings_applied;
 }
 
+namespace {
+constexpr int kNoLiveRequest = -1;
+std::atomic<int> g_live_text{kNoLiveRequest};  // the UI thread stores, the game thread exchanges
+}  // namespace
+
+void RequestLiveText(uint8_t id) {
+  if (!ValidText(id)) return;
+  g_live_text.store(id, std::memory_order_release);
+}
+
+bool LiveRequestPending() { return g_live_text.load(std::memory_order_relaxed) != kNoLiveRequest; }
+
+std::optional<uint8_t> ApplyLiveRequest(const GuestBytes& g, bool session_active) {
+  if (!LiveRequestPending()) return std::nullopt;
+  const int id = g_live_text.exchange(kNoLiveRequest, std::memory_order_acquire);
+  if (id == kNoLiveRequest || session_active) return std::nullopt;
+  Saved s;
+  s.text = uint8_t(id);
+  Apply(g, s);
+  SetBaseline(Read(g));  // what the bytes hold now is no choice made on the game's options screen
+  return uint8_t(id);
+}
+
 }  // namespace doa4::language

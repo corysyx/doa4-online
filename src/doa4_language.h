@@ -67,4 +67,13 @@ std::optional<Seen> TakePendingSave();
 // start that fails before np::Start leaves it off while the module still runs until the offline relaunch quits it.
 bool SavesChoices(bool session_process, bool host_settings_applied);
 
+// The Esc menu's Language dropdown (update G1): the UI thread calls RequestLiveText with the picked text id (an id that is
+// no text language is ignored); the game thread, in the frame step before the frame runs, calls ApplyLiveRequest. That takes
+// the pending id (the latest, once), and when session_active (an online session, a replay or a recording) drops it unapplied;
+// otherwise writes the text only (Apply) and moves the choice baseline to what the bytes now hold, so the options screen's
+// hook never mistakes the pick for a game choice. Returns the id it applied.
+void RequestLiveText(uint8_t id);
+bool LiveRequestPending();  // one relaxed load: the frame step asks before building anything
+std::optional<uint8_t> ApplyLiveRequest(const GuestBytes& g, bool session_active);
+
 }  // namespace doa4::language

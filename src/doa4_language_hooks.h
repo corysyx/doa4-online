@@ -15,7 +15,7 @@ namespace doa4::language {
 Saved SavedForThisRun();
 
 // Called by the frame function's hook (np_session.cpp sub_824F4498) on every frame, session or not, before the frame
-// runs. One atomic load when there is nothing to do.
+// runs. One atomic load when there is nothing to do. Also applies the Esc menu's pending Language pick (RequestLiveText).
 void OnFrame(uint8_t* base);
 
 }  // namespace doa4::language

@@ -76,7 +76,18 @@ std::atomic<bool> g_check_boot{false};
 
 Saved SavedForThisRun() { return Run().saved; }
 
-void OnFrame(uint8_t* base) {
+namespace {
+
+// An online session, a replay or a recording: the dropdown's request is dropped there (the dropdown is locked then, and a
+// recording's guest must not change at a wall-clock moment). DOA4_EXTRAS_REQUEST is the one exception, as in the app's
+// SyncCostumeCounts: a record run stands in for an offline game because only it takes scripted input, and
+// np::TestSwitch is null for a player.
+bool SessionActive() {
+  static const bool offline_stand_in = np::TestSwitch("DOA4_EXTRAS_REQUEST") != nullptr;
+  return np::Online() || np::Replaying() || (np::Active() && !offline_stand_in);
+}
+
+void CheckBoot(uint8_t* base) {
   if (!g_check_boot.load(std::memory_order_relaxed)) return;
   if (!g_check_boot.exchange(false, std::memory_order_acquire)) return;
   const GuestBytes g = Guest(base);
@@ -89,6 +100,16 @@ void OnFrame(uint8_t* base) {
     SetBaseline(Read(g));
   } else {
     REXLOG_INFO("[doa4][LANG] first frame: text {} subtitles {} (the boot values hold)", seen.text, seen.subtitles);
+  }
+}
+
+}  // namespace
+
+void OnFrame(uint8_t* base) {
+  CheckBoot(base);  // first: a live request on the same frame must not read as an overwrite of the boot values
+  if (!LiveRequestPending()) return;  // the idle case: one atomic load
+  if (const std::optional<uint8_t> live = ApplyLiveRequest(Guest(base), SessionActive())) {
+    REXLOG_INFO("[doa4][LANG] live text {} (Esc menu)", *live);
   }
 }
 

@@ -2375,7 +2375,7 @@ static void TestSdkNames(const std::string& sdk_src, const std::string& port_src
     CHECK(guarded == kGuarded);
     CHECK(bare == kHarmless);
     CHECK(extras_request_bare == 0);      // the record-run stand-in: the same class of switch, on the count-copy rule's path
-    CHECK(extras_request_guarded == 3);   // the hook's rule, SyncCostumeCounts and PollExtrasRequest
+    CHECK(extras_request_guarded == 4);   // the hook's rule, SyncCostumeCounts, PollExtrasRequest and the language frame step's session check
   }
 
   // every carried name is a cvar of the SDK or the port (a typo would refuse every session)
