@@ -14,6 +14,10 @@ REXCVAR_DEFINE_BOOL(doa4_christie_costume, false, "DOA4", "Christie's cutscene c
 // Game tab and F7: frames per second over the game. Host-only: not carried to the other player.
 REXCVAR_DEFINE_BOOL(doa4_show_fps, false, "DOA4", "Show frames per second over the game");
 
+// Game tab: skip the boot intro (doa4_intro_skip.h), read once at start-up: the game starts at the title screen. Host-only: not
+// carried to the other player (a session skips every movie on both PCs anyway).
+REXCVAR_DEFINE_BOOL(doa4_skip_intro, false, "DOA4", "Skip the intro at start-up: start at the title screen");
+
 // First-run setup (doa4_gamefiles.h): the folder the setup chose. The command
 // line's --game_data_root overrides it.
 REXCVAR_DEFINE_STRING(doa4_game_files, "", "DOA4",

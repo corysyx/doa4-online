@@ -44,6 +44,7 @@
 #include "generated/default/dead_or_alive_4_init.h"
 
 #include "../doa4_gamefiles.h"
+#include "../doa4_intro_skip.h"
 #include "../doa4_lagtrace.h"
 #include "../doa4_language_hooks.h"
 #include "../doa4_photo_win.h"
@@ -1968,6 +1969,7 @@ REX_HOOK_RAW(sub_824F4498) {
     doa4::lagtrace::OnFrameStart(base[doa4::np::kFightState], doa4::np::Active(),
                                  doa4::np::det::On(doa4::np::det::kAudio));
   }
+  doa4::intro_skip::CountFrame();  // the movie log's frame clock (doa4_intro_skip.h), host-only
   // The language code's frame step (doa4_language_hooks.h): every frame, in a session or not, before the frame's hash.
   doa4::language::OnFrame(base);
   if (doa4::np::Active()) doa4::np::OnFrame(ctx, base);

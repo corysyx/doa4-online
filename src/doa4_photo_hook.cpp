@@ -19,6 +19,7 @@
 
 #include "generated/default/dead_or_alive_4_init.h"
 
+#include "doa4_intro_skip.h"
 #include "doa4_lagtrace.h"
 #include "doa4_photo.h"
 #include "doa4_photo_hook.h"
@@ -47,6 +48,7 @@ REX_HOOK_RAW(sub_8275AEE0) {
   const uint32_t state =
       rex::memory::load_and_swap<uint32_t>(base + doa4::photo::kSnapshotStateAddress);
   __imp__sub_8275AEE0(ctx, base);
+  doa4::intro_skip::CountSwap();  // the movie log's swap clock (doa4_intro_skip.h), host-only
   if (doa4::lagtrace::On()) doa4::lagtrace::OnSwapReturn();
   if (auto* watcher = g_watcher.load(std::memory_order_acquire)) watcher->OnSwap(state);
 }

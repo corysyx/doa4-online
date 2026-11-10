@@ -296,7 +296,9 @@ static const NotCarried kSdkNotCarried[] = {
 // uses travels in the hand-off itself, not as a guest setting.)
 // doa4_suits_full_bust is carried (Task 5, kPortCarried): its rescale writes guest memory, so the two players must agree on it.
 // doa4_suits_import_pending: a player's own start-up state; never carried into a session.
-static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
+// doa4_skip_intro (update G6, Task 14, ruling R50): not carried; a session skips every movie on both PCs (kMovie), and the
+// intro rule never applies in a session (doa4_intro_skip.h), so both sides are equal by construction.
+static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_skip_intro", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
                                               "netplay_port", "netplay_delay_auto", "netplay_delay", "netplay_last_join",
                                               "netplay_show_stats", "netplay_upnp"};
 // the trust class: carried settings whose non-default value weakens a boundary of the PC that applies it

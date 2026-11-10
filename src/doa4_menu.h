@@ -124,6 +124,7 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   // Test switch DOA4_EXTRAS_REQUEST: what a click would do, without drawing. "wipe", "restart", "language N" (a pick of
   // text id N in the Language dropdown) or "tweak NB" (tweak N, B = 0 or 1).
   // "suits_import" starts the Esc import from DOA4_SUITS_IMPORT_TEST=<ASCII path> as a click on the button would.
+  // "skip_intro B" (B = 0 or 1): the Game tab's "Skip the intro at start-up" box set to B.
   void TestAction(std::string_view action);
 
  protected:
@@ -137,6 +138,10 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   void DrawVideoSettings();
   void DrawSpeakerSettings();
   void DrawLanguageSettings();
+  // The Game tab's "Skip the intro at start-up" box (doa4_skip_intro, read at the next start; doa4_intro_skip.h).
+  void DrawIntroSettings();
+  // The box's change (and the test action "skip_intro B"): saved, then set; near a session only set, as Show FPS does.
+  void SetSkipIntro(bool on);
   // The dropdown's pick (and the test action "language <id>"): refused when locked, else saved, then applied live.
   void PickLanguage(uint8_t id);
   void DrawControlsTab();

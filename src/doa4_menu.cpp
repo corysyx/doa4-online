@@ -719,6 +719,8 @@ void MenuDialog::TestAction(std::string_view action) {
     }
   } else if (action.rfind("language ", 0) == 0 && action.size() == 10 && action[9] >= '0' && action[9] <= '9') {
     PickLanguage(uint8_t(action[9] - '0'));  // as a pick in the dropdown: "language 2"
+  } else if (action == "skip_intro 0" || action == "skip_intro 1") {
+    SetSkipIntro(action.back() == '1');  // as a click on the Game tab's box
   } else if (action.rfind("tweak", 0) == 0 && action.size() == 8 && host_.guest) {  // tweak<index><0|1>, as "tweak 21"
     const size_t index = size_t(action[6] - '0');
     if (index < tweaks::AllTweaks().size()) SetTweak(index, action[7] == '1');
@@ -786,6 +788,23 @@ void MenuDialog::PickLanguage(uint8_t id) {
   if (SaveThenSet("doa4_language", std::to_string(id), false)) language::RequestLiveText(id);
 }
 
+// Not locked in a session: a session skips every movie on both PCs whatever the box says (doa4_intro_skip.h).
+void MenuDialog::DrawIntroSettings() {
+  bool skip = rex::cvar::Query<bool>("doa4_skip_intro");
+  if (ImGui::Checkbox("Skip the intro at start-up", &skip)) SetSkipIntro(skip);
+  ImGui::TextDisabled("Starts at the title screen. Applies at the next start.");
+}
+
+void MenuDialog::SetSkipIntro(bool on) {
+  // Near a session nothing is written to the config (it is restored at the session's end): only in memory, as Show FPS does.
+  const char* value = on ? "true" : "false";
+  if (SessionLocked()) {
+    rex::cvar::SetFlagByName("doa4_skip_intro", value);
+  } else {
+    SaveThenSet("doa4_skip_intro", value, false);
+  }
+}
+
 void MenuDialog::DrawGameTab() {
   // Each section has its own ID scope: the video and speakers parts both have a "Restart now" button, and both show when a
   // render scale and a speakers choice are pending (ImGui's ID-conflict highlight). Wrapping at the call keeps every return
@@ -800,6 +819,10 @@ void MenuDialog::DrawGameTab() {
   ImGui::SeparatorText("Language");
   ImGui::PushID("language");
   DrawLanguageSettings();
+  ImGui::PopID();
+  ImGui::SeparatorText("Start-up");
+  ImGui::PushID("intro");
+  DrawIntroSettings();
   ImGui::PopID();
   const gamefiles::GameTab tab = gamefiles::DescribeGameTab(
       host_.game_files, host_.game_files_from_command_line,

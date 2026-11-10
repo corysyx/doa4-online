@@ -43,6 +43,7 @@
 
 #include "generated/default/dead_or_alive_4_init.h"
 
+#include "../doa4_intro_skip.h"
 #include "np_det_internal.h"
 #include "np_session.h"
 
@@ -439,9 +440,48 @@ using namespace doa4::np::det;
 // ---- movie ----
 // sub_8242A168(r3 = movie index) starts a CRI Sofdec movie, sub_8242A3A8 says
 // whether it has finished (CRI status 0/3/4) and sub_8242A0F0 stops it. Movie 18
-// is the boot's opening (frames 20-1000).
+// (ninja_vi_hd.sfd) is the boot's opening (offline: guest swaps 27-1242, then the title).
 namespace {
 bool MoviesSkipped() { return doa4::np::Active() && On(kMovie); }
+
+// The movie log (Task 14, offline and in a session, game log only): one [doa4][INTRO] line per start, per first "finished"
+// answer and per stop, with the movie's index and file, two clocks (guest swaps and frame-function calls) and the caller.
+// Capped, for a long play session (the boot starts one movie; the title's attract sequence started none in 240 s).
+constexpr uint32_t kMovieNames = 0x82F69FE0;  // sub_8242A168 -> sub_8242A2C8(r3 = 0x82F69FE0 + 40 * index): 40-byte names
+constexpr int kMovieLineCap = 64;
+std::atomic<int> g_movie_lines{0};
+std::atomic<uint32_t> g_movie_index{~0u};  // the last started (or skipped) movie
+std::atomic<uint32_t> g_movie_polls{0};    // "finished?" calls since that start
+std::atomic<bool> g_movie_finish_logged{false};
+
+std::string MovieName(const uint8_t* base, uint32_t index) {
+  if (index >= 64) return "?";
+  const uint8_t* p = base + kMovieNames + 40 * index;
+  std::string name;
+  for (int i = 0; i < 40 && p[i]; ++i) {
+    if (p[i] < 0x20 || p[i] > 0x7E) return "?";
+    name += char(p[i]);
+  }
+  return name.empty() ? "?" : name;
+}
+
+std::string MovieWhere(uint32_t lr) {
+  return fmt::format("at swap {} frame {} (lr {:08X}, {})", doa4::intro_skip::Swaps(), doa4::intro_skip::Frames(), lr,
+                     IsMainThread() ? std::string("main thread") : fmt::format("thread start {:08X}", ThreadStart()));
+}
+
+void MovieLine(const std::string& text) {
+  const int n = g_movie_lines.fetch_add(1, std::memory_order_relaxed);
+  if (n < kMovieLineCap) REXLOG_INFO("[doa4][INTRO] {}", text);
+  if (n == kMovieLineCap - 1) REXLOG_INFO("[doa4][INTRO] (further movie lines are not logged)");
+}
+
+void NoteMovieStart(const uint8_t* base, uint32_t index, uint32_t lr, const char* what) {
+  g_movie_index.store(index, std::memory_order_relaxed);
+  g_movie_polls.store(0, std::memory_order_relaxed);
+  g_movie_finish_logged.store(false, std::memory_order_relaxed);
+  MovieLine(fmt::format("movie start {} ({}) {}: {}", index, MovieName(base, index), MovieWhere(lr), what));
+}
 }  // namespace
 
 // The frame limiter's slow-motion wait (see AudioStep): note the extra vblanks this frame asks for, then run it.
@@ -522,26 +562,46 @@ REX_HOOK_RAW(sub_8275AAA8) {
   __imp__sub_8275AAA8(ctx, base);
 }
 
+// The intro skip (doa4_intro_skip.h) ORs with the session's gate: with doa4_skip_intro off, or in a session, every call does
+// what it did before; on, a movie started before the first title logo draw is skipped the way a session skips it.
 REX_HOOK_RAW(sub_8242A168) {
-  if (MoviesSkipped()) {
-    doa4::np::LogLine(fmt::format("movie {} skipped at frame {} (lr {:08X})", ctx.r3.u32, Frame(),
-                                  uint32_t(ctx.lr)));
+  const uint32_t index = ctx.r3.u32, lr = uint32_t(ctx.lr);
+  const bool session_skips = MoviesSkipped();
+  if (doa4::intro_skip::Movies().SkipStart(doa4::np::Active(), session_skips, doa4::intro_skip::TitleSeen())) {
+    if (session_skips) doa4::np::LogLine(fmt::format("movie {} skipped at frame {} (lr {:08X})", index, Frame(), lr));
+    NoteMovieStart(base, index, lr, session_skips ? "skipped (session)" : "skipped (doa4_skip_intro, before the title)");
     return;
   }
+  NoteMovieStart(base, index, lr, "plays");
   __imp__sub_8242A168(ctx, base);
 }
 
-// In a session every movie is skipped, so every "finished?" is yes and "stop" has nothing to stop.
+// A skipped movie (in a session every movie) is "finished" at once, and "stop" has nothing to stop.
 REX_HOOK_RAW(sub_8242A3A8) {
-  if (MoviesSkipped()) {
+  const uint32_t lr = uint32_t(ctx.lr);
+  const uint32_t polls = g_movie_polls.fetch_add(1, std::memory_order_relaxed) + 1;
+  const bool session_skips = MoviesSkipped();
+  const bool answered = doa4::intro_skip::Movies().AnswerFinished(session_skips);
+  if (answered) {
     ctx.r3.u64 = 1;
-    return;
+  } else {
+    __imp__sub_8242A3A8(ctx, base);
   }
-  __imp__sub_8242A3A8(ctx, base);
+  if (ctx.r3.u32 != 0 && !g_movie_finish_logged.exchange(true, std::memory_order_relaxed)) {
+    const uint32_t index = g_movie_index.load(std::memory_order_relaxed);
+    MovieLine(fmt::format("movie finished {} ({}) {}: {}, poll {}", index, MovieName(base, index), MovieWhere(lr),
+                          !answered ? "the game's answer" : session_skips ? "answered (session)" : "answered (doa4_skip_intro)",
+                          polls));
+  }
 }
 
 REX_HOOK_RAW(sub_8242A0F0) {
-  if (MoviesSkipped()) return;
+  const uint32_t lr = uint32_t(ctx.lr), index = g_movie_index.load(std::memory_order_relaxed);
+  const bool session_skips = MoviesSkipped();
+  const bool nothing = doa4::intro_skip::Movies().SkipStop(session_skips);
+  MovieLine(fmt::format("movie stop {} ({}) {}: {}", index, MovieName(base, index), MovieWhere(lr),
+                        !nothing ? "stopped" : session_skips ? "nothing to stop (session)" : "nothing to stop (doa4_skip_intro)"));
+  if (nothing) return;
   __imp__sub_8242A0F0(ctx, base);
 }
 

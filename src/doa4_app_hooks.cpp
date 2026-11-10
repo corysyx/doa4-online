@@ -20,7 +20,9 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
+#include <rex/system/xthread.h>
 
+#include "doa4_intro_skip.h"
 #include "doa4_title_word.h"
 #include "generated/default/dead_or_alive_4_init.h"
 
@@ -77,8 +79,15 @@ void doa4::title_word::EnableWordDraw() { g_title_word.store(true, std::memory_o
 
 REX_HOOK_RAW(sub_823BB470) {
   const uint32_t draw = ctx.r3.u32;
-  if (!g_title_word.load(std::memory_order_acquire) ||
-      rex::memory::load_and_swap<uint32_t>(base + draw + 4) != doa4::title_word::kLogoSprite) {
+  const uint32_t sprite = rex::memory::load_and_swap<uint32_t>(base + draw + 4);
+  // The first title logo draw of the run (doa4_intro_skip.h): the intro skip's latch, set once, never reset.
+  if (doa4::intro_skip::NoteSpriteDraw(sprite)) {
+    auto* thread = rex::system::XThread::IsInThread() ? rex::system::XThread::GetCurrentThread() : nullptr;
+    REXLOG_INFO("[doa4][INTRO] first title logo draw at swap {} frame {} (lr {:08X}, {} thread {:#x})",
+                doa4::intro_skip::Swaps(), doa4::intro_skip::Frames(), uint32_t(ctx.lr),
+                thread && thread->main_thread() ? "main" : "guest", Tid());
+  }
+  if (!g_title_word.load(std::memory_order_acquire) || sprite != doa4::title_word::kLogoSprite) {
     __imp__sub_823BB470(ctx, base);
     return;
   }

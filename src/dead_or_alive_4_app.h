@@ -48,6 +48,7 @@
 #include "doa4_extras.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
+#include "doa4_intro_skip.h"
 #include "doa4_lagtrace.h"
 #include "doa4_language.h"
 #include "doa4_lowmem.h"
@@ -634,6 +635,12 @@ class DeadOrAlive4App : public rex::ReXApp {
     SetUpExtras();  // before any guest code runs: the tweaks patch tables read at boot
     SetUpSnapshotWatcher();  // before the first guest swap, so the swap counts start together
     StartNetplaySession();   // DOA4_NP only: record / replay / hash from the first frame
+    // Skip the boot intro (doa4_intro_skip.h): the start-up value, before any guest code runs; a later change in the menu applies
+    // at the next start. In a session the session's movie gate decides alone.
+    const bool skip_intro = rex::cvar::Query<bool>("doa4_skip_intro");
+    doa4::intro_skip::Arm(skip_intro);
+    REXLOG_INFO("[doa4][INTRO] skip the intro: {} (doa4_skip_intro at start-up){}", skip_intro ? "on" : "off",
+                doa4::np::Active() ? "; a session runs: its movie gate decides" : "");
     // fix-filetimes: what the guest is shown as file times from here on (np_det.cpp filetimes; a [LIFE] line, so an
     // offline run says so without any [NET]/[NP] line)
     if (const uint64_t ft = rex::filesystem::Entry::fixed_timestamp()) {
