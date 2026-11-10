@@ -36,9 +36,11 @@
 #include <utility>
 #include <vector>
 
+#include "../../src/doa4_language.h"
 #include "../../src/doa4_tweaks.h"
 
 namespace ho = doa4::np::handoff;
+namespace lang = doa4::language;
 namespace rules = doa4::np::rules;
 using Bytes = std::vector<uint8_t>;
 
@@ -319,8 +321,10 @@ static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
 static constexpr size_t kSdkTotal = 194;  // the distinct cvar names the SDK's src defines at that commit
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
-// The port's own carried setting beyond the tweaks: it changes guest memory and is no trust matter (np_handoff.cpp kPortSettings).
-static const char* const kPortCarried[] = {"doa4_suits_full_bust"};
+// The port's own carried settings beyond the tweaks: they change guest memory and are no trust matter (np_handoff.cpp
+// kPortSettings). doa4_language and doa4_subtitles (update G1): in a session both PCs boot with the host's language and subtitles.
+static const char* const kPortCarried[] = {"doa4_suits_full_bust", "doa4_language", "doa4_subtitles"};
+static constexpr size_t kPortCarriedCount = sizeof(kPortCarried) / sizeof(kPortCarried[0]);
 
 static std::vector<std::string> ExpectedNames() {
   std::vector<std::string> v(kSdkNames, kSdkNames + kSdkCount);
@@ -1501,6 +1505,22 @@ static void TestGuestNames() {
         uniq.count("doa4_mp_hidden_characters") && uniq.count("doa4_suits_full_bust"));
   CHECK(uniq.count("async_shader_compilation"));  // fix round 1: a draw skipped while its pipeline is built drops readback work
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) CHECK(uniq.count(t.cvar));
+
+  Group("guest settings: the list ends with the port's three, the language pair last; neither language name is in the trust class");
+  CHECK(names.size() >= 3);
+  if (names.size() >= 3) {
+    CHECK(names[names.size() - 3] == "doa4_suits_full_bust");
+    CHECK(names[names.size() - 2] == "doa4_language");
+    CHECK(names[names.size() - 1] == "doa4_subtitles");
+  }
+  for (const char* n : {"doa4_language", "doa4_subtitles"}) {
+    g_ctx = n;
+    CHECK(!IsTrusted(n));
+    bool in_module_class = false;
+    for (const ho::TrustedSetting& t : ho::TrustedSettings()) in_module_class = in_module_class || t.name == n;
+    CHECK(!in_module_class);
+  }
+  g_ctx.clear();
 }
 
 // The reader of a session's bust setting (np::SessionFullBust) takes it from the hand-off's text. T2.2: the likeliest wrong
@@ -1521,6 +1541,75 @@ static void TestGuestSettingValue() {
       [](const std::string& name) { return name == "doa4_suits_full_bust" ? std::string("true") : std::string("0"); });
   CHECK(!captured.empty());
   CHECK(ho::GuestSettingValue(captured, "doa4_suits_full_bust") == std::optional<std::string>("true"));
+}
+
+// R1: a replay keeps its recording's guest text as one meta value (np_session GuestMeta: the lines joined by ';',
+// "(none)" when the recording has none); np::SessionGuestValue reads one name from it. T2.2: the likeliest wrong versions
+// are a prefix match, the separator taken as '\n' (only the first line found), and "(none)" read as a text.
+static void TestGuestMetaValue() {
+  Group("guest meta value: the exact name's value from a ';'-joined guest text; \"(none)\" and a missing name give nothing");
+  const std::string meta = "doa4_language_old=5;vsync=1;doa4_language=3;doa4_subtitles=8;";
+  CHECK(ho::GuestMetaValue(meta, "doa4_language") == std::optional<std::string>("3"));  // NOT the _old line's 5
+  CHECK(ho::GuestMetaValue(meta, "doa4_subtitles") == std::optional<std::string>("8"));     // the last line
+  CHECK(ho::GuestMetaValue(meta, "doa4_language_old") == std::optional<std::string>("5"));  // the first line
+  CHECK(!ho::GuestMetaValue(meta, "doa4_lang").has_value());
+  CHECK(!ho::GuestMetaValue("(none)", "doa4_language").has_value());
+  CHECK(!ho::GuestMetaValue("", "vsync").has_value());
+  // a recording made before G1: its guest text has no language line
+  CHECK(!ho::GuestMetaValue("vsync=1;doa4_suits_full_bust=false;", "doa4_language").has_value());
+  CHECK(ho::GuestMetaValue("vsync=1;doa4_suits_full_bust=false;", "doa4_suits_full_bust") == std::optional<std::string>("false"));
+  // the real text: what Capture writes, joined the way np_session joins it
+  std::string captured = ho::CaptureGuestSettings([](const std::string& name) {
+    return name == "doa4_language" ? std::string("2") : name == "doa4_subtitles" ? std::string("-1") : std::string("0");
+  });
+  CHECK(!captured.empty());
+  std::replace(captured.begin(), captured.end(), '\n', ';');
+  CHECK(ho::GuestMetaValue(captured, "doa4_language") == std::optional<std::string>("2"));
+  CHECK(ho::GuestMetaValue(captured, "doa4_subtitles") == std::optional<std::string>("-1"));
+}
+
+// #428/#429: doa4_language and doa4_subtitles are also what a REMOTE host imposes on the joiner. The hand-off checks names,
+// lines and the trust class, never a value, so 42 and abc travel exactly as the same value in another carried integer
+// (video_mode_width) does; the joiner's language code then takes only a valid id (doa4::language::ResolveText) and
+// boots with the game's own language and subtitles, naming the ignored value. (What the joiner's cvar setter does with abc
+// is the SDK's int parser, not reachable here.)
+static void TestHostileLanguage() {
+  for (const char* bad : {"42", "abc"}) {
+    Group(std::string_view(bad) == "42" ? "hostile host: 42 passes the hand-off as in another carried integer, and resolves to the game's own"
+                                        : "hostile host: abc passes the hand-off as in another carried integer, and resolves to the game's own");
+    for (const char* name : {"doa4_language", "doa4_subtitles", "video_mode_width"}) {
+      g_ctx = std::string(name) + "=" + bad;
+      ho::Handoff h = Full();
+      h.guest_settings = TextWith(name, bad);
+      const Bytes b = ho::Pack(h);
+      ho::Handoff out;
+      CHECK(!b.empty());
+      CHECK(ho::Unpack(S(b), &out).empty());
+      CHECK(ho::GuestSettingValue(out.guest_settings, name) == std::optional<std::string>(bad));
+      std::vector<std::string> given;  // ApplyGuestSettings hands the value to the game's setter unchanged
+      CHECK(ho::ApplyGuestSettings(out.guest_settings, [&](const std::string& n, const std::string& v) {
+              if (n == name) given.push_back(v);
+              return true;
+            }).empty());
+      CHECK(given == std::vector<std::string>{bad});
+    }
+    g_ctx = bad;
+    std::string note = "stale";
+    const lang::Saved s = lang::ResolveText(std::string(bad), std::string(bad), &note);
+    CHECK(!s.text.has_value() && !s.subtitles.has_value());       // the game's own language and subtitles
+    CHECK(note.find(std::string("language ") + bad) != std::string::npos);  // the log names each ignored value
+    CHECK(note.find(std::string("subtitles ") + bad) != std::string::npos);
+  }
+  g_ctx.clear();
+  Group("hostile host: a valid pair from a hand-off resolves to itself; a missing line is the game's own, silently");
+  {
+    std::string note = "stale";
+    const lang::Saved s = lang::ResolveText(std::string("2"), std::string("8"), &note);
+    CHECK(s.text == std::optional<uint8_t>(2) && s.subtitles == std::optional<uint8_t>(8));
+    CHECK(note.empty());
+    const lang::Saved none = lang::ResolveText(std::nullopt, std::nullopt, &note);
+    CHECK(!none.text.has_value() && !none.subtitles.has_value() && note.empty());
+  }
 }
 
 static void TestCapture() {
@@ -2131,8 +2220,9 @@ static void TestSdkNames(const std::string& sdk_src, const std::string& port_src
   std::set<std::string> port_expected(kPortNotCarried, kPortNotCarried + kPortNotCarriedCount);
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) CHECK(port_expected.insert(t.cvar).second);
   for (const char* n : kPortCarried) CHECK(port_expected.insert(n).second);
-  CHECK(port_expected.size() == kPortNotCarriedCount + doa4::tweaks::AllTweaks().size() + 1);
-  CHECK(!IsTrusted("doa4_suits_full_bust"));  // carried at the host's value, not forced: it is no boundary of the PC
+  CHECK(port_expected.size() == kPortNotCarriedCount + doa4::tweaks::AllTweaks().size() + kPortCarriedCount);
+  CHECK(kPortCarriedCount == 3);
+  for (const char* n : kPortCarried) CHECK(!IsTrusted(n));  // carried at the host's value, not forced: no boundary of the PC
   for (const auto& d : port) {
     g_ctx = d.first;
     CHECK(port_expected.count(d.first) == 1);
@@ -2240,6 +2330,8 @@ int main(int argc, char** argv) {
   TestFuzz();
   TestGuestNames();
   TestGuestSettingValue();
+  TestGuestMetaValue();
+  TestHostileLanguage();
   TestCapture();
   TestApply();
   TestTrustClass();

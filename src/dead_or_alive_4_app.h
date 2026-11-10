@@ -48,6 +48,7 @@
 #include "doa4_extras.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
+#include "doa4_language.h"
 #include "doa4_lowmem.h"
 #include "doa4_net_overlay.h"
 #include "doa4_online_view.h"
@@ -1118,6 +1119,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     SyncCostumeCounts();
     LatchSuitsRestart();  // the Esc import ended (a timer, not a painted frame)
     PollExtrasRequest();
+    SaveLanguageChoice();
     if (rex::cvar::Query<bool>("doa4_show_fps")) {
       const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
       fps_meter_.Sample(GpuSwaps(), now);
@@ -1128,6 +1130,24 @@ class DeadOrAlive4App : public rex::ReXApp {
     } else {
       fps_meter_ = {};  // on again later: a new window, not an average over the time it was off
     }
+  }
+
+  // A language picked on the game's own options screen (doa4_language_hooks.cpp notes it on the game thread, never in a
+  // session or a replay): both keys saved as integers, then the cvars set to match, so the SDK's F4 "Save to config"
+  // (which writes every changed cvar) keeps them. What this run applied is latched (SavedForThisRun) and does not change.
+  void SaveLanguageChoice() {
+    const std::optional<doa4::language::Seen> seen = doa4::language::TakePendingSave();
+    if (!seen) return;
+    const std::string text = std::to_string(seen->text), subtitles = std::to_string(seen->subtitles);
+    std::string error = doa4::SaveTomlKey(ConfigPath(), "doa4_language", text);
+    if (error.empty()) error = doa4::SaveTomlKey(ConfigPath(), "doa4_subtitles", subtitles);
+    if (!error.empty()) {
+      REXLOG_WARN("[doa4][LANG] text {} subtitles {} not saved: {}", text, subtitles, error);
+      return;
+    }
+    rex::cvar::SetFlagByName("doa4_language", text);
+    rex::cvar::SetFlagByName("doa4_subtitles", subtitles);
+    REXLOG_INFO("[doa4][LANG] saved text {} subtitles {} (game options)", text, subtitles);
   }
 
   // Test switch: DOA4_EXTRAS_REQUEST=<file>: the file's text goes to MenuDialog::TestAction, once (a minimized window

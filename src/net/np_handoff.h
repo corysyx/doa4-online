@@ -80,6 +80,9 @@ std::string Unpack(std::span<const uint8_t> bytes, Handoff* out);
 const std::vector<std::string>& GuestSettingNames();
 // The value of `name` in a guest settings text (the name ends at the first '='), or nothing when no line carries it.
 std::optional<std::string> GuestSettingValue(std::string_view text, std::string_view name);
+// The same for a guest settings text kept as one meta value (np_session GuestMeta: the lines joined by ';', "(none)" when
+// there is none): the value of `name`, or nothing.
+std::optional<std::string> GuestMetaValue(std::string_view meta, std::string_view name);
 // The TRUST class (fix round 1): carried settings whose non-default value weakens a boundary of the PC that applies
 // it (the guest-writable game folder, patches loaded from disk, debug monitors, memory protection, host thread
 // priority and affinity, a remote command line, a remote heap size). They are forced to their default on both

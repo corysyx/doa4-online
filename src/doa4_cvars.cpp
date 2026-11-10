@@ -53,6 +53,15 @@ REXCVAR_DEFINE_BOOL(netplay_show_stats, false, "DOA4",
                     "Online play: show the connection stats line");
 REXCVAR_DEFINE_BOOL(netplay_upnp, true, "DOA4",
                     "Online play: open the port on the router (UPnP) when hosting");
+// The game's text and subtitles language (doa4_language.h), saved when the player changes them on the game's own options
+// screen and applied at boot (doa4_language_hooks.cpp). -1: never saved, the game's own. Carried into a session (np_handoff
+// kPortSettings): both PCs boot with the host's, and nothing in a session saves them.
+REXCVAR_DEFINE_INT32(doa4_language, -1, "DOA4",
+                     "Game text language: -1 the game's own, 0 Japanese, 1 English, 2 French, 3 German, 4 Italian, "
+                     "5 Spanish, 6 Traditional Chinese, 7 Korean");
+REXCVAR_DEFINE_INT32(doa4_subtitles, -1, "DOA4",
+                     "Game subtitles language (Language > Subtitles in the game's options): -1 the game's own, 0-7 as the "
+                     "text language, 8 off/default");
 // Extras tab: DOAX2 swimsuits (doa4_suits_bust.h).
 REXCVAR_DEFINE_BOOL(doa4_suits_full_bust, false, "DOA4",
                     "DOAX2 swimsuits: full DOAX2 up and down breast movement");

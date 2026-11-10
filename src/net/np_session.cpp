@@ -44,6 +44,7 @@
 #include "generated/default/dead_or_alive_4_init.h"
 
 #include "../doa4_gamefiles.h"
+#include "../doa4_language_hooks.h"
 #include "../doa4_photo_win.h"
 #include "../doa4_tweaks.h"
 #include "../doa4_unlocks.h"
@@ -1698,6 +1699,15 @@ void PrepareReplayRules() {
 
 bool Online() { return S().mode == Mode::kOnline; }
 
+bool Replaying() { return S().mode == Mode::kReplay; }
+
+std::optional<std::string> SessionGuestValue(std::string_view name) {
+  const State& s = S();
+  if (s.mode == Mode::kOnline) return handoff::GuestSettingValue(s.ho.guest_settings, name);
+  if (s.mode == Mode::kReplay) return handoff::GuestMetaValue(s.guest_meta, name);
+  return std::nullopt;
+}
+
 bool SessionSuitsMixed() {
   static const bool off = MixedOff("slot");
   return Online() && S().ho.suit_state == rules::SuitSession::kMixed && !off;
@@ -1705,7 +1715,7 @@ bool SessionSuitsMixed() {
 
 std::optional<bool> SessionFullBust() {
   if (!Online()) return std::nullopt;
-  const std::optional<std::string> value = handoff::GuestSettingValue(S().ho.guest_settings, "doa4_suits_full_bust");
+  const std::optional<std::string> value = SessionGuestValue("doa4_suits_full_bust");
   return value ? std::optional<bool>(*value == "true") : std::nullopt;
 }
 
@@ -1939,6 +1949,8 @@ void Shutdown() {
 // ---- Hooks ----
 
 REX_HOOK_RAW(sub_824F4498) {
+  // The language code's frame step (doa4_language_hooks.h): every frame, in a session or not, before the frame's hash.
+  doa4::language::OnFrame(base);
   if (doa4::np::Active()) doa4::np::OnFrame(ctx, base);
   __imp__sub_824F4498(ctx, base);
   // The frame function stores the host-timed GPU frame time into 0x831008E8 / 0x831008E4, which the

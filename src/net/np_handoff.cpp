@@ -52,7 +52,11 @@ constexpr const char* kSdkSettings[] = {
 // one value. Two things write the cvar on a player's PC: the Extras tab, locked in a session, and the SDK's F4 settings overlay,
 // which is not. So in a session the reader (FullBustWanted, doa4_suits_hooks.cpp) takes the hand-off's value once and never the
 // cvar again: a toggle cannot end a match.
-constexpr const char* kPortSettings[] = {"doa4_suits_full_bust"};
+// doa4_language and doa4_subtitles (update G1): the saved text and subtitles language, written into guest memory at boot, so in a
+// session both PCs boot with the host's. The same rule: the reader (doa4::language::SavedForThisRun) takes the hand-off's
+// values once, never the cvars, and a joiner applies only a valid id (anything else is the game's own, logged). No value is
+// checked here: like every carried integer, a value the joiner's cvar cannot hold is refused when it is applied.
+constexpr const char* kPortSettings[] = {"doa4_suits_full_bust", "doa4_language", "doa4_subtitles"};
 
 // The TRUST class: carried settings whose NON-DEFAULT value weakens a boundary of the PC that applies it.
 // They are forced to their default on both sides of a session:
@@ -480,6 +484,13 @@ std::optional<std::string> GuestSettingValue(std::string_view text, std::string_
     pos = end + 1;
   }
   return std::nullopt;
+}
+
+std::optional<std::string> GuestMetaValue(std::string_view meta, std::string_view name) {
+  if (meta == "(none)") return std::nullopt;
+  std::string text(meta);
+  std::replace(text.begin(), text.end(), ';', '\n');
+  return GuestSettingValue(text, name);
 }
 
 std::string ApplyGuestSettings(std::string_view text,
