@@ -91,6 +91,7 @@ REXCVAR_DECLARE(bool, log_noisy);
 
 extern "C" void doa4_arm_shutdown_watchdog();       // doa4_app_hooks.cpp
 extern "C" void doa4_wait_for_previous_instance();  // doa4_app_hooks.cpp
+extern "C" void doa4_idle_waits_attach(rex::graphics::CommandProcessor* cp);  // doa4_idle_waits.cpp
 
 class DeadOrAlive4App : public rex::ReXApp {
  public:
@@ -634,6 +635,13 @@ class DeadOrAlive4App : public rex::ReXApp {
     SetUpSuits();      // after the mounts and SetUpExtras (OnPostLoadXexImage), before any guest code runs
     StartThreadSnapshotter();
     StartTestLobbyWatch();  // netplay: DOA4_NP_TEST_DIR only (np_ctl.on creates the lobby)
+    {
+      // Idle waits (issue #4, doa4_idle_waits.cpp): the loader and GPU fence waits sleep instead of spinning. Before any
+      // guest code runs; reads doa4_idle_waits once.
+      rex::Runtime* rt = runtime();
+      auto* graphics = rt ? dynamic_cast<rex::graphics::GraphicsSystem*>(rt->graphics_system()) : nullptr;
+      doa4_idle_waits_attach(graphics ? graphics->command_processor() : nullptr);
+    }
 
     // Photo/snapshot capture reads the rendered frame back from GUEST memory.
     // rexglue's GPU defaults readback_resolve="none", so render-to-texture

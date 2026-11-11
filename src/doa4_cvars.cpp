@@ -14,6 +14,11 @@ REXCVAR_DEFINE_BOOL(doa4_christie_costume, false, "DOA4", "Christie's cutscene c
 // Game tab and F7: frames per second over the game. Host-only: not carried to the other player.
 REXCVAR_DEFINE_BOOL(doa4_show_fps, false, "DOA4", "Show frames per second over the game");
 
+// Issue #4 (CPU heat): the loader and GPU fence waits sleep instead of spinning a core each (doa4_idle_waits.cpp). Read once
+// at start-up; not in the menu (a fallback and the A/B switch). Host-only: not carried to the other player (it changes no
+// guest state, only the host time between the guest's own checks).
+REXCVAR_DEFINE_BOOL(doa4_idle_waits, true, "DOA4", "Let the game's loader and GPU waits sleep instead of spinning (lower CPU use)");
+
 // Game tab: skip the boot intro (doa4_intro_skip.h), read once at start-up: the game starts at the title screen. Host-only: not
 // carried to the other player (a session skips every movie on both PCs anyway).
 REXCVAR_DEFINE_BOOL(doa4_skip_intro, false, "DOA4", "Skip the intro at start-up: start at the title screen");

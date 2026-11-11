@@ -14,6 +14,7 @@ include(generated/rexglue.cmake)
 set(DEADORALIVE4_SOURCES
     src/main.cpp
     src/doa4_app_hooks.cpp
+    src/doa4_idle_waits.cpp
     src/doa4_debug_hooks.cpp
     src/doa4_diag_overlay.cpp
     src/doa4_config.cpp
