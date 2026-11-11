@@ -1291,6 +1291,22 @@ class DeadOrAlive4App : public rex::ReXApp {
     } else {
       fps_meter_ = {};  // on again later: a new window, not an average over the time it was off
     }
+    PaintOverlayDuringHold();
+  }
+
+  // Issue #4: the overlay is display-only (doa4_net_overlay.h), so the guest output's frames repaint it. During a hold
+  // (no guest frame: "Waiting for the other player...") nothing would paint a new banner or F9 line, so a paint is
+  // requested while the overlay still has content it has not shown AND no guest frame came since the previous tick
+  // (overlay_paint::HoldWatch): while the game runs, even slowly, its frames draw the change, and a request there would
+  // only add a present that repeats the last frame. A minimized window never paints; the request is a no-op there.
+  void PaintOverlayDuringHold() {
+    const bool needs = net_overlay_ && net_overlay_->NeedsPaint(NetOverlayContent());
+    if (!overlay_hold_.Tick(needs, GpuSwaps())) return;  // every tick, so the count stays the previous tick's
+    if (overlay_hold_.StreakStarted()) REXLOG_INFO("[doa4][NET] overlay: no frame for a tick, a paint is requested");
+    rex::Runtime* rt = runtime();
+    auto* graphics = rt ? dynamic_cast<rex::graphics::GraphicsSystem*>(rt->graphics_system()) : nullptr;
+    rex::ui::Presenter* presenter = graphics ? graphics->presenter() : nullptr;
+    if (presenter) presenter->RequestUIPaintFromUIThread();
   }
 
   // A language picked on the game's own options screen (doa4_language_hooks.cpp notes it on the game thread, never in a
@@ -1928,6 +1944,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   bool game_files_from_command_line_ = false;
   std::unique_ptr<doa4::DiagOverlayDialog> diag_overlay_;
   std::unique_ptr<doa4::NetOverlay> net_overlay_;  // the banner / F9 box; exists only while one is shown
+  doa4::overlay_paint::HoldWatch overlay_hold_;      // PaintOverlayDuringHold's hold detector (UI thread)
   std::atomic<bool> net_closing_{false};           // set at shutdown: no new overlay
   std::string net_logged_banner_;                  // the last banner text logged (UI thread)
   std::string net_logged_stats_;                   // the last "stats:" line logged (UI thread)
