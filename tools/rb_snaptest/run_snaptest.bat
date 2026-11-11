@@ -1,8 +1,9 @@
 @echo off
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
-rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.106 or later) and double-click it. The game plays a scripted
+rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.107 or later) and double-click it. The game plays a scripted
 rem Versus fight by itself twice (about 2 minutes each), rewinds it 12 times each time and checks that every replay
-rem comes out the same: first with the D3D fence counter left as it is, then with it put back with the snapshot.
+rem comes out the same: first with the D3D device put back with the snapshot (except its ring pointers), then the
+rem same with one more device word (+1396) left as it is.
 rem Your own save is not used or changed: each run gets a fresh, empty user data folder. A run that has not ended
 rem after 5 minutes is closed.
 setlocal
@@ -28,14 +29,14 @@ set "CACHEARG="
 if exist "%CACHE%" set "CACHEARG=--cache_path=%CACHE%"
 echo The game now plays a fight by itself, twice, and rewinds it a few times (about 4 minutes in all).
 echo Do not touch it: it closes by itself each time.
-for %%M in (kept rewind) do call :run %%M
+for %%M in (restore restore1396) do call :run %%M
 if exist "%HERE%snaptest_results.zip" del "%HERE%snaptest_results.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_kept','%HERE%snaptest_run_rewind' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_restore','%HERE%snaptest_run_restore1396' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
 echo.
 if exist "%HERE%snaptest_results.zip" (
   echo DONE. Send snaptest_results.zip from the game folder.
 ) else (
-  echo DONE, but the results could not be zipped: send the folders snaptest_run_kept and snaptest_run_rewind.
+  echo DONE, but the results could not be zipped: send the folders snaptest_run_restore and snaptest_run_restore1396.
 )
 pause
 exit /b 0
@@ -46,7 +47,10 @@ if exist "%RUN%" rmdir /s /q "%RUN%"
 mkdir "%RUN%\userdata"
 mkdir "%RUN%\out"
 set "DOA4_NP_DIR=%RUN%\out"
-set "DOA4_NP_SNAPTEST_FENCE=%1"
+set "DOA4_NP_SNAPTEST_FENCE=rewind"
+set "DOA4_NP_SNAPTEST_DEVICE=restore"
+set "DOA4_NP_SNAPTEST_DEVLIVE="
+if "%1"=="restore1396" set "DOA4_NP_SNAPTEST_DEVLIVE=1396"
 echo.
 echo Run %1 ...
 start "" "%HERE%dead_or_alive_4.exe" "--user_data_root=%RUN%\userdata" "--log_file=%RUN%\game.log" --headless=true %CACHEARG%

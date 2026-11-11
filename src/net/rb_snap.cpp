@@ -215,6 +215,10 @@ struct Snap {
   std::vector<uint8_t> dev_save;   // the device's bytes at the save
   bool fence_rewind = false;       // DOA4_NP_SNAPTEST_FENCE=rewind: the fence counter goes back with the snapshot
   uint32_t fence_at_save = 0;
+  bool dev_restore = false;        // DOA4_NP_SNAPTEST_DEVICE=restore: the device goes back too, except its ring words
+  std::vector<uint32_t> dev_extra; // DOA4_NP_SNAPTEST_DEVLIVE: more device offsets kept live in restore mode
+  std::vector<uint32_t> dev_live;  // restore mode: the device offsets kept live in this test
+  bool dev_listed = false;         // the full list of changed device words was logged once
   std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
   std::vector<uint8_t> b1_buf;
 };
@@ -277,7 +281,10 @@ bool Kept(const Snap& s, uint32_t addr) {
 
 void BuildKeeps(Snap& s) {
   s.keeps.clear();
-  if (s.dev_end > s.dev) s.keeps.push_back(Keep{s.dev, s.dev_end});
+  if (s.dev_end > s.dev && !s.dev_restore) s.keeps.push_back(Keep{s.dev, s.dev_end});
+  if (s.dev_end > s.dev && s.dev_restore) {
+    for (uint32_t o : s.dev_live) s.keeps.push_back(Keep{s.dev + o, s.dev + o + 4});
+  }
   for (uint32_t w : s.live) s.keeps.push_back(Keep{w, w + 4});
   std::sort(s.keeps.begin(), s.keeps.end(), [](const Keep& a, const Keep& b) { return a.lo < b.lo; });
   std::vector<Keep> merged;
@@ -373,12 +380,46 @@ void FindDevice(Snap& s, uint8_t* base) {
   s.dev = dev;
   s.dev_end = dev + kDeviceSize;
   const uint32_t raw = Be32(base + dev - 4);  // an aligned allocation keeps the block it came from just before it
+  if (s.dev_restore) {
+    std::string extra;
+    for (uint32_t o : s.dev_extra) extra += fmt::format(" +{}", o);
+    Out(fmt::format("the D3D device {:08X}-{:08X} ({} bytes; aligned block from {:08X}) goes back with the snapshot "
+                    "(DOA4_NP_SNAPTEST_DEVICE=restore) except its ring words (+0 +4 +8 and the words that point "
+                    "near the ring){}{}; its fence counter goes back too",
+                    dev, s.dev_end, kDeviceSize, raw, extra.empty() ? "" : " and (DOA4_NP_SNAPTEST_DEVLIVE)", extra));
+    return;
+  }
   Out(fmt::format("the D3D device {:08X}-{:08X} ({} bytes; aligned block from {:08X}) keeps its current bytes at a "
                   "load{}",
                   dev, s.dev_end, kDeviceSize, raw,
                   s.fence_rewind ? " except its fence counter, which goes back with the snapshot "
                                    "(DOA4_NP_SNAPTEST_FENCE=rewind)"
                                  : ""));
+}
+
+// Restore mode: the device words that must stay as they are at a load: the ring pointers (+0 write, +4 limit,
+// +8 guarantee: the GPU reads the ring on from where it is, so the device must not move its write pointer back) and
+// any other word holding an address near the ring (the same physical 64 MB), plus DOA4_NP_SNAPTEST_DEVLIVE.
+void ClassifyDeviceLive(Snap& s, uint8_t* base) {
+  s.dev_live.clear();
+  if (!s.dev || !s.dev_restore) return;
+  const uint32_t ring = Be32(base + s.dev) & 0x1FFFFFFFu;
+  for (uint32_t o = 0; o + 4 <= kDeviceSize; o += 4) {
+    const uint32_t v = Be32(base + s.dev + o);
+    bool live = o <= 8;
+    if (!live && o != kFenceWriteback && ring) {
+      const bool physical = (v >= 0xA0000000u && v < 0xC0000000u) || (v >= 0x10000000u && v < 0x20000000u);
+      const uint32_t pv = v & 0x1FFFFFFFu;
+      live = physical && (pv > ring ? pv - ring : ring - pv) < (64u << 20);
+    }
+    if (live || std::find(s.dev_extra.begin(), s.dev_extra.end(), o) != s.dev_extra.end()) s.dev_live.push_back(o);
+  }
+}
+
+std::string DevLiveText(const Snap& s, uint8_t* base) {
+  std::string t;
+  for (uint32_t o : s.dev_live) t += fmt::format(" +{}={:08X}", o, Be32(base + s.dev + o));
+  return t;
 }
 
 uint8_t* GuestPtr(uint8_t* base, uint32_t addr) { return base + addr + (addr >= 0xE0000000u ? 0x1000u : 0u); }
@@ -453,6 +494,10 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
   const auto t0 = std::chrono::steady_clock::now();
+  ClassifyDeviceLive(s, base);
+  if (s.dev_restore && s.tests_done == 0) {
+    Out(fmt::format("device words kept live in restore mode ({}):{}", s.dev_live.size(), DevLiveText(s, base)));
+  }
   AddLive(&s.live, s.live_new);
   s.live_new.clear();
   BuildKeeps(s);
@@ -551,12 +596,14 @@ void Load(Snap& s, uint8_t* base) {
       const uint32_t was = Be32(s.dev_save.data() + o), now = Be32(base + s.dev + o);
       if (was == now) continue;
       top = o;
-      if (++n <= 48) t += fmt::format("{}+{} {:08X}->{:08X}", n > 1 ? ", " : "", o, was, now);
+      if (++n <= (s.dev_listed ? 48u : 100000u)) t += fmt::format("{}+{} {:08X}->{:08X}", n > 1 ? ", " : "", o, was, now);
     }
+    s.dev_listed = true;
     Out(fmt::format("{} device words changed since the save (highest at +{}){}{}", n, top, n ? ": " : "", t));
   }
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
   const auto t0 = std::chrono::steady_clock::now();
+  const Fence fence_before = ReadFence(s, base);  // the device's counter before the restore (restore mode puts it back)
   // the kept bytes as they are now
   std::vector<uint8_t> kept;
   for (const Keep& k : s.keeps) kept.insert(kept.end(), base + k.lo, base + k.hi);
@@ -577,7 +624,7 @@ void Load(Snap& s, uint8_t* base) {
   }
   std::string fence_text;
   if (s.fence_rewind && s.dev) {
-    const Fence f = ReadFence(s, base);
+    const Fence f = fence_before;
     Put32(base + s.dev + kFenceCounter, s.fence_at_save);
     if (f.wb_addr) Put32(GuestPtr(base, f.wb_addr), s.fence_at_save - 2);
     fence_text = fmt::format("; fence {:08X} (GPU finished {:08X}{}) put back to {:08X}", f.issued, f.finished,
@@ -678,6 +725,18 @@ bool SnapActive() {
     s.full = mode && std::string(mode) == "full";
     const char* fence = std::getenv("DOA4_NP_SNAPTEST_FENCE");
     s.fence_rewind = fence && std::string(fence) == "rewind";
+    const char* device = std::getenv("DOA4_NP_SNAPTEST_DEVICE");
+    s.dev_restore = device && std::string(device) == "restore";
+    if (s.dev_restore) s.fence_rewind = true;  // the counter goes back with the device: the GPU's writeback must too
+    if (const char* extra = std::getenv("DOA4_NP_SNAPTEST_DEVLIVE")) {
+      std::string_view rest = extra;
+      while (!rest.empty()) {
+        const size_t comma = rest.find(',');
+        uint32_t o = 0;
+        if (ParseU32(Trim(rest.substr(0, comma)), &o) && o % 4 == 0 && o < kDeviceSize) s.dev_extra.push_back(o);
+        rest = comma == std::string_view::npos ? std::string_view() : rest.substr(comma + 1);
+      }
+    }
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page
     np::LogLine(fmt::format("[doa4][RB] snaptest: on - {} tests of {} frames, the first entering frame {}, then every {} "
                             "frames; snapshot of {}",

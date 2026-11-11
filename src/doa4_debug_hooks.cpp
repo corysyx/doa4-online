@@ -838,6 +838,35 @@ static FpVehInstaller s_fp_veh_installer;
 // terminal, nobody-handled-it fault -- so it is spam-free and captures exactly
 // the crash we currently can't see. We log host + guest state, then let the
 // process die (EXECUTE_HANDLER) so behaviour is otherwise unchanged.
+// The guest base: the SDK maps guest memory at 0x100000000 (an AV at host 0x100000000 is a guest read of 0).
+static uint8_t* GuestBase() {
+  if (auto* ks = rex::system::kernel_state()) {
+    if (auto* mem = ks->memory()) {
+      if (uint8_t* b = mem->virtual_membase()) return b;
+    }
+  }
+  return reinterpret_cast<uint8_t*>(0x100000000ull);
+}
+
+// Fills ret with the return addresses up the guest back chain from sp; the count, or -1 - count if a read faulted.
+static int WalkGuestChain(uint32_t sp, uint32_t* ret, int max) {
+  const uint8_t* membase = GuestBase();
+  int n = 0;
+  __try {
+    for (; n < max && sp >= 0x70000000u && sp < 0x7F000000u;) {
+      const uint8_t* q = membase + sp;
+      const uint32_t up = (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3];
+      if (up <= sp || up >= 0x7F000000u || up - sp > 0x100000u) break;
+      const uint8_t* r = membase + up - 8;
+      ret[n++] = (uint32_t(r[0]) << 24) | (uint32_t(r[1]) << 16) | (uint32_t(r[2]) << 8) | r[3];
+      sp = up;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return -1 - n;
+  }
+  return n;
+}
+
 LONG WINAPI DoaUnhandledFilter(PEXCEPTION_POINTERS ex_info) {
   auto* er = ex_info->ExceptionRecord;
   HMODULE main_mod = GetModuleHandleW(nullptr);
@@ -855,27 +884,17 @@ LONG WINAPI DoaUnhandledFilter(PEXCEPTION_POINTERS ex_info) {
     REXLOG_CRITICAL("[doa4][CRASH]   guest lr={:#x} r1={:#x} r3={:#x} r4={:#x} r11={:#x} r31={:#x}",
                     (uint32_t)p->lr, (uint32_t)p->r1.u64, (uint32_t)p->r3.u64,
                     (uint32_t)p->r4.u64, (uint32_t)p->r11.u64, (uint32_t)p->r31.u64);
+    if (auto* l = ::rex::GetLoggerRaw(::rex::log::core())) l->flush();
     // The guest call chain: each frame's back chain word at [sp] leads to the caller's frame, whose saved lr is at
-    // [caller sp - 8] (the prologues' stw r12,-8(r1) / __savegprlr).
-    uint8_t* membase = nullptr;
-    if (auto* ks = rex::system::kernel_state()) {
-      if (auto* mem = ks->memory()) membase = mem->virtual_membase();
-    }
-    if (membase) {
-      auto rd = [membase](uint32_t a) {
-        const uint8_t* q = membase + a;
-        return (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3];
-      };
-      std::string chain;
-      uint32_t sp = (uint32_t)p->r1.u64;
-      for (int k = 0; k < 16 && sp >= 0x70000000u && sp < 0x7F000000u; ++k) {
-        const uint32_t up = rd(sp);
-        if (up <= sp || up >= 0x7F000000u || up - sp > 0x100000u) break;
-        chain += fmt::format(" {:08X}", rd(up - 8));
-        sp = up;
-      }
-      REXLOG_CRITICAL("[doa4][CRASH]   guest call chain (return addresses):{}", chain.empty() ? " (none)" : chain);
-    }
+    // [caller sp - 8] (the prologues' stw r12,-8(r1) / __savegprlr). Walked under SEH (WalkGuestChain): a fault in
+    // here must not take the rest of the report with it, as it did in 0.3.106.
+    uint32_t ret[16] = {};
+    const int n = WalkGuestChain((uint32_t)p->r1.u64, ret, 16);
+    std::string chain;
+    for (int k = 0; k < (n < 0 ? -1 - n : n); ++k) chain += fmt::format(" {:08X}", ret[k]);
+    REXLOG_CRITICAL("[doa4][CRASH]   guest call chain (return addresses):{}{}", chain.empty() ? " (none)" : chain,
+                    n < 0 ? " (the walk faulted)" : "");
+    if (auto* l = ::rex::GetLoggerRaw(::rex::log::core())) l->flush();
   }
   void* frames[20] = {};
   USHORT n = CaptureStackBackTrace(0, 20, frames, nullptr);
