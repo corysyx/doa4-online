@@ -9,8 +9,10 @@
 // across it, rb_snap.cpp) the snapshot is taken: every 4 KB page the game's code wrote since the session started
 // (doa4_wmap, milestone 1) in the areas rollback restores (the heaps and the XEX data; not the thread stacks, not
 // physical memory: that is the GPU's command and vertex data, measured in milestone 1). Some bytes keep their current
-// value at a load: the D3D device's heap block (it follows the GPU, which is not rolled back) and every word seen
-// changing while the game stood still at a save or a load (written by the GPU or by a thread that runs on). The run goes on <frames> frames, recording their input and a hash of
+// value at a load: the D3D device (its 20608 bytes; it follows the GPU, which is not rolled back - with
+// DOA4_NP_SNAPTEST_FENCE=rewind its fence counter goes back anyway, after the GPU has finished every fence) and every
+// word seen changing while the game stood still at a save or a load (written by the GPU or by a thread that runs on).
+// Every guest thread's virtual clock (np_det.cpp) is saved and put back with the snapshot. The run goes on <frames> frames, recording their input and a hash of
 // the snapshot's pages at every boundary. Then the snapshot is restored, the frame counter goes back to <at>, and the
 // same frames run again with the recorded input. At every boundary the hash must be the one of the first pass; at
 // the end the memory is compared word by word with the first pass's end, and what differs is logged by area, by

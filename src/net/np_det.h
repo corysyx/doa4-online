@@ -41,4 +41,9 @@ std::string FixSetName();
 // False outside a session, so the hook runs the original exactly as before. lr = the call's return address.
 bool SkipKeepAliveSwap(uint32_t lr);
 
+// Rollback (rb_snap.cpp): every guest thread's virtual clock (np_core.h ThreadClock) is saved with a snapshot and put
+// back with it; a clock never runs backwards on its own. Returns the number of clocks.
+uint32_t SaveClocks();
+uint32_t RestoreClocks();
+
 }  // namespace doa4::np::det

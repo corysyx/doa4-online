@@ -13,7 +13,10 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <string>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include <rex/exception_handler.h>
 #include <rex/hook.h>
@@ -852,6 +855,27 @@ LONG WINAPI DoaUnhandledFilter(PEXCEPTION_POINTERS ex_info) {
     REXLOG_CRITICAL("[doa4][CRASH]   guest lr={:#x} r1={:#x} r3={:#x} r4={:#x} r11={:#x} r31={:#x}",
                     (uint32_t)p->lr, (uint32_t)p->r1.u64, (uint32_t)p->r3.u64,
                     (uint32_t)p->r4.u64, (uint32_t)p->r11.u64, (uint32_t)p->r31.u64);
+    // The guest call chain: each frame's back chain word at [sp] leads to the caller's frame, whose saved lr is at
+    // [caller sp - 8] (the prologues' stw r12,-8(r1) / __savegprlr).
+    uint8_t* membase = nullptr;
+    if (auto* ks = rex::system::kernel_state()) {
+      if (auto* mem = ks->memory()) membase = mem->virtual_membase();
+    }
+    if (membase) {
+      auto rd = [membase](uint32_t a) {
+        const uint8_t* q = membase + a;
+        return (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3];
+      };
+      std::string chain;
+      uint32_t sp = (uint32_t)p->r1.u64;
+      for (int k = 0; k < 16 && sp >= 0x70000000u && sp < 0x7F000000u; ++k) {
+        const uint32_t up = rd(sp);
+        if (up <= sp || up >= 0x7F000000u || up - sp > 0x100000u) break;
+        chain += fmt::format(" {:08X}", rd(up - 8));
+        sp = up;
+      }
+      REXLOG_CRITICAL("[doa4][CRASH]   guest call chain (return addresses):{}", chain.empty() ? " (none)" : chain);
+    }
   }
   void* frames[20] = {};
   USHORT n = CaptureStackBackTrace(0, 20, frames, nullptr);

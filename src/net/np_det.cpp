@@ -59,11 +59,15 @@
 
 #include "np_det.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
@@ -146,7 +150,38 @@ std::atomic<uint32_t> g_reader_threads{0}, g_reader_fallbacks{0};
 
 // ---- Virtual clocks ----
 // The formulas and the never-backwards rule are in np_core.h; each thread keeps its own clock.
-thread_local ThreadClock t_clock;
+// Each thread's clock is registered so a rollback can put every clock back with the rest of the state (rb_snap.cpp:
+// a clock that kept its later value after a rewind returned time 8 frames ahead until the frame caught up with it).
+struct ClockSlot;
+struct ClockRegistry {
+  std::mutex mu;
+  std::vector<ClockSlot*> all;
+  std::vector<std::pair<ClockSlot*, ThreadClock>> saved;
+  bool has_saved = false;
+};
+ClockRegistry& Clocks() {
+  static ClockRegistry* r = new ClockRegistry();  // never destroyed: threads may exit after static destruction
+  return *r;
+}
+struct ClockSlot {
+  ThreadClock c;
+  ClockSlot() {
+    std::lock_guard lk(Clocks().mu);
+    Clocks().all.push_back(this);
+  }
+  ~ClockSlot() {
+    ClockRegistry& r = Clocks();
+    std::lock_guard lk(r.mu);
+    r.all.erase(std::remove(r.all.begin(), r.all.end(), this), r.all.end());
+    for (auto& e : r.saved) {
+      if (e.first == this) e.first = nullptr;
+    }
+  }
+};
+ThreadClock* MyClock() {
+  thread_local ClockSlot slot;
+  return &slot.c;
+}
 
 // The SDK's guest-time override: guest threads get the virtual clocks; host
 // threads (GPU vblank, kernel dispatch) keep the host clock; the audio worker, while it runs
@@ -162,7 +197,7 @@ bool GuestTime(int kind, uint64_t* value) {
   if (!rex::system::XThread::IsInThread()) return false;  // a plain host thread (no XThread)
   rex::system::XThread* thread = rex::system::XThread::GetCurrentThread();
   if (!thread->is_guest_thread()) return false;
-  *value = kind == 0 ? VirtualTimebase(&t_clock, Frame()) : VirtualFileTime(&t_clock, Frame());
+  *value = kind == 0 ? VirtualTimebase(MyClock(), Frame()) : VirtualFileTime(MyClock(), Frame());
   if (Tracing()) {
     auto* ts = rex::runtime::ThreadState::Get();
     TraceRead(kind == 0 ? kRdSdkTb : kRdSdkFt, ts && ts->context() ? uint32_t(ts->context()->lr) : 0);
@@ -296,6 +331,28 @@ void Start(uint64_t seed, const std::filesystem::path& dir) {
   if (fixes & kNotify) rex_notify_lockstep(1);  // everything queued so far is visible; later ones at a boundary
 }
 
+uint32_t SaveClocks() {
+  ClockRegistry& r = Clocks();
+  std::lock_guard lk(r.mu);
+  r.saved.clear();
+  for (ClockSlot* c : r.all) r.saved.emplace_back(c, c->c);
+  r.has_saved = true;
+  return uint32_t(r.saved.size());
+}
+
+uint32_t RestoreClocks() {
+  ClockRegistry& r = Clocks();
+  std::lock_guard lk(r.mu);
+  if (!r.has_saved) return 0;
+  uint32_t n = 0;
+  for (ClockSlot* c : r.all) {
+    auto it = std::find_if(r.saved.begin(), r.saved.end(), [c](const auto& e) { return e.first == c; });
+    c->c = it != r.saved.end() ? it->second : ThreadClock{};  // a thread made after the save starts fresh
+    ++n;
+  }
+  return n;
+}
+
 void OnFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
   TraceFrame(frame);
   g_frame.store(frame, std::memory_order_release);
@@ -364,7 +421,7 @@ REX_HOOK_RAW(sub_82790138) {
       return;
     }
     if (IsMainThread()) SpinRead(ctx, base, uint32_t(ctx.lr));
-    ctx.r3.u64 = doa4::np::VirtualTickCount(&t_clock, Frame());
+    ctx.r3.u64 = doa4::np::VirtualTickCount(MyClock(), Frame());
     TraceRead(kRdTick, uint32_t(ctx.lr));
     return;
   }
@@ -380,7 +437,7 @@ REX_HOOK_RAW(sub_82792660) {
       ctx.r3.u64 = 1;
       return;
     }
-    rex::memory::store_and_swap<uint64_t>(base + ctx.r3.u32, doa4::np::VirtualTimebase(&t_clock, Frame()));
+    rex::memory::store_and_swap<uint64_t>(base + ctx.r3.u32, doa4::np::VirtualTimebase(MyClock(), Frame()));
     TraceRead(kRdQpc, uint32_t(ctx.lr));
     ctx.r3.u64 = 1;
     return;
@@ -396,7 +453,7 @@ REX_HOOK_RAW(sub_82790130) {
       rex::memory::store_and_swap<uint64_t>(base + ctx.r3.u32, doa4::np::AudioFileTime(cb));
       return;
     }
-    rex::memory::store_and_swap<uint64_t>(base + ctx.r3.u32, doa4::np::VirtualFileTime(&t_clock, Frame()));
+    rex::memory::store_and_swap<uint64_t>(base + ctx.r3.u32, doa4::np::VirtualFileTime(MyClock(), Frame()));
     TraceRead(kRdFileTime, uint32_t(ctx.lr));
     return;
   }

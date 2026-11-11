@@ -1,9 +1,10 @@
 @echo off
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
-rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.105 or later) and double-click it. The game plays a scripted
+rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.106 or later) and double-click it. The game plays a scripted
 rem Versus fight by itself twice (about 2 minutes each), rewinds it 12 times each time and checks that every replay
-rem comes out the same: first with a copy of all of the game's memory, then with only what the game's code wrote.
-rem Your own save is not used or changed: each run gets a fresh, empty user data folder.
+rem comes out the same: first with the D3D fence counter left as it is, then with it put back with the snapshot.
+rem Your own save is not used or changed: each run gets a fresh, empty user data folder. A run that has not ended
+rem after 5 minutes is closed.
 setlocal
 set "HERE=%~dp0"
 cd /d "%HERE%"
@@ -20,20 +21,21 @@ if not exist "snaptest_single.txt" (
 set "DOA4_NP=record"
 set "DOA4_NP_SCRIPT=%HERE%snaptest_single.txt"
 if not defined DOA4_NP_SNAPTEST set "DOA4_NP_SNAPTEST=1"
+set "DOA4_NP_SNAPTEST_MODE=marked"
 set "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0000/0x0000"
 set "CACHE=%USERPROFILE%\Documents\dead_or_alive_4\cache"
 set "CACHEARG="
 if exist "%CACHE%" set "CACHEARG=--cache_path=%CACHE%"
 echo The game now plays a fight by itself, twice, and rewinds it a few times (about 4 minutes in all).
 echo Do not touch it: it closes by itself each time.
-for %%M in (full marked) do call :run %%M
+for %%M in (kept rewind) do call :run %%M
 if exist "%HERE%snaptest_results.zip" del "%HERE%snaptest_results.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_full','%HERE%snaptest_run_marked' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_kept','%HERE%snaptest_run_rewind' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
 echo.
 if exist "%HERE%snaptest_results.zip" (
   echo DONE. Send snaptest_results.zip from the game folder.
 ) else (
-  echo DONE, but the results could not be zipped: send the folders snaptest_run_full and snaptest_run_marked.
+  echo DONE, but the results could not be zipped: send the folders snaptest_run_kept and snaptest_run_rewind.
 )
 pause
 exit /b 0
@@ -44,10 +46,25 @@ if exist "%RUN%" rmdir /s /q "%RUN%"
 mkdir "%RUN%\userdata"
 mkdir "%RUN%\out"
 set "DOA4_NP_DIR=%RUN%\out"
-set "DOA4_NP_SNAPTEST_MODE=%1"
+set "DOA4_NP_SNAPTEST_FENCE=%1"
 echo.
 echo Run %1 ...
-start "" /wait "%HERE%dead_or_alive_4.exe" "--user_data_root=%RUN%\userdata" "--log_file=%RUN%\game.log" --headless=true %CACHEARG%
+start "" "%HERE%dead_or_alive_4.exe" "--user_data_root=%RUN%\userdata" "--log_file=%RUN%\game.log" --headless=true %CACHEARG%
+set /a WAITED=0
+:wait
+timeout /t 5 /nobreak >nul
+set /a WAITED+=5
+tasklist /fi "imagename eq dead_or_alive_4.exe" 2>nul | find /i "dead_or_alive_4.exe" >nul
+if errorlevel 1 goto ended
+if %WAITED% geq 300 (
+  echo The game has not finished after 5 minutes: closing it.
+  echo [run_snaptest] closed after 5 minutes>>"%RUN%\out\np_log.txt"
+  taskkill /f /im dead_or_alive_4.exe >nul 2>&1
+  timeout /t 3 /nobreak >nul
+  goto ended
+)
+goto wait
+:ended
 rmdir /s /q "%RUN%\userdata" 2>nul
 findstr /c:"snaptest: done" /c:"PASS -" /c:"FAIL -" "%RUN%\out\np_log.txt" 2>nul
 exit /b 0
