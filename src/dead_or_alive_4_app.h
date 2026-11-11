@@ -479,8 +479,9 @@ class DeadOrAlive4App : public rex::ReXApp {
   // (read, deleted, the variable cleared, its build checked, the host's guest settings applied and read back), the
   // switch gate (R22), a replay's recording rules (R21) and the pids.txt line.
   void NetplayAtStart() {
-    // The start-up update notice (Task 15): the three relaunch markers as this process got them, before this function
-    // clears two of them and OnPreSetup the third (doa4_wait_for_previous_instance).
+    // The start-up update notice (Task 15): the relaunch markers as this process got them, before this function clears
+    // two of them and OnPreSetup the third (doa4_wait_for_previous_instance). DOA4_WAIT_PID is logged but does not count
+    // (R106: alone it is a restart the player chose).
     {
       const auto set = [](const char* name) {
         const char* v = std::getenv(name);
@@ -948,7 +949,8 @@ class DeadOrAlive4App : public rex::ReXApp {
     const un::StartPlan plan =
         un::AtStart(enabled, running, doa4::np::rules::IsDevBuild(running), relaunch, remembered);
     std::string relaunch_text;
-    if (relaunch) relaunch_text = " [" + update_relaunch_env_ + (netplay ? "netplay session" : "") + "]";
+    if (relaunch || !update_relaunch_env_.empty())  // the markers seen (DOA4_WAIT_PID alone: a normal start, R106)
+      relaunch_text = " [" + update_relaunch_env_ + (netplay ? "netplay session" : "") + "]";
     REXLOG_INFO("[doa4][UPDATE] start-up notice: {}{} (doa4_update_notice {}, running {}, remembered {})", plan.why,
                 relaunch_text, enabled ? "on" : "off", running, remembered.empty() ? "none" : remembered);
     if (plan.clear_memory) SetUpdateMemory("");
@@ -1022,11 +1024,26 @@ class DeadOrAlive4App : public rex::ReXApp {
     }
     un::TitleWatch& w = un::Title();
     const uint32_t now = doa4::intro_skip::Swaps();
-    if (!update_title_ended_ && w.Ended(now)) {
+    // R105: a press on the title is pending until the next screen's own sprite confirms it (the hook logs that sprite)
+    const bool pending = w.Pending(now);
+    if (pending != update_title_pending_) {
+      update_title_pending_ = pending;
+      if (update_title_lines_ < 32) {
+        ++update_title_lines_;
+        if (pending) {
+          REXLOG_INFO("[doa4][UPDATE] title: press at swap {} pending (swap {}): the notice hides until it is confirmed "
+                      "or cancelled", w.PressSwap() - 1, now);
+        } else if (!w.Ended()) {
+          REXLOG_INFO("[doa4][UPDATE] title: press at swap {} cancelled at swap {} (PRESS START last drawn at swap {})",
+                      w.PressSwap() - 1, now, w.LastVisibleSwap() - 1);
+        }
+      }
+    }
+    if (!update_title_ended_ && w.Ended()) {
       update_title_ended_ = true;
-      REXLOG_INFO("[doa4][UPDATE] title: Start pressed on the title at swap {}, PRESS START last drawn at swap {} (now "
-                  "{}; {} visible, {} hidden submissions): the notice ends for this run",
-                  w.PressSwap() - 1, w.LastVisibleSwap() - 1, now, w.VisibleCount(), w.HiddenCount());
+      REXLOG_INFO("[doa4][UPDATE] title: Start pressed on the title at swap {}, confirmed by sprite {:#x}, PRESS START last "
+                  "drawn at swap {} (now {}; {} visible, {} hidden submissions): the notice ends for this run",
+                  w.PressSwap() - 1, w.ConfirmSprite(), w.LastVisibleSwap() - 1, now, w.VisibleCount(), w.HiddenCount());
     }
     // PRESS START's own comings and goings (the attract), logged whether or not there is a notice (capped)
     const uint32_t last = w.LastVisibleSwap();
@@ -1857,12 +1874,13 @@ class DeadOrAlive4App : public rex::ReXApp {
   bool guest_touched_ = false;   // a host-imposed setting was applied in this process (fix round I1)
   bool launch_refused_ = false;  // the session start was aborted: no runtime / no module launch (I1, I2)
   // The start-up update notice (Task 15). update_relaunch_*: set once in NetplayAtStart; the rest on the UI thread.
-  bool update_relaunch_ = false;        // DOA4_NP_HANDOFF / DOA4_NP_AFTER_SESSION / DOA4_WAIT_PID at start-up
+  bool update_relaunch_ = false;        // DOA4_NP_HANDOFF / DOA4_NP_AFTER_SESSION at start-up (R106)
   std::string update_relaunch_env_;     // which of them, for the log line
   std::string update_remembered_;       // the memory file's tag as last read or written ("" = none)
   std::string update_notice_tag_;       // the tag the notice shows ("" = none)
-  bool update_title_ended_ = false;     // Start was pressed on the title: the notice is gone for this run (R103)
+  bool update_title_ended_ = false;     // the Start press on the title was confirmed: the notice is gone for this run (R105)
   bool update_title_drawn_ = false;     // PRESS START on screen at the last tick (for its log lines)
+  bool update_title_pending_ = false;   // a press on the title was pending at the last tick (for its log lines)
   int update_title_lines_ = 0;          // how many of those lines were logged (capped at 32)
   bool update_notice_shown_ = false;    // the overlay shows the notice now
 

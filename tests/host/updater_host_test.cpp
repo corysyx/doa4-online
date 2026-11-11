@@ -1165,6 +1165,66 @@ static void TestStartDone() {
   up::ResetForTest();
 }
 
+// R107 (review M1): once Shutdown has begun, a check still running neither logs its result line nor calls done (so nothing
+// reaches the app or the notice's mailbox while the process is ending).
+static void TestCancelSkipsDone() {
+  up::ResetForTest();
+  CHECK(!up::Cancelling());
+  {  // the button's Start thread: race-free, Busy clears only after the done decision
+    std::atomic<bool> release{false}, entered{false}, called{false};
+    std::mutex mu;
+    std::vector<std::string> lines;
+    up::Request q;
+    q.log = [&](const std::string& l) {
+      std::lock_guard<std::mutex> g(mu);
+      lines.push_back(l);
+    };
+    q.done = [&](const up::Result&) { called = true; };
+    CHECK(up::Start(q, [&](const up::Request&) {
+      entered = true;
+      for (int i = 0; i < 500 && !release.load(); ++i) Sleep(10);
+      up::Result r;
+      r.found = up::Found::kNewer;
+      r.message = "late answer";
+      return r;
+    }));
+    CHECK(WaitFor([&] { return entered.load(); }, 3000));
+    up::Shutdown(0);
+    CHECK(up::Cancelling());
+    release = true;
+    CHECK(WaitFor([] { return !up::Busy(); }, 6000));
+    CHECK(!called.load());
+    std::lock_guard<std::mutex> g(mu);
+    CHECK(std::find(lines.begin(), lines.end(), "[doa4][UPDATE] late answer") == lines.end());
+    CHECK(lines.size() == 1);  // only "Checking for updates..." (proof the thread ran and logged before Shutdown)
+  }
+  up::ResetForTest();
+  {  // the start-up check's thread: the GET is held, Shutdown, then released; done must not come. This thread has no
+     // completion signal, so the check waits 300 ms after the GET returned (a bounded wait, not a proof of absence).
+    FakeHttp h;
+    Serve(h, SumsText());
+    std::atomic<bool> release{false}, entered{false}, returned{false}, called{false};
+    up::Env e = MakeEnv(h, GameDir("cancel_checkonly"), "netplay-v1.0.5");
+    auto inner = e.get;
+    e.get = [&release, &entered, &returned, inner](const std::string& u, bool api, const up::Sink& s, std::string* err) {
+      entered = true;
+      for (int i = 0; i < 500 && !release.load(); ++i) Sleep(10);
+      const bool ok = inner(u, api, s, err);
+      returned = true;
+      return ok;
+    };
+    CHECK(up::StartCheckOnly(e, [&](const up::Result&) { called = true; }));
+    CHECK(WaitFor([&] { return entered.load(); }, 3000));
+    up::Shutdown(0);
+    release = true;
+    CHECK(WaitFor([&] { return returned.load(); }, 3000));
+    Sleep(300);
+    CHECK(!called.load());
+  }
+  up::ResetForTest();
+  CHECK(!up::Cancelling());
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   wchar_t tmp[MAX_PATH];
@@ -1192,6 +1252,7 @@ int main() {
   TestFound();
   TestCheckOnly();
   TestStartDone();
+  TestCancelSkipsDone();
   TestSumsRefresh();
   TestShutdown();  // last: the cancel flag stays set
   fs::remove_all(g_root, ec);

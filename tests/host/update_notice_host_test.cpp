@@ -62,8 +62,12 @@ static void TestSessionRelaunch() {
   CHECK(!un::SessionRelaunch("", "", "", false));  // set to nothing = not set
   CHECK(un::SessionRelaunch("C:\\u\\netplay\\handoff.d4h", nullptr, nullptr, false));  // into a session
   CHECK(un::SessionRelaunch(nullptr, "1", nullptr, false));                         // back to offline after one
-  CHECK(un::SessionRelaunch(nullptr, nullptr, "4242", false));                      // any relaunch of this exe
   CHECK(un::SessionRelaunch(nullptr, nullptr, nullptr, true));                      // a netplay session runs
+  // R106: DOA4_WAIT_PID alone (the menu's Restart, the swimsuit import's restart, after an update) is a normal start
+  CHECK(!un::SessionRelaunch(nullptr, nullptr, "4242", false));
+  CHECK(un::SessionRelaunch("C:\\u\\netplay\\handoff.d4h", nullptr, "4242", false));  // a session relaunch carries both
+  const un::StartPlan p = un::AtStart(true, "alpha-v0.3.1", false, un::SessionRelaunch(nullptr, nullptr, "4242", false), "");
+  CHECK(p.check);  // a WAIT_PID-only start checks
 }
 
 // ---- the start-up decision ----
@@ -245,92 +249,138 @@ static void TestArrivals() {
 static void TestTitleWatch() {
   using E = un::TitleWatch::Event;
   constexpr uint16_t kStart = 0x0010, kA = 0x1000, kB = 0x2000;
-  // PRESS START drawn on every swap of [from, to]
-  const auto draw = [](un::TitleWatch& w, uint32_t from, uint32_t to) {
-    for (uint32_t s = from; s <= to; ++s) w.NoteDraw(un::kPressStartSprite, true, s);
+  constexpr uint32_t kLogo = 0x30000, kShadow = 0x30002;
+  // A stand-in for the next screen's own sprite (MODE SELECT's id is named from run evidence in the report): any sprite
+  // never submitted while the title was on screen with no press pending.
+  constexpr uint32_t kMenu = 0x50001;
+  // One title frame in the game's order: the logo first, then PRESS START and its shadow (the logo of the very first title
+  // frame comes before PRESS START was ever drawn, so it must still count as a title sprite from the next frame on).
+  const auto frame = [&](un::TitleWatch& w, uint32_t s) {
+    w.NoteDraw(kLogo, true, s);
+    w.NoteDraw(un::kPressStartSprite, true, s);
+    w.NoteDraw(kShadow, true, s);
+  };
+  const auto title = [&](un::TitleWatch& w, uint32_t from, uint32_t to) {
+    for (uint32_t s = from; s <= to; ++s) frame(w, s);
   };
   {  // before the title (the boot movie: nothing submitted yet): neither drawn nor ended; a press then is not on the title
     un::TitleWatch w;
-    CHECK(!w.DrawnNow(100) && !w.Ended(100) && !w.Ended(100000));
+    CHECK(!w.DrawnNow(100) && !w.Ended() && !w.Pending(100));
     CHECK(!w.NotePad(0, kStart, 100));
     CHECK(w.PressSwap() == 0);
   }
-  {  // other sprites (the logo 0x30000, the shadow 0x30002) and a PRESS START submission with the draw bit clear: not drawn
+  {  // the shadow, the logo and a PRESS START submission with the draw bit clear: not "drawn"; the census reports new ids
     un::TitleWatch w;
-    CHECK(w.NoteDraw(0x30000, true, 5) == E::kNone);
-    CHECK(w.NoteDraw(0x30002, true, 5) == E::kNone);
     CHECK(w.NoteDraw(un::kPressStartSprite, false, 5) == E::kNone);
-    CHECK(!w.DrawnNow(5) && !w.Ended(200));
+    CHECK(w.NoteDraw(kLogo, true, 5) == E::kNewSprite);
+    CHECK(w.NoteDraw(kLogo, true, 6) == E::kNone);
+    CHECK(!w.DrawnNow(6));
     CHECK(w.HiddenCount() == 1 && w.VisibleCount() == 0);
   }
-  {  // drawn from swap 10: drawn at a gap of exactly kGapSwaps, not one swap later; a gap alone never ends it
+  {  // drawn at a gap of exactly kGapSwaps, not one swap later; a gap alone never ends it
     un::TitleWatch w;
     CHECK(w.NoteDraw(un::kPressStartSprite, true, 10) == E::kFirstVisible);
     CHECK(w.LastVisibleSwap() == 11);
     CHECK(w.DrawnNow(10) && w.DrawnNow(40));
-    CHECK(!w.DrawnNow(41) && !w.Ended(41));
+    CHECK(!w.DrawnNow(41) && !w.Ended());
   }
-  {  // R103, the attract (run 6's timeline: drawn 21..1845, gone, back at the title): hidden in the gap, shown again
-     // after it, never ended (NOT ou15's rule, under which the first gap ended it for the run)
+  {  // R103: the attract (no press): hidden in the gap, shown again with the title, never ended
     un::TitleWatch w;
-    draw(w, 21, 1845);
-    CHECK(w.DrawnNow(1845) && !w.Ended(1845));
-    CHECK(!w.DrawnNow(2000) && !w.Ended(2000));  // the attract
-    CHECK(!w.NotePad(0, kStart, 2400));          // START in the attract: not a press on the title
+    title(w, 21, 1845);
+    CHECK(w.DrawnNow(1845));
+    CHECK(!w.DrawnNow(2000) && !w.Ended());
+    CHECK(!w.NotePad(0, kStart, 2400));  // START deep in the attract: not a press on the title
     CHECK(!w.NotePad(0, 0, 2410));
-    draw(w, 2640, 2700);                         // the title again
-    CHECK(w.DrawnNow(2700) && !w.Ended(2700));
-    CHECK(!w.DrawnNow(3000) && !w.Ended(3000));  // a second attract
-    draw(w, 3500, 3510);
-    CHECK(w.DrawnNow(3510) && !w.Ended(3510));
+    title(w, 2640, 2700);
+    CHECK(w.DrawnNow(2700) && !w.Ended());
   }
-  {  // R103, the Start press on the title (run 6: START at 2946 -> MODE SELECT): ended once PRESS START is gone, and it
-     // stays ended when the title comes back (B from the menu)
+  {  // R105, the confirm path (run 6b: START at 2946, PRESS START last drawn at 3005, MODE SELECT on screen at 3012):
+     // hidden while the press is pending (M2), ended by the next screen's own sprite, and never shown again
     un::TitleWatch w;
-    draw(w, 2640, 2950);
-    CHECK(w.NotePad(0, kStart, 2946));  // newly down while drawn
+    title(w, 2640, 2946);
+    CHECK(w.DrawnNow(2946));
+    CHECK(w.NotePad(0, kStart, 2946));
     CHECK(w.PressSwap() == 2947);
-    CHECK(!w.NotePad(0, kStart, 2947));  // held: not a new press
-    CHECK(w.DrawnNow(2960) && !w.Ended(2960));  // still drawn within the gap: not yet
-    CHECK(!w.DrawnNow(2981) && w.Ended(2981));  // gone after the press: ended
-    draw(w, 4000, 4100);                          // back at the title later
-    CHECK(!w.DrawnNow(4100) && w.Ended(4100));
+    CHECK(!w.NotePad(0, kStart, 2947));                      // held: not a new press
+    CHECK(w.Pending(2947) && !w.DrawnNow(2947));             // M2: hidden at once
+    title(w, 2947, 3005);                                    // the title's own sprites while it fades: no confirmation
+    CHECK(!w.Ended() && w.Pending(3005));
+    CHECK(w.NoteDraw(kMenu, true, 3006) == E::kConfirmed);   // the next screen
+    CHECK(w.Ended() && w.ConfirmSprite() == kMenu);
+    CHECK(!w.DrawnNow(3006) && !w.Pending(3006));
+    title(w, 4000, 4100);                                    // back at the title (B from the menu)
+    CHECK(!w.DrawnNow(4100) && w.Ended());
   }
-  {  // A counts as the press too; B does not; another user's pad counts
-    un::TitleWatch a;
-    draw(a, 10, 100);
-    CHECK(a.NotePad(1, kA, 100));
-    CHECK(a.Ended(200));
-    un::TitleWatch b;
-    draw(b, 10, 100);
-    CHECK(!b.NotePad(0, kB, 100));
-    CHECK(!b.Ended(200) && b.PressSwap() == 0);
-  }
-  {  // a press the title ignored (still drawn long after it), then the attract: NOT ended
+  {  // review window (a): a press in the attract's first 30 swaps never ends it
     un::TitleWatch w;
-    draw(w, 10, 1845);
-    CHECK(w.NotePad(0, kStart, 100));
-    CHECK(!w.DrawnNow(2000) && !w.Ended(2000));  // 1745 swaps from the press to the last draw > kPressLeadSwaps
-    draw(w, 2640, 2700);
+    title(w, 21, 1845);
+    CHECK(!w.NotePad(0, kStart, 1855));  // 10 swaps after PRESS START's last draw: not a press on the title
+    CHECK(!w.NotePad(0, 0, 1856));
+    CHECK(w.NotePad(1, kStart, 1846));   // 1 swap after: counted as pending ...
+    CHECK(w.Pending(1846) && !w.DrawnNow(1846));
+    CHECK(w.Pending(1845 + un::kCancelGapSwaps) && !w.DrawnNow(1845 + un::kCancelGapSwaps));
+    CHECK(!w.Pending(1846 + un::kCancelGapSwaps));  // ... and cancelled once PRESS START has been gone kCancelGapSwaps
+    CHECK(!w.DrawnNow(1846 + un::kCancelGapSwaps));  // hidden in the attract (the app asks this every tick)
+    CHECK(w.NoteDraw(kMenu, true, 1850 + un::kCancelGapSwaps) == E::kNewSprite);  // a later new sprite: no confirmation
+    CHECK(!w.Ended());
+    title(w, 2640, 2700);
+    CHECK(w.DrawnNow(2700) && !w.Ended());
+  }
+  {  // fix round 1 run r9 (ou15c): START 2 swaps after PRESS START's last draw as the attract began WAS accepted (MODE
+     // SELECT's 0xf7 came 37 swaps after that last draw, 35 after the press): confirmed, NOT cancelled by the gap
+    un::TitleWatch w;
+    title(w, 21, 1845);
+    CHECK(w.NotePad(0, kStart, 1847));
+    CHECK(w.Pending(1879) && !w.DrawnNow(1879));  // ou15c's 30-swap gap cancelled it here
+    CHECK(w.NoteDraw(0xf7, true, 1882) == E::kConfirmed);
+    CHECK(w.Ended() && w.ConfirmSprite() == 0xf7);
+  }
+  {  // review window (b): a press the title ignores, the attract starting 145 swaps later: never ends it
+    un::TitleWatch w;
+    title(w, 21, 1700);
+    CHECK(w.NotePad(0, kA, 1700));
+    CHECK(w.Pending(1700) && !w.DrawnNow(1700));  // hidden while pending
+    title(w, 1701, 1845);                          // the title goes on: no new sprite
+    CHECK(!w.Pending(1846 + un::kCancelGapSwaps) && !w.Ended());  // the attract's start cancels it
+    CHECK(!w.DrawnNow(1846 + un::kCancelGapSwaps));
+    CHECK(w.NoteDraw(kMenu, true, 1850 + un::kCancelGapSwaps) == E::kNewSprite);
+    CHECK(!w.Ended());
+    title(w, 2640, 2700);
     CHECK(w.DrawnNow(2700));
   }
-  {  // the press-to-gone bound: kPressLeadSwaps from the press to the last draw ends it, one more does not
+  {  // a cancelled press stays cancelled: PRESS START back within kConfirmSwaps of the press does not revive it
     un::TitleWatch w;
-    draw(w, 10, 100 + un::kPressLeadSwaps);
+    title(w, 10, 100);
     CHECK(w.NotePad(0, kStart, 100));
-    CHECK(w.Ended(100 + un::kPressLeadSwaps + un::kGapSwaps + 1));
-    un::TitleWatch v;
-    draw(v, 10, 101 + un::kPressLeadSwaps);
-    CHECK(v.NotePad(0, kStart, 100));
-    CHECK(!v.Ended(101 + un::kPressLeadSwaps + un::kGapSwaps + 1));
+    CHECK(!w.Pending(101 + un::kCancelGapSwaps));  // gone longer than kCancelGapSwaps: cancelled
+    title(w, 200, 210);
+    CHECK(!w.Pending(210) && w.DrawnNow(210));
+    CHECK(w.NoteDraw(kMenu, true, 210) == E::kNewSprite && !w.Ended());
   }
-  {  // the press edge is per user: user 1 holding START does not hide user 0's new press
+  {  // an ignored press with the title still on: shown again once kConfirmSwaps passed with no confirmation
     un::TitleWatch w;
-    draw(w, 10, 100);
-    CHECK(w.NotePad(1, kStart, 50));
-    CHECK(w.NotePad(0, kStart, 60));
-    CHECK(w.PressSwap() == 61);
-    CHECK(!w.NotePad(4, kStart, 70));  // no fifth user
+    title(w, 10, 100 + un::kConfirmSwaps + 1);
+    CHECK(w.NotePad(0, kA, 100));
+    CHECK(w.Pending(100 + un::kConfirmSwaps) && !w.DrawnNow(100 + un::kConfirmSwaps));
+    CHECK(!w.Pending(101 + un::kConfirmSwaps) && w.DrawnNow(101 + un::kConfirmSwaps));
+    CHECK(w.NoteDraw(kMenu, true, 101 + un::kConfirmSwaps) == E::kNewSprite);  // too late: no confirmation
+    CHECK(!w.Ended());
+  }
+  {  // A counts (confirmed by the next screen); B never does; another user's pad counts; the edge is per user
+    un::TitleWatch a;
+    title(a, 10, 100);
+    CHECK(a.NotePad(1, kA, 100));
+    CHECK(a.NoteDraw(kMenu, true, 120) == E::kConfirmed && a.Ended());
+    un::TitleWatch b;
+    title(b, 10, 100);
+    CHECK(!b.NotePad(0, kB, 100));
+    CHECK(!b.Pending(100) && b.PressSwap() == 0);
+    un::TitleWatch u;
+    title(u, 10, 100);
+    CHECK(u.NotePad(1, kStart, 50));
+    CHECK(u.NotePad(0, kStart, 60));  // user 1 still holding does not hide user 0's new press
+    CHECK(u.PressSwap() == 61);
+    CHECK(!u.NotePad(4, kStart, 70));  // no fifth user
   }
   {  // the draw bit's changes are reported; a hidden stretch shorter than the gap is still "drawn"
     un::TitleWatch w;

@@ -165,6 +165,9 @@ std::string Message();
 // Review M-1, first thing at shutdown: no further download or swap starts; waits at most `max_wait_ms` for a swap in
 // progress to finish. A running download stops at its next chunk.
 void Shutdown(uint32_t max_wait_ms);
+// Shutdown has begun (ruling R107): a check still running then skips its result log line and its done / StartCheckOnly
+// callback, so nothing reaches the app while the process ends.
+bool Cancelling();
 
 // Tests only: forgets the swap, the offer, the cancel flag and the message (Busy must be false).
 void ResetForTest();

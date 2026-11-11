@@ -88,15 +88,23 @@ REX_HOOK_RAW(sub_823BB470) {
                 doa4::intro_skip::Swaps(), doa4::intro_skip::Frames(), uint32_t(ctx.lr),
                 thread && thread->main_thread() ? "main" : "guest", Tid());
   }
-  // The start-up update notice (doa4_update_notice.h): PRESS START drawn this frame = a 0x30001 submission whose draw bit
-  // is set (byte 23 & 0x08; the original returns at once without drawing when it is clear). Its changes are logged, capped.
-  if (sprite == doa4::update_notice::kPressStartSprite) {
+  // The start-up update notice (doa4_update_notice.h): every submission with its draw bit (byte 23 & 0x08; the original
+  // returns at once without drawing when it is clear). PRESS START (0x30001) drawn = the title on screen; a sprite id the
+  // title never drew, submitted while a press on the title is pending, confirms that press (R105). Logged, capped: PRESS
+  // START's draw-bit changes, each sprite id's first visible submission (the census), the confirming sprite.
+  {
     const bool visible = (rex::memory::load<uint8_t>(base + draw + 23) & 0x08) != 0;
     const uint32_t swap = doa4::intro_skip::Swaps();
     const auto event = doa4::update_notice::Title().NoteDraw(sprite, visible, swap);
-    static std::atomic<int> s_events{0};
-    if (event != doa4::update_notice::TitleWatch::Event::kNone && s_events.fetch_add(1) < 64) {
-      using E = doa4::update_notice::TitleWatch::Event;
+    using E = doa4::update_notice::TitleWatch::Event;
+    static std::atomic<int> s_events{0}, s_new{0};
+    if (event == E::kConfirmed) {
+      REXLOG_INFO("[doa4][UPDATE] title: press confirmed by sprite {:#x} at swap {} frame {}", sprite, swap,
+                  doa4::intro_skip::Frames());
+    } else if (event == E::kNewSprite) {
+      if (s_new.fetch_add(1) < 64)
+        REXLOG_INFO("[doa4][UPDATE] sprite census: {:#x} first drawn at swap {}", sprite, swap);
+    } else if (event != E::kNone && s_events.fetch_add(1) < 64) {
       REXLOG_INFO("[doa4][UPDATE] title: PRESS START {} at swap {} frame {}",
                   event == E::kFirstVisible ? "first drawn" : event == E::kHidden ? "draw bit clear" : "drawn again", swap,
                   doa4::intro_skip::Frames());

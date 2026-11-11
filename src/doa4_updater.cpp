@@ -611,8 +611,8 @@ bool StartCheckOnly(Env env, std::function<void(const Result&)> done) {
         r = Result{};
         r.message = "The update check stopped unexpectedly";
       }
-      try {
-        if (done) done(r);
+      try {  // R107: nothing reaches the app once Shutdown has begun
+        if (done && !g_cancel.load()) done(r);
       } catch (...) {
       }
     }).detach();
@@ -646,13 +646,15 @@ bool Start(Request request, CheckFn check) {
         std::lock_guard<std::mutex> lock(g_mu);
         g_message = r.message;
       }
-      try {
-        if (request.log) request.log("[doa4][UPDATE] " + r.message);
-      } catch (...) {
-      }
-      try {  // Task 15: the start-up notice's memory follows the button's answer
-        if (request.done) request.done(r);
-      } catch (...) {
+      if (!g_cancel.load()) {  // R107: nothing reaches the app (its log, its notice) once Shutdown has begun
+        try {
+          if (request.log) request.log("[doa4][UPDATE] " + r.message);
+        } catch (...) {
+        }
+        try {  // Task 15: the start-up notice's memory follows the button's answer
+          if (request.done) request.done(r);
+        } catch (...) {
+        }
       }
       std::lock_guard<std::mutex> lock(g_mu);  // last: once Busy is false, the check has logged everything
       g_busy = false;
@@ -695,6 +697,8 @@ void Shutdown(uint32_t max_wait_ms) {
   g_cancel.store(true);
   if (g_swap_mu.try_lock_for(std::chrono::milliseconds(max_wait_ms))) g_swap_mu.unlock();
 }
+
+bool Cancelling() { return g_cancel.load(); }
 
 void ResetForTest() {
   std::lock_guard<std::mutex> lock(g_mu);

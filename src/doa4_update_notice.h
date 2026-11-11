@@ -19,8 +19,10 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,10 +39,11 @@ inline constexpr const char* kMemoryFile = "update_notice.txt";
 std::string VersionText(std::string_view tag);
 std::string DisplayText(std::string_view tag);
 
-// A restart the player did not choose as a fresh start: any of DOA4_NP_HANDOFF (the relaunch into an online session),
-// DOA4_NP_AFTER_SESSION (the relaunch back to offline after one), DOA4_WAIT_PID (any relaunch of this exe: the menu's
-// Restart, a session's relaunches) set and non-empty at start-up, or a netplay session active in this process
-// (np::Active()). nullptr = not set.
+// A session relaunch (ruling R106): DOA4_NP_HANDOFF (the relaunch into an online session) or DOA4_NP_AFTER_SESSION (the
+// relaunch back to offline after one) set and non-empty at start-up, or a netplay session active in this process
+// (np::Active()). nullptr = not set. `wait_pid` (DOA4_WAIT_PID) does NOT count: alone it is a restart the player chose
+// (the menu's Restart, the swimsuit import's restart, after an update), a normal start that checks; every session
+// relaunch also carries one of the other two.
 bool SessionRelaunch(const char* handoff, const char* after_session, const char* wait_pid, bool netplay_active);
 
 // The start-up decision. `running`: this build's tag (DOA4_RELEASE_TAG); `dev_build`: np::rules::IsDevBuild(running);
@@ -91,36 +94,59 @@ std::vector<Arrival> TakeArrivals();
 // title (frame 2946) -> MODE SELECT (shot 3612); no PRESS START submission ever had its draw bit clear. The title's own
 // state could not be read from code (its draw callback, sub_823A7FB8, is reached only through data tables), so the Start
 // press is the game's own pad read: sub_82792040 (its only XamInputGetState path) returning START or A for any user
-// while PRESS START is drawn (NotePad). "Ended" = such a press, and PRESS START gone (more than kGapSwaps) no later than
-// kPressLeadSwaps after it: latched for the rest of the process. A press in the attract (PRESS START not drawn) is not a
-// press on the title; a press the title ignores is forgotten once PRESS START stays drawn past kPressLeadSwaps.
-// Lock-free: the hooks write, the UI thread reads.
+// while PRESS START was drawn this swap or at most kPressDrawnSwaps before (NotePad). That press is only PENDING (ruling
+// R105): the notice hides at once (M2), and the press is CONFIRMED (Ended, latched for the rest of the process) only by a
+// signal an accepted press alone produces: the next screen's own sprite through the same sub_823BB470 hook, i.e. a visible
+// submission of a sprite id never submitted while the title was on screen with no press pending (the title's own sprites
+// are learned as it draws them). The pending press is CANCELLED, and the notice shows again with the title, when PRESS
+// START has been gone more than kCancelGapSwaps with no confirmation (the attract's start) or kConfirmSwaps passed (a
+// press the title ignored). Measured (fix round 1, ou15c, np_run sessions): an accepted START is confirmed by sprite 0xf7
+// (the first of MODE SELECT's: 0xf7-0xfa, 0x12a, 0x4003d, 0x5000x) exactly 35 swaps after the press, both on the title
+// (r8: press 600, 0xf7 at 635) and when pressed 2 swaps after PRESS START's last draw as the attract began (r9: press
+// 1847, PRESS START last drawn at 1845, 0xf7 at 1882 = 37 swaps after it: the game accepted it and went to MODE SELECT).
+// A 30-swap cancel gap (ou15c) cancelled that accepted press; kCancelGapSwaps is 90.
+// The hooks write, the UI thread reads (atomics); the learned sprite set is behind a mutex.
 inline constexpr uint32_t kPressStartSprite = 0x30001;
 inline constexpr uint32_t kGapSwaps = 30;
-inline constexpr uint32_t kPressLeadSwaps = 300;   // 5 s at 60 swaps a second from the press to PRESS START's last draw
+inline constexpr uint32_t kPressDrawnSwaps = 2;    // a pad read counts when PRESS START was drawn within these swaps
+inline constexpr uint32_t kConfirmSwaps = 300;     // 5 s at 60 swaps a second from the press to the next screen
+inline constexpr uint32_t kCancelGapSwaps = 90;    // PRESS START gone this long with no confirmation: the attract
 inline constexpr uint16_t kPressButtons = 0x1010;  // XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_A
+inline constexpr size_t kSpriteSetSize = 256;      // learned sprite ids; past it an unknown id counts as not the title's
 class TitleWatch {
  public:
-  enum class Event { kNone, kFirstVisible, kHidden, kVisibleAgain };
-  // The sprite hook: what changed with this submission (for its capped log lines).
+  // kNewSprite: a sprite id's first visible submission (the census); kConfirmed: it confirmed the pending press.
+  enum class Event { kNone, kFirstVisible, kHidden, kVisibleAgain, kNewSprite, kConfirmed };
+  // The sprite hook: every submission (for its capped log lines).
   Event NoteDraw(uint32_t sprite, bool visible, uint32_t swap);
   // The pad-read hook: the buttons the game read for `user` (0-3). True when this read starts a press (START or A newly
-  // down for that user) while PRESS START is drawn: it is recorded as the press on the title.
+  // down for that user) on the title: it becomes the pending press.
   bool NotePad(uint32_t user, uint16_t buttons, uint32_t swap);
-  bool DrawnNow(uint32_t now_swap);  // drawn within the last kGapSwaps and not Ended
-  bool Ended(uint32_t now_swap);     // the Start press on the title happened (latched)
+  bool DrawnNow(uint32_t now_swap);  // drawn within the last kGapSwaps, no press pending, not Ended
+  bool Pending(uint32_t now_swap);   // a press on the title waits for its confirmation
+  bool Ended() const;                // the press was confirmed (latched)
   uint32_t LastVisibleSwap() const;  // 0 = never (the swap number + 1 is kept, so swap 0 counts)
   uint32_t PressSwap() const;        // the last press recorded on the title, + 1; 0 = none
+  uint32_t ConfirmSprite() const { return confirm_sprite_.load(std::memory_order_acquire); }
   uint32_t VisibleCount() const { return visible_n_.load(std::memory_order_relaxed); }
   uint32_t HiddenCount() const { return hidden_n_.load(std::memory_order_relaxed); }
 
  private:
+  struct Seen {
+    uint32_t id = 0;
+    bool title = false;  // submitted while the title was on screen with no press pending
+  };
   std::atomic<uint32_t> last_visible_{0};  // swap + 1 of the last visible 0x30001 submission; 0 = never
   std::atomic<bool> last_was_visible_{false};
   std::atomic<uint32_t> press_{0};         // swap + 1 of the last press recorded on the title; 0 = none
+  std::atomic<uint32_t> cancelled_{0};     // press_'s value once that press was cancelled
   std::atomic<uint32_t> pad_down_{0};      // bit u: kPressButtons were down at user u's last read
   std::atomic<bool> ended_{false};
+  std::atomic<uint32_t> confirm_sprite_{0};
   std::atomic<uint32_t> visible_n_{0}, hidden_n_{0};
+  std::mutex mu_;  // seen_
+  Seen seen_[kSpriteSetSize];
+  size_t seen_n_ = 0;
 };
 TitleWatch& Title();  // the process's watch (the hook and the app)
 
