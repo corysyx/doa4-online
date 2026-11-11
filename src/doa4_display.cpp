@@ -88,4 +88,21 @@ void DropModeText(std::vector<ExclusiveMode>& modes, const std::string& text) {
               modes.end());
 }
 
+NoticeLayout NoticeLayoutFor(float display_h, float font_px, float pad_x, float pad_y) {
+  NoticeLayout l;
+  l.center_y = display_h * (kNoticeBandTop + kNoticeBandBottom) / 2;
+  l.font_scale = kNoticeBaseFontScale * kNoticeScale;
+  l.pad_x = pad_x * kNoticeScale;
+  l.pad_y = pad_y * kNoticeScale;
+  const float height = font_px * l.font_scale + 2 * l.pad_y;
+  const float room = display_h * (kNoticeBandBottom - kNoticeBandTop - 2 * kNoticeMargin);
+  if (height > room && height > 0) {
+    const float k = room / height;
+    l.font_scale *= k;
+    l.pad_x *= k;
+    l.pad_y *= k;
+  }
+  return l;
+}
+
 }  // namespace doa4::display

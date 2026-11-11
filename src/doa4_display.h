@@ -92,4 +92,23 @@ constexpr ModesStep ExclusiveModesStep(bool first_frame, bool attempted, bool bu
 // Removes every mode whose text is `text` (the listing's desktop entry when it was made during exclusive).
 void DropModeText(std::vector<ExclusiveMode>& modes, const std::string& text);
 
+// The title's "Update available: <a.b.c>" box (Task 15; NetOverlay), centred between PRESS START and the copyright line.
+// The free band, measured on the user's 2560x1440 title screenshot (Task 12 fix round 2): PRESS START's glyphs end at
+// y 1113 and the copyright line's begin at y 1208, i.e. 556.5 and 604 of the title's 720 (47.5 high, centre 580.25).
+inline constexpr float kNoticeBandTop = 556.5f / 720.0f;
+inline constexpr float kNoticeBandBottom = 604.0f / 720.0f;
+inline constexpr float kNoticeMargin = 2.0f / 720.0f;  // kept clear of each edge of the band
+inline constexpr float kNoticeBaseFontScale = 1.35f;   // Task 15's text size (the F7 line's), the font's size times this
+inline constexpr float kNoticeScale = 1.3f;            // round 2 (the user): the text, and the box's padding, 1.3x that
+struct NoticeLayout {
+  float center_y = 0;    // the box's centre (ImGui display units)
+  float font_scale = 0;  // the window font scale
+  float pad_x = 0, pad_y = 0;  // the window padding
+};
+// display_h: ImGui's display height; font_px: the font's size; pad_x/pad_y: the style's window padding. The box (one text
+// line: font_px * font_scale, plus pad_y twice) is kNoticeScale times Task 15's, unless that would not fit the band less
+// its margins: then text and padding shrink together until it does (a small or high-DPI window: ImGui's units are
+// physical pixels * 96 / DPI, so a 720-pixel window at 150 % is 480 high).
+NoticeLayout NoticeLayoutFor(float display_h, float font_px, float pad_x, float pad_y);
+
 }  // namespace doa4::display

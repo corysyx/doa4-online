@@ -213,7 +213,42 @@ static void TestDropModeText() {
   for (const OutputSizeEntry& e : l.entries) CHECK(e.value != "2560x1440@59.951");
 }
 
+// The title's update notice (Task 12 fix round 2): 1.3x Task 15's box, inside the band between PRESS START and the
+// copyright line with its margins, shrunk only when it would not fit. Task 15's box at 720 (ProggyTiny 10 px, padding
+// 8 x 8): 10 * 1.35 + 2 * 8 = 29.5 high.
+static bool Near(float a, float b) { return a > b - 0.001f && a < b + 0.001f; }
+static void TestNoticeLayout() {
+  CHECK(Near(kNoticeBandTop * 720.0f, 556.5f) && Near(kNoticeBandBottom * 720.0f, 604.0f));
+  CHECK(Near(kNoticeMargin * 720.0f, 2.0f) && Near(kNoticeBaseFontScale, 1.35f) && Near(kNoticeScale, 1.3f));
+  const auto height = [](const NoticeLayout& l) { return 10.0f * l.font_scale + 2.0f * l.pad_y; };
+  const auto inside = [&](const NoticeLayout& l, float h) {  // the box, margins included, within the band
+    const float top = l.center_y - height(l) / 2, bottom = l.center_y + height(l) / 2;
+    return top >= (kNoticeBandTop + kNoticeMargin) * h - 0.001f && bottom <= (kNoticeBandBottom - kNoticeMargin) * h + 0.001f;
+  };
+  // 1280x720 at 100 %: 1.3x everything (38.35 high, NOT 29.5), centred at 580.25 (NOT Task 15's 584: its bottom would be
+  // 603.2, inside the copyright's margin), 4.6 clear of each band edge
+  const NoticeLayout a = NoticeLayoutFor(720.0f, 10.0f, 8.0f, 8.0f);
+  CHECK(Near(a.font_scale, 1.35f * 1.3f) && Near(a.pad_x, 10.4f) && Near(a.pad_y, 10.4f));
+  CHECK(Near(height(a), 29.5f * 1.3f));
+  CHECK(Near(a.center_y, 580.25f));
+  CHECK(inside(a, 720.0f));
+  // 2560x1440 at 100 %: the same box (ImGui units are not scaled with the window), centred at 1160.5
+  const NoticeLayout b = NoticeLayoutFor(1440.0f, 10.0f, 8.0f, 8.0f);
+  CHECK(Near(b.font_scale, 1.755f) && Near(b.pad_y, 10.4f) && Near(b.center_y, 1160.5f) && inside(b, 1440.0f));
+  // 1280x720 at 150 % (480 high): the band less margins is 29 high: text and padding shrink together to exactly that
+  const NoticeLayout c = NoticeLayoutFor(480.0f, 10.0f, 8.0f, 8.0f);
+  CHECK(Near(height(c), (47.5f - 4.0f) * 480.0f / 720.0f));
+  CHECK(c.font_scale < 1.755f && Near(c.pad_y / c.font_scale, 10.4f / 1.755f) && Near(c.pad_x, c.pad_y));
+  CHECK(inside(c, 480.0f));
+  // the edge: the display height at which 1.3x just fits (38.35 = 43.5 * h / 720 -> h = 634.76) is not shrunk, a little
+  // below it is
+  const float edge = 38.35f * 720.0f / 43.5f;
+  CHECK(Near(NoticeLayoutFor(edge + 0.5f, 10.0f, 8.0f, 8.0f).font_scale, 1.755f));
+  CHECK(NoticeLayoutFor(edge - 0.5f, 10.0f, 8.0f, 8.0f).font_scale < 1.755f);
+}
+
 int main() {
+  TestNoticeLayout();
   TestRefreshText();
   TestWindowedSizeList();
   TestExclusiveSizeList();

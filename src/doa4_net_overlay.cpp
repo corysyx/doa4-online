@@ -6,6 +6,8 @@
 
 #include <utility>
 
+#include "doa4_display.h"
+
 namespace doa4 {
 
 NetOverlay::NetOverlay(rex::ui::ImGuiDrawer* drawer, std::function<Content()> poll)
@@ -28,16 +30,21 @@ void NetOverlay::OnDraw(ImGuiIO& io) {
     ImGui::End();
   }
   if (!content.notice.empty()) {
-    // Centred between PRESS START (centre y 546 of the title's 720) and the copyright line (about y 615): y 584 of 720.
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * (584.0f / 720.0f)), ImGuiCond_Always,
-                            ImVec2(0.5f, 0.5f));
+    // Centred between PRESS START and the copyright line, 1.3x Task 15's text and padding (Task 12 fix round 2; the
+    // arithmetic, host-tested: display::NoticeLayoutFor).
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const display::NoticeLayout layout =
+        display::NoticeLayoutFor(io.DisplaySize.y, ImGui::GetFontSize(), style.WindowPadding.x, style.WindowPadding.y);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, layout.center_y), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowBgAlpha(0.7f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(layout.pad_x, layout.pad_y));
     if (ImGui::Begin("##doa4_update_notice", nullptr, flags)) {
-      ImGui::SetWindowFontScale(kFpsFontScale);
+      ImGui::SetWindowFontScale(layout.font_scale);
       ImGui::TextUnformatted(content.notice.c_str());
       ImGui::SetWindowFontScale(1.0f);
     }
     ImGui::End();
+    ImGui::PopStyleVar();
   }
   if (!content.fps.empty() || !content.stats.empty()) {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16.0f, 16.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
