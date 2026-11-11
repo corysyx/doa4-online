@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdarg>
 #include <cstdio>
 #include <cwchar>
 #include <algorithm>
@@ -850,21 +851,41 @@ static uint8_t* GuestBase() {
   return reinterpret_cast<uint8_t*>(0x100000000ull);
 }
 
-// Fills ret with the return addresses up the guest back chain from sp; the count, or -1 - count if a read faulted.
-static int WalkGuestChain(uint32_t sp, uint32_t* ret, int max) {
-  const uint8_t* membase = GuestBase();
-  int n = 0;
-  __try {
-    for (; n < max && sp >= 0x70000000u && sp < 0x7F000000u;) {
-      const uint8_t* q = membase + sp;
-      const uint32_t up = (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3];
-      if (up <= sp || up >= 0x7F000000u || up - sp > 0x100000u) break;
-      const uint8_t* r = membase + up - 8;
-      ret[n++] = (uint32_t(r[0]) << 24) | (uint32_t(r[1]) << 16) | (uint32_t(r[2]) << 8) | r[3];
-      sp = up;
+// Whether n bytes of guest memory from addr can be read. The build's clang does not catch a hardware fault inside a
+// __try body (no asynchronous SEH), so the 0.3.109 and 0.3.111 crash reports died at their first bad guest read
+// instead of reporting it: every read in the crash report is checked with VirtualQuery first.
+static bool GuestReadable(uint32_t addr, uint32_t n) {
+  const uint8_t* p = GuestBase() + addr;
+  const uint8_t* end = p + n;
+  while (p < end) {
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
+        !(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                         PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+      return false;
     }
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return -1 - n;
+    p = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+  }
+  return true;
+}
+
+static uint32_t GuestWord(uint32_t addr) {
+  const uint8_t* q = GuestBase() + addr;
+  return (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3];
+}
+
+// Fills ret with the return addresses up the guest back chain from sp; the count, or -1 - count if a word on the
+// way could not be read.
+static int WalkGuestChain(uint32_t sp, uint32_t* ret, int max) {
+  int n = 0;
+  while (n < max && sp >= 0x70000000u && sp < 0x7F000000u) {
+    if (!GuestReadable(sp, 4)) return -1 - n;
+    const uint32_t up = GuestWord(sp);
+    if (up <= sp || up >= 0x7F000000u || up - sp > 0x100000u) break;
+    if (!GuestReadable(up - 8, 4)) return -1 - n;
+    ret[n++] = GuestWord(up - 8);
+    sp = up;
   }
   return n;
 }
@@ -892,61 +913,97 @@ static void AppendCrashFile(const char* text, size_t len) {
   CloseHandle(h);
 }
 
-// Reads n guest words from addr under SEH; returns how many were read.
+// Reads up to n guest words from addr, stopping at the first that cannot be read; returns how many were read.
 static int ReadGuestWords(uint32_t addr, uint32_t* out, int n) {
-  const uint8_t* membase = GuestBase();
   int k = 0;
-  __try {
-    for (; k < n; ++k) {
-      const uint8_t* q = membase + addr + 4u * k;
-      out[k] = (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3];
-    }
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-  }
+  for (; k < n && GuestReadable(addr + 4u * k, 4); ++k) out[k] = GuestWord(addr + 4u * k);
   return k;
 }
 
-static void WriteCrashFile(PEXCEPTION_POINTERS ex_info) {
-  char buf[8192];
-  int len = 0;
-  auto add = [&](const char* fmt_text, auto... args) {
-    if (len < int(sizeof(buf)) - 1) {
-      const int w = _snprintf_s(buf + len, sizeof(buf) - len, _TRUNCATE, fmt_text, args...);
-      len = w < 0 ? int(sizeof(buf)) - 1 : len + w;
-    }
-  };
-  auto* er = ex_info->ExceptionRecord;
+// The report is built in static buffers (no large frame on a thread that may have overflowed its stack) and
+// written out after each part, so a report that dies part way still shows how far it got.
+struct CrashJob {
+  PEXCEPTION_POINTERS ex_info;
+  rex::runtime::ThreadState* ts;
+  DWORD thread_id;
+};
+static char s_crash_buf[16384];
+static int s_crash_len = 0;
+
+static void CrashAdd(const char* fmt_text, ...) {
+  if (s_crash_len >= int(sizeof(s_crash_buf)) - 1) return;
+  va_list args;
+  va_start(args, fmt_text);
+  const int w = _vsnprintf_s(s_crash_buf + s_crash_len, sizeof(s_crash_buf) - s_crash_len, _TRUNCATE, fmt_text, args);
+  va_end(args);
+  s_crash_len = w < 0 ? int(sizeof(s_crash_buf)) - 1 : s_crash_len + w;
+}
+
+static void CrashFlush() {
+  if (s_crash_len > 0) AppendCrashFile(s_crash_buf, size_t(s_crash_len));
+  s_crash_len = 0;
+}
+
+static void WriteCrashReport(const CrashJob& job) {
+  auto* er = job.ex_info->ExceptionRecord;
   const uint64_t base = (uint64_t)GetModuleHandleW(nullptr);
   const uint64_t pc = (uint64_t)er->ExceptionAddress;
-  add("crash: code %08X thread %lu host pc +%llX", (unsigned)er->ExceptionCode, GetCurrentThreadId(),
-      (unsigned long long)(pc - base));
+  CrashAdd("crash: code %08X thread %lu host pc +%llX", (unsigned)er->ExceptionCode, job.thread_id,
+           (unsigned long long)(pc - base));
   if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
-    add(", %s of %llX", er->ExceptionInformation[0] == 1 ? "write" : er->ExceptionInformation[0] == 8 ? "execute" : "read",
-        (unsigned long long)er->ExceptionInformation[1]);
+    CrashAdd(", %s of %llX", er->ExceptionInformation[0] == 1 ? "write" : er->ExceptionInformation[0] == 8 ? "execute" : "read",
+             (unsigned long long)er->ExceptionInformation[1]);
   }
-  add("\r\n");
-  if (auto* ts = rex::runtime::ThreadState::Get(); ts && ts->context()) {
-    auto* p = ts->context();
-    add("guest lr %08X ctr %08X\r\n", (uint32_t)p->lr, (uint32_t)p->ctr.u64);
+  CrashAdd("\r\n");
+  CrashFlush();
+  if (job.ts && job.ts->context()) {
+    auto* p = job.ts->context();
+    CrashAdd("guest thread %u lr %08X ctr %08X\r\n", job.ts->thread_id(), (uint32_t)p->lr, (uint32_t)p->ctr.u64);
     const decltype(p->r1)* regs[32] = {&p->r0, &p->r1, &p->r2, &p->r3, &p->r4, &p->r5, &p->r6, &p->r7, &p->r8, &p->r9, &p->r10, &p->r11, &p->r12, &p->r13, &p->r14, &p->r15, &p->r16, &p->r17, &p->r18, &p->r19, &p->r20, &p->r21, &p->r22, &p->r23, &p->r24, &p->r25, &p->r26, &p->r27, &p->r28, &p->r29, &p->r30, &p->r31};
-    for (int r = 0; r < 32; ++r) add("r%d %08X%s", r, (uint32_t)regs[r]->u64, r % 8 == 7 ? "\r\n" : "  ");
-    uint32_t ret[16] = {};
+    for (int r = 0; r < 32; ++r) CrashAdd("r%d %08X%s", r, (uint32_t)regs[r]->u64, r % 8 == 7 ? "\r\n" : "  ");
+    CrashFlush();
+    static uint32_t ret[16];
     const int n = WalkGuestChain((uint32_t)p->r1.u64, ret, 16);
-    add("guest call chain (return addresses):");
-    for (int k = 0; k < (n < 0 ? -1 - n : n); ++k) add(" %08X", ret[k]);
-    add("%s\r\n", n < 0 ? " (the walk faulted)" : "");
-    uint32_t words[256] = {};
+    CrashAdd("guest call chain (return addresses):");
+    for (int k = 0; k < (n < 0 ? -1 - n : n); ++k) CrashAdd(" %08X", ret[k]);
+    CrashAdd("%s\r\n", n < 0 ? " (stopped at an unreadable word)" : "");
+    CrashFlush();
+    static uint32_t words[256];
     const int got = ReadGuestWords((uint32_t)p->r1.u64, words, 256);
-    add("guest stack from r1 (%d words):", got);
-    for (int k = 0; k < got; ++k) add("%s%08X", k % 8 == 0 ? "\r\n  " : " ", words[k]);
-    add("\r\n");
+    CrashAdd("guest stack from r1 (%d words):", got);
+    for (int k = 0; k < got; ++k) CrashAdd("%s%08X", k % 8 == 0 ? "\r\n  " : " ", words[k]);
+    CrashAdd("\r\n");
+    CrashFlush();
+  } else {
+    CrashAdd("not a guest thread\r\n");
   }
-  void* frames[24] = {};
-  const USHORT f = CaptureStackBackTrace(0, 24, frames, nullptr);
-  add("host stack:");
-  for (USHORT i = 0; i < f; ++i) add(" +%llX", (unsigned long long)((uint64_t)frames[i] - base));
-  add("\r\n\r\n");
-  AppendCrashFile(buf, size_t(len));
+  const CONTEXT* c = job.ex_info->ContextRecord;
+  CrashAdd("host rsp %llX rbp %llX rax %llX rcx %llX rdx %llX rbx %llX\r\n", (unsigned long long)c->Rsp,
+           (unsigned long long)c->Rbp, (unsigned long long)c->Rax, (unsigned long long)c->Rcx,
+           (unsigned long long)c->Rdx, (unsigned long long)c->Rbx);
+  CrashAdd("\r\n");
+  CrashFlush();
+}
+
+static DWORD WINAPI CrashReportThread(LPVOID arg) {
+  WriteCrashReport(*static_cast<const CrashJob*>(arg));
+  return 0;
+}
+
+// Written from a new thread with its own stack (a stack overflow leaves the faulting thread almost none); on the
+// faulting thread if that thread cannot be started.
+static void WriteCrashFile(PEXCEPTION_POINTERS ex_info) {
+  static CrashJob job;
+  job.ex_info = ex_info;
+  job.ts = rex::runtime::ThreadState::Get();
+  job.thread_id = GetCurrentThreadId();
+  HANDLE t = CreateThread(nullptr, 1 << 20, CrashReportThread, &job, 0, nullptr);
+  if (t) {
+    WaitForSingleObject(t, 10000);
+    CloseHandle(t);
+  } else {
+    WriteCrashReport(job);
+  }
 }
 
 LONG WINAPI DoaUnhandledFilter(PEXCEPTION_POINTERS ex_info) {

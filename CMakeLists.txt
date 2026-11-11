@@ -97,7 +97,7 @@ rexglue_setup_target(dead_or_alive_4)
 set(DOA4_RELEASE_TAG "dev" CACHE STRING "Release tag: alpha-v<major>.<minor>.<patch> in CI")
 set(DOA4_RELEASE_REPO "corysyx/doa4-online" CACHE STRING "GitHub repository of the releases")
 set(DOA4_RELEASE_CHANNEL "alpha" CACHE STRING "Release channel (the tag prefix)")
-set(DOA4_NETPLAY_VERSION "0.3.111" CACHE STRING "major.minor.patch of the next release, set by hand")
+set(DOA4_NETPLAY_VERSION "0.3.112" CACHE STRING "major.minor.patch of the next release, set by hand")
 target_compile_definitions(dead_or_alive_4 PRIVATE DOA4_RELEASE_TAG="${DOA4_RELEASE_TAG}"
     DOA4_RELEASE_REPO="${DOA4_RELEASE_REPO}" DOA4_RELEASE_CHANNEL="${DOA4_RELEASE_CHANNEL}")
 

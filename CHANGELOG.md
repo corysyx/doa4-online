@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.112 (2026-11-11)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Fixed
+- `crash.txt` is written again: the 0.3.111 report died at its first unreadable guest word (this build's compiler
+  does not catch a hardware fault inside `__try`), so every guest read is now checked first. The report is written
+  in parts from a thread of its own, so a stack overflow or a fault part way still leaves what came before.
+
 ## 0.3.111 (2026-11-11)
 
 corysyx rollback research build (otherwise the same as 0.3.110).
