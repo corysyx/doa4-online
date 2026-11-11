@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.111 (2026-11-11)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Changed
+- A crash now also writes `crash.txt` (in the session output folder, or beside the game) with the game's registers
+  and call chain, written directly so it survives when the normal log does not.
+- SnapTest round 8: both runs rewind only the graphics device's render state; the second starts at frame 4096.
+
 ## 0.3.110 (2026-11-11)
 
 corysyx build: dwreckgg's 0.3.1 and 0.3.2 merged into this fork's lobby, quality-of-life and rollback work.

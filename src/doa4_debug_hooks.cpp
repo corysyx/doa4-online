@@ -7,6 +7,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cwchar>
 #include <algorithm>
 #include <memory>
 #include <mutex>
@@ -867,7 +869,88 @@ static int WalkGuestChain(uint32_t sp, uint32_t* ret, int max) {
   return n;
 }
 
+// The crash report written straight to a file (DOA4_NP_DIR\\crash.txt, else crash.txt beside the exe) with Win32
+// calls only, before anything goes through the logger: rounds 4 and 7 of the SnapTest lost everything after the
+// guest registers line, so the logger cannot be relied on inside this filter.
+static void AppendCrashFile(const char* text, size_t len) {
+  wchar_t path[1024] = {};
+  DWORD n = GetEnvironmentVariableW(L"DOA4_NP_DIR", path, 1000);
+  if (n == 0 || n >= 1000) {
+    n = GetModuleFileNameW(nullptr, path, 1000);
+    while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/') --n;
+    path[n] = 0;
+  } else if (path[n - 1] != L'\\') {
+    path[n++] = L'\\';
+    path[n] = 0;
+  }
+  wcscat_s(path, L"crash.txt");
+  HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return;
+  DWORD wrote = 0;
+  WriteFile(h, text, DWORD(len), &wrote, nullptr);
+  FlushFileBuffers(h);
+  CloseHandle(h);
+}
+
+// Reads n guest words from addr under SEH; returns how many were read.
+static int ReadGuestWords(uint32_t addr, uint32_t* out, int n) {
+  const uint8_t* membase = GuestBase();
+  int k = 0;
+  __try {
+    for (; k < n; ++k) {
+      const uint8_t* q = membase + addr + 4u * k;
+      out[k] = (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3];
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  return k;
+}
+
+static void WriteCrashFile(PEXCEPTION_POINTERS ex_info) {
+  char buf[8192];
+  int len = 0;
+  auto add = [&](const char* fmt_text, auto... args) {
+    if (len < int(sizeof(buf)) - 1) {
+      const int w = _snprintf_s(buf + len, sizeof(buf) - len, _TRUNCATE, fmt_text, args...);
+      len = w < 0 ? int(sizeof(buf)) - 1 : len + w;
+    }
+  };
+  auto* er = ex_info->ExceptionRecord;
+  const uint64_t base = (uint64_t)GetModuleHandleW(nullptr);
+  const uint64_t pc = (uint64_t)er->ExceptionAddress;
+  add("crash: code %08X thread %lu host pc +%llX", (unsigned)er->ExceptionCode, GetCurrentThreadId(),
+      (unsigned long long)(pc - base));
+  if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
+    add(", %s of %llX", er->ExceptionInformation[0] == 1 ? "write" : er->ExceptionInformation[0] == 8 ? "execute" : "read",
+        (unsigned long long)er->ExceptionInformation[1]);
+  }
+  add("\r\n");
+  if (auto* ts = rex::runtime::ThreadState::Get(); ts && ts->context()) {
+    auto* p = ts->context();
+    add("guest lr %08X ctr %08X\r\n", (uint32_t)p->lr, (uint32_t)p->ctr.u64);
+    const decltype(p->r1)* regs[32] = {&p->r0, &p->r1, &p->r2, &p->r3, &p->r4, &p->r5, &p->r6, &p->r7, &p->r8, &p->r9, &p->r10, &p->r11, &p->r12, &p->r13, &p->r14, &p->r15, &p->r16, &p->r17, &p->r18, &p->r19, &p->r20, &p->r21, &p->r22, &p->r23, &p->r24, &p->r25, &p->r26, &p->r27, &p->r28, &p->r29, &p->r30, &p->r31};
+    for (int r = 0; r < 32; ++r) add("r%d %08X%s", r, (uint32_t)regs[r]->u64, r % 8 == 7 ? "\r\n" : "  ");
+    uint32_t ret[16] = {};
+    const int n = WalkGuestChain((uint32_t)p->r1.u64, ret, 16);
+    add("guest call chain (return addresses):");
+    for (int k = 0; k < (n < 0 ? -1 - n : n); ++k) add(" %08X", ret[k]);
+    add("%s\r\n", n < 0 ? " (the walk faulted)" : "");
+    uint32_t words[256] = {};
+    const int got = ReadGuestWords((uint32_t)p->r1.u64, words, 256);
+    add("guest stack from r1 (%d words):", got);
+    for (int k = 0; k < got; ++k) add("%s%08X", k % 8 == 0 ? "\r\n  " : " ", words[k]);
+    add("\r\n");
+  }
+  void* frames[24] = {};
+  const USHORT f = CaptureStackBackTrace(0, 24, frames, nullptr);
+  add("host stack:");
+  for (USHORT i = 0; i < f; ++i) add(" +%llX", (unsigned long long)((uint64_t)frames[i] - base));
+  add("\r\n\r\n");
+  AppendCrashFile(buf, size_t(len));
+}
+
 LONG WINAPI DoaUnhandledFilter(PEXCEPTION_POINTERS ex_info) {
+  WriteCrashFile(ex_info);  // first, with Win32 calls only
   auto* er = ex_info->ExceptionRecord;
   HMODULE main_mod = GetModuleHandleW(nullptr);
   uint64_t pc = (uint64_t)er->ExceptionAddress;
