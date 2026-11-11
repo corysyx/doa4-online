@@ -280,6 +280,47 @@ static void TestLiveText() {
   CHECK(english && *english == 1 && f.bytes[kTextAddress] == 1);
 }
 
+// The settings file's values the SDK's int32 cvar setter did not take as written (review A Minor 1, spec G1). Expected
+// conversions follow the SDK (cvar.cpp ApplyTomlTable: std::to_string of a float is "2.500000"; cvar.h's int32 setter:
+// std::from_chars, which reads "2" from it and stops at the '.', and refuses "fr", "true" and anything past int32).
+static void TestSettingsFileNotes() {
+  using V = std::vector<std::string>;
+  // a string: refused, the cvar keeps kUnset
+  CHECK(SettingsFileNotes("doa4_language = \"fr\"\n") ==
+        V{"doa4_language \"fr\" is not a number: the game's own value instead"});
+  // a float: the SDK reads its whole part (NOT refused, so NOT "the game's own value")
+  CHECK(SettingsFileNotes("doa4_subtitles = 2.5\n") == V{"doa4_subtitles 2.5 is not a whole number: read as 2"});
+  CHECK(SettingsFileNotes("doa4_language = -0.5\n") == V{"doa4_language -0.5 is not a whole number: read as 0"});
+  // a bool: refused
+  CHECK(SettingsFileNotes("doa4_language = true\n") ==
+        V{"doa4_language true is not a number: the game's own value instead"});
+  // an integer: taken as written, no line (Resolve names it when it is out of range), also one out of the game's range
+  CHECK(SettingsFileNotes("doa4_language = 3\ndoa4_subtitles = 42\n").empty());
+  // a string holding a whole number: the SDK takes it as written, no line
+  CHECK(SettingsFileNotes("doa4_language = \"3\"\n").empty());
+  // a string with a number in front: read in part
+  CHECK(SettingsFileNotes("doa4_subtitles = \"7x\"\n") == V{"doa4_subtitles \"7x\" is not a number: read as 7"});
+  // past int32: refused (from_chars' range error), named as out of range
+  CHECK(SettingsFileNotes("doa4_language = 4294967296\n") ==
+        V{"doa4_language 4294967296 is out of range: the game's own value instead"});
+  // absent; another key's bad value; a key that only begins with the name; an empty file; a file that does not parse
+  CHECK(SettingsFileNotes("audio_mute = true\nanisotropic_override = \"x\"\n").empty());
+  CHECK(SettingsFileNotes("doa4_language_x = \"fr\"\n").empty());
+  CHECK(SettingsFileNotes("").empty());
+  CHECK(SettingsFileNotes("doa4_language = \"fr\"\nthis is not toml\n").empty());
+  // both keys, one in a table as the SDK joins it ([doa4] language = doa4_language): one line each
+  CHECK(SettingsFileNotes("doa4_subtitles = false\n[doa4]\nlanguage = \"de\"\n") ==
+        (V{"doa4_language \"de\" is not a number: the game's own value instead",
+           "doa4_subtitles false is not a number: the game's own value instead"}));
+  // a type the SDK does not set at all (an array): the game's own value
+  const V array = SettingsFileNotes("doa4_language = [1]\n");
+  CHECK(array.size() == 1 && array[0].rfind("doa4_language [", 0) == 0 &&
+        array[0].find("is not a number: the game's own value instead") != std::string::npos);
+  // a long string is cut in the line
+  const V long_text = SettingsFileNotes("doa4_language = \"" + std::string(200, 'z') + "\"\n");
+  CHECK(long_text.size() == 1 && long_text[0].size() < 120 && long_text[0].find("...") != std::string::npos);
+}
+
 int main() {
   TestAddresses();
   TestSavesChoices();
@@ -291,6 +332,7 @@ int main() {
   TestChoices();
   TestChoiceTracking();
   TestLiveText();  // after TestChoiceTracking: that one needs the baseline unset
+  TestSettingsFileNotes();
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
     return 1;

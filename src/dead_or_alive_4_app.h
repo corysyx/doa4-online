@@ -465,6 +465,18 @@ class DeadOrAlive4App : public rex::ReXApp {
     // The netplay release identity (CMakeLists.txt: DOA4_RELEASE_*; "dev" for local builds). A [LIFE] line, so an
     // offline run still has no [NET]/[NP] line (gate S9); plan 1b reads it.
     REXLOG_INFO("[doa4][LIFE] version {} ({} releases of {})", DOA4_RELEASE_TAG, DOA4_RELEASE_CHANNEL, DOA4_RELEASE_REPO);
+    // Task 12 review A Minor 1 (spec G1, "the log names the value it ignored"): a doa4_language / doa4_subtitles value in the
+    // settings file the SDK did not take as written ("fr", 2.5, true). The SDK loaded this file (ConfigPath() = its
+    // config_path) before logging started, so its own WARN never reached the log.
+    {
+      std::ifstream f(ConfigPath(), std::ios::binary);
+      if (f) {
+        const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        for (const std::string& note : doa4::language::SettingsFileNotes(text)) {
+          REXLOG_INFO("[doa4][LANG] settings: {}", note);
+        }
+      }
+    }
     // Task 10 review I4 (carry 2k): how this process was asked to show its window (a relaunch passes it on).
     {
       STARTUPINFOW si{};

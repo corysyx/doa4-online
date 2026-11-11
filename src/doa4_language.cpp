@@ -2,7 +2,10 @@
 
 #include <atomic>
 #include <charconv>
+#include <sstream>
 #include <system_error>
+
+#include <toml++/toml.hpp>
 
 namespace doa4::language {
 
@@ -76,6 +79,70 @@ Saved ResolveText(const std::optional<std::string>& text, const std::optional<st
     *ignored_note += not_numbers;
   }
   return s;
+}
+
+namespace {
+// The text the SDK hands the cvar's setter (cvar.cpp ApplyTomlTable); nothing for a type it does not set.
+std::optional<std::string> SdkText(const toml::node& v) {
+  if (v.is_boolean()) return v.as_boolean()->get() ? "true" : "false";
+  if (v.is_integer()) return std::to_string(v.as_integer()->get());
+  if (v.is_floating_point()) return std::to_string(v.as_floating_point()->get());
+  if (v.is_string()) return v.as_string()->get();
+  return std::nullopt;
+}
+
+// The value for the log line: a string in double quotes (a control character shown as '?'), anything else as toml++ writes
+// it; cut after 40 characters.
+std::string Spelled(const toml::node& v) {
+  std::string s;
+  if (v.is_string()) {
+    for (const char c : v.as_string()->get()) s += (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) ? '?' : c;
+  } else {
+    std::ostringstream out;
+    v.visit([&](const auto& x) { out << x; });
+    s = out.str();
+  }
+  if (s.size() > 40) s = s.substr(0, 40) + "...";
+  return v.is_string() ? "\"" + s + "\"" : s;
+}
+
+void CollectNotes(const toml::table& table, const std::string& prefix, std::vector<std::string>* notes) {
+  for (const auto& [key, value] : table) {
+    const std::string full = prefix.empty() ? std::string(key.str()) : prefix + "_" + std::string(key.str());
+    if (value.is_table()) {
+      CollectNotes(*value.as_table(), full, notes);
+      continue;
+    }
+    if (full != "doa4_language" && full != "doa4_subtitles") continue;
+    const std::optional<std::string> text = SdkText(value);
+    int32_t n = 0;
+    std::from_chars_result r{nullptr, std::errc::invalid_argument};
+    if (text) r = std::from_chars(text->data(), text->data() + text->size(), n);
+    if (r.ec == std::errc() && r.ptr == text->data() + text->size()) continue;  // taken as written
+    std::string note = full + " " + Spelled(value);
+    if (r.ec == std::errc()) {
+      note += std::string(value.is_floating_point() ? " is not a whole number" : " is not a number") + ": read as " +
+              std::to_string(n);
+    } else {
+      note += std::string(r.ec == std::errc::result_out_of_range && value.is_integer() ? " is out of range"
+                                                                                         : " is not a number") +
+              ": the game's own value instead";
+    }
+    notes->push_back(std::move(note));
+  }
+}
+}  // namespace
+
+std::vector<std::string> SettingsFileNotes(std::string_view toml_text) {
+  std::vector<std::string> notes;
+  toml::table table;
+  try {
+    table = toml::parse(toml_text);
+  } catch (const toml::parse_error&) {
+    return notes;  // the SDK loads nothing from such a file (its ERROR for it also comes before logging starts)
+  }
+  CollectNotes(table, "", &notes);
+  return notes;
 }
 
 namespace {

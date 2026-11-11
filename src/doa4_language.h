@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "doa4_guest.h"
 
@@ -42,6 +44,17 @@ Saved Resolve(int64_t text_cvar, int64_t subtitles_cvar, std::string* ignored_no
 // nothing is kUnset; only a whole decimal integer is a number; anything else gives nothing and is named in
 // *ignored_note ("language abc is not a number"), after Resolve's own notes.
 Saved ResolveText(const std::optional<std::string>& text, const std::optional<std::string>& subtitles, std::string* ignored_note);
+
+// The settings file's values the SDK did not take as written (spec G1: "the log names the value it ignored"). The SDK loads
+// dead_or_alive_4.toml before logging starts (rex_app.cpp: LoadConfig, then InitLogging), so its own WARN for
+// `doa4_language = "fr"` never reaches the log, and Resolve only sees the cvar (still kUnset). Given the file's text, one note
+// per doa4_language / doa4_subtitles value, found and converted as the SDK does (cvar.cpp ApplyTomlTable: a table's keys
+// joined with '_'; a bool, integer, float or string as text, then the int32 cvar's std::from_chars):
+// - refused (not a number, or past int32): `doa4_language "fr" is not a number: the game's own value instead`;
+// - read only in part (a float, or a string with a number in front): `doa4_subtitles 2.5 is not a whole number: read as 2`.
+// Nothing for a value taken as written (an integer, or a string such as "3": Resolve names one out of range), an absent
+// key, or a file that does not parse (the SDK then loads none of it).
+std::vector<std::string> SettingsFileNotes(std::string_view toml_text);
 
 // Writes text to kTextAddress and kTextCopyAddress and subtitles to kSubtitlesAddress, only for the fields that are set.
 // Never writes kBootDefaultAddress.
