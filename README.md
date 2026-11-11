@@ -11,9 +11,11 @@ the game, and the swimsuits need your own DOAX2 disc.
 
 It is a fork of [parkerallan/doa4-recomp](https://github.com/parkerallan/doa4-recomp), published at
 [Dwreckgg/doa4-online](https://github.com/Dwreckgg/doa4-online). On top of it: two-player **online
-play**, frame pacing, an Esc menu (Game / Controls / Photo / Extras / Online tabs),
-graphics options, full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts
-the game files. Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
+play**, frame pacing, an Esc menu (Game / Controls / Photo / Extras / Online tabs), graphics and display
+options (exclusive fullscreen, VSync, output size), the game's text language and subtitles saved between
+starts, an option to skip the boot intro, a notice on the title screen when a new version is out,
+full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts the game files.
+Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Easy setup: play online with a friend
 
@@ -60,6 +62,9 @@ If the friend's game shows its own code while connecting, the host can type it u
 ## Online play in more detail
 
 **How it works:** online play links the two games so they play as if both players sat at one console. The host is player 1 and the friend is player 2 of an ordinary offline game (pick **Versus**, characters and a stage as you would at home), and each player's controller input is sent to the other PC. The game's own online mode (its Xbox Live menus) does not work: there are no Xbox Live lobbies, matchmaking or avatars. Connect through the Esc menu's **Online** tab instead.
+
+**Language in a session:** both games use the host's text language and subtitles. Your own choice is not
+changed, and it is back when the session ends.
 
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
@@ -138,6 +143,10 @@ newest release, downloads its three files, checks each against its `SHA256SUMS.t
 asks you to restart. Press it again if it says to. It is off while you are online. Both players need the
 same release. You can also download the new zip and unzip it over the old folder.
 
+When a newer release is out, the title screen also says so ("Update available:" with its version number)
+until you press Start. It only tells you and downloads nothing; turn it off in the Online tab with **Tell me
+about new versions at start-up**.
+
 - **The launcher is retired for now.** The DOA4 launcher is not shipped with the releases any more, and its
   Update button should no longer be used: start `dead_or_alive_4.exe` and use **Check for Updates**. It may come
   back later.
@@ -154,8 +163,8 @@ the next start. The menu has five tabs: **Game**, **Controls**, **Photo**, **Ext
 **Game**, from the top:
 - **Display mode:** Windowed, Borderless fullscreen, or Exclusive fullscreen (experimental). The note
   under it: "Experimental: measured no lower input lag than borderless fullscreen."
-- **VSync:** "Removes tearing on monitors without G-Sync/FreeSync; can add up to one screen refresh of
-  input lag."
+- **VSync** (off unless you turn it on): "Removes tearing on monitors without G-Sync/FreeSync; can add up
+  to one screen refresh of input lag."
 - **Output size:** the size of the window in Windowed, the monitor mode in Exclusive fullscreen, and
   always the desktop size in Borderless fullscreen. "The size the picture is shown at. Render scale sets
   how sharp the game draws."
@@ -175,7 +184,8 @@ the next start. The menu has five tabs: **Game**, **Controls**, **Photo**, **Ext
 - **Language:** the game's text language: English, Japanese, French, German, Italian, Spanish,
   Traditional Chinese or Korean. Your pick is applied to the running game and kept for the next start.
   The text language and subtitles you choose on the game's own options screen are kept the same way.
-- **Start-up:** **Skip the intro at start-up**: "Starts at the title screen. Applies at the next start."
+- **Start-up:** **Skip the intro at start-up** (off unless you turn it on): "Starts at the title screen.
+  Applies at the next start."
 - **Game files:** the folder the game runs from, with **Change...** to pick another and **Open
   folder**. "A new location is used from the next start."
 - **Saves:** the folder that holds your saves and shader cache.
@@ -207,6 +217,10 @@ The top of the Game tab:
   stages, or Unlock everything. Load your profile first (reach the main menu). Before the first unlock
   the game backs up your save, and the tab shows where.
 - **Game tweaks:** "All stages in Tag battle" and "Hidden characters in multiplayer select".
+- **Extra costumes:** "Helena's opera dress", "Kokoro's pink and blue kimonos" and "Christie's cutscene
+  costume", added after each character's own costumes.
+- **Wipe unlocks...** locks everything again, as in a new save, after it asks; a backup of your save is
+  made first.
 - **DOAX2 swimsuits:** **Import DOAX2 swimsuits...** (or **Import again...**), then **Restart now** to
   use them; see [DOAX2 swimsuits](#doax2-swimsuits).
 
@@ -227,7 +241,8 @@ The top of the Game tab:
   0.3.2") until you press Start. It only tells you; **Check for Updates** does the download.
 
 During an online session some options are locked so both games stay identical: the Extras tab, options
-that need a restart, the language, and changing the game folder.
+that need a restart, the language, and changing the game folder. Settings changed during a session are
+restored when it ends.
 
 **Hotkeys**
 
