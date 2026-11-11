@@ -345,6 +345,13 @@ def test_repo_changelog(root):
     body = section_or_refusal(cs, raw.decode("ascii", "replace"), "0.3.1")
     check(body.startswith("### New\n- ") and "\n### Fixed\n- " in body and "\n### Notes\n- " in body,
           f"CHANGELOG.md 0.3.1: New, Fixed, Notes: {body!r}")
+    # the version the release workflow will publish (DOA4_NETPLAY_VERSION, read as its Version step reads it) has a
+    # section, so a raised version without notes fails here, not at the end of the release job
+    cmake = read(os.path.join(REPO, "CMakeLists.txt")).decode("utf-8", "replace")
+    m = re.search(r'set\(DOA4_NETPLAY_VERSION "([0-9]+\.[0-9]+\.[0-9]+)"', cmake)
+    version = m.group(1) if m else "?"
+    got = section_or_refusal(cs, raw.decode("ascii", "replace"), version)
+    check(m is not None and not got.startswith("NoSection"), f"CHANGELOG.md has a section for DOA4_NETPLAY_VERSION {version}: {got!r}")
 
 
 # ---- run_host_tests.py --------------------------------------------------------------------------------------------
