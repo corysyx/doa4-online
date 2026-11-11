@@ -247,7 +247,29 @@ static void TestNoticeLayout() {
   CHECK(NoticeLayoutFor(edge - 0.5f, 10.0f, 8.0f, 8.0f).font_scale < 1.755f);
 }
 
+// The Esc menu's width (Task 12 fix round 2).
+static void TestMenuWidth() {
+  // ImGui's radio button / checkbox: square + inner spacing + label; no label, the square alone (NOT square + spacing)
+  CHECK(Near(ToggleWidth(19.0f, 4.0f, 100.0f), 123.0f));
+  CHECK(Near(ToggleWidth(19.0f, 4.0f, 0.0f), 19.0f));
+  // one spacing between each two items (NOT one per item)
+  CHECK(Near(RowWidth({50.0f, 60.0f, 70.0f}, 8.0f), 196.0f));
+  CHECK(Near(RowWidth({50.0f}, 8.0f), 50.0f));
+  CHECK(Near(RowWidth({}, 8.0f), 0.0f));
+  // the window: widest row + 2 x padding + scrollbar (600 + 16 + 14 = 630)
+  CHECK(Near(kMenuMinWidth, 560.0f));
+  CHECK(Near(MenuWindowWidth(600.0f, 8.0f, 14.0f, 1280.0f), 630.0f));
+  // never narrower than before: a narrow content keeps 560; one that needs 561 gets 561
+  CHECK(Near(MenuWindowWidth(300.0f, 8.0f, 14.0f, 1280.0f), 560.0f));
+  CHECK(Near(MenuWindowWidth(531.0f, 8.0f, 14.0f, 1280.0f), 561.0f));
+  // clamped to the display: wider content than the display, and a display narrower than 560
+  CHECK(Near(MenuWindowWidth(2000.0f, 8.0f, 14.0f, 1280.0f), 1280.0f));
+  CHECK(Near(MenuWindowWidth(600.0f, 8.0f, 14.0f, 500.0f), 500.0f));
+  CHECK(Near(MenuWindowWidth(600.0f, 8.0f, 14.0f, 2560.0f), 630.0f));  // a wide display changes nothing
+}
+
 int main() {
+  TestMenuWidth();
   TestNoticeLayout();
   TestRefreshText();
   TestWindowedSizeList();

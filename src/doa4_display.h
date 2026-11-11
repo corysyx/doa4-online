@@ -111,4 +111,18 @@ struct NoticeLayout {
 // physical pixels * 96 / DPI, so a 720-pixel window at 150 % is 480 high).
 NoticeLayout NoticeLayoutFor(float display_h, float font_px, float pad_x, float pad_y);
 
+// The Esc menu's width (Task 12 fix round 2: it opened at 560 and cut off its longest lines). The menu measures every row
+// it draws without wrapping, in every tab (a text with ImGui::CalcTextSize, a radio button or checkbox with ToggleWidth, a
+// row of widgets on one line with RowWidth); the window opens that wide and cannot be made narrower (a size constraint).
+inline constexpr float kMenuMinWidth = 560.0f;  // the width it opened at before: never narrower than that
+// A radio button or checkbox as ImGui sizes it: the square (the frame height), then the inner spacing and the label.
+constexpr float ToggleWidth(float frame_h, float inner_spacing, float label_w) {
+  return frame_h + (label_w > 0 ? inner_spacing + label_w : 0);
+}
+// Widgets on one line (ImGui::SameLine): their widths plus the item spacing between each two.
+float RowWidth(const std::vector<float>& items, float spacing);
+// The window: the widest row plus the window padding on both sides and room for a scrollbar, at least kMenuMinWidth,
+// at most the display's width.
+float MenuWindowWidth(float widest_row, float padding_x, float scrollbar, float display_w);
+
 }  // namespace doa4::display

@@ -140,6 +140,8 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   enum class Listen { kNone, kPad, kKey };
 
   void DrawVideoSettings();
+  // The widest row any tab draws without wrapping (the window's minimum width; display::MenuWindowWidth).
+  float WidestRow();
   // The three display-mode radios, VSync and Output size (R60: never locked, memory only near a session).
   void DrawDisplayRows();
   // Keeps the exclusive mode list (ExclusiveModes()) as display::ExclusiveModesStep says: called at the top of every

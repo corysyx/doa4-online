@@ -4,10 +4,14 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include <rex/cvar.h>
 
+#include "doa4_display.h"
 #include "doa4_updater.h"  // Message() only (the app starts checks)
 #include "net/np_rules.h"
 
@@ -17,6 +21,12 @@ namespace {
 constexpr ImVec4 kNoteColor(1.0f, 0.85f, 0.4f, 1.0f);
 constexpr ImVec4 kErrorColor(1.0f, 0.45f, 0.4f, 1.0f);
 constexpr ImVec4 kDoneColor(0.45f, 0.9f, 0.5f, 1.0f);
+// Texts drawn without wrapping, named so WidestRow measures what Draw draws.
+constexpr const char* kNotAvailable = "Online play is not available in this build.";
+constexpr float kCodeFieldWidth = 220.0f;  // the join and reach-out code fields and the delay slider
+constexpr const char* kDelayNote = "The host decides the delay for both players.";
+constexpr const char* kStatsLabel = "Show ping and input delay over the game (F9)";
+constexpr const char* kNoticeLabel = "Tell me about new versions at start-up";
 }  // namespace
 
 void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const online_view::View& view,
@@ -24,7 +34,7 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
                      const std::function<void()>& open_logs, const std::function<void()>& restart,
                      const char* restart_warning) {
   if (!host.state) {
-    ImGui::TextDisabled("Online play is not available in this build.");
+    ImGui::TextDisabled("%s", kNotAvailable);
     return;
   }
   if (!join_seeded_) {
@@ -54,7 +64,7 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
 
   if (view.show_join || view.show_host) {
     ImGui::SeparatorText("Play with a friend");
-    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SetNextItemWidth(kCodeFieldWidth);
     ImGui::InputText("##join_code", join_, sizeof join_);
     ImGui::SameLine();
     np::rules::Endpoint ep;
@@ -82,7 +92,7 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
   if (view.show_reach_out) {
     ImGui::SeparatorText("Strict router?");
     ImGui::TextWrapped("If the other player cannot connect, type the code they show and press Reach out.");
-    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SetNextItemWidth(kCodeFieldWidth);
     ImGui::InputText("##reach_code", reach_, sizeof reach_);
     ImGui::SameLine();
     np::rules::Endpoint ep;
@@ -124,7 +134,7 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
     if (save_then_set("netplay_delay_auto", "false", false)) changed = true;
   }
   ImGui::BeginDisabled(automatic);
-  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SetNextItemWidth(kCodeFieldWidth);
   if (ImGui::SliderInt("frames", &frames, 1, 8)) {
     if (save_then_set("netplay_delay", std::to_string(frames), false)) changed = true;
   }
@@ -133,10 +143,10 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
   if (changed && host.set_delay) {
     host.set_delay(rex::cvar::Query<bool>("netplay_delay_auto"), rex::cvar::Query<int32_t>("netplay_delay"));
   }
-  ImGui::TextDisabled("The host decides the delay for both players.");
+  ImGui::TextDisabled("%s", kDelayNote);
 
   bool show = rex::cvar::Query<bool>("netplay_show_stats");
-  if (ImGui::Checkbox("Show ping and input delay over the game (F9)", &show)) {
+  if (ImGui::Checkbox(kStatsLabel, &show)) {
     // In a session nothing is written to the config (it is restored at the session's end): the setting only changes in
     // memory, as F9 does.
     const char* value = show ? "true" : "false";
@@ -166,7 +176,7 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
   // only in memory, as the F9 box above.
   ImGui::PushID("update_notice");
   bool notice = rex::cvar::Query<bool>("doa4_update_notice");
-  if (ImGui::Checkbox("Tell me about new versions at start-up", &notice)) {
+  if (ImGui::Checkbox(kNoticeLabel, &notice)) {
     const char* value = notice ? "true" : "false";
     if (in.in_session) {
       rex::cvar::SetFlagByName("doa4_update_notice", value);
@@ -176,6 +186,38 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
   }
   ImGui::PopID();
   if (open_logs && ImGui::Button("Open session logs")) open_logs();
+}
+
+float OnlineTab::WidestRow(const online_view::In& in, const online_view::View& view, const char* restart_warning) {
+  const ImGuiStyle& st = ImGui::GetStyle();
+  const float frame = ImGui::GetFrameHeight();
+  const auto text = [](const std::string& t) { return ImGui::CalcTextSize(t.c_str(), nullptr, true).x; };
+  const auto toggle = [&](const std::string& t) { return display::ToggleWidth(frame, st.ItemInnerSpacing.x, text(t)); };
+  const auto button = [&](const std::string& t) { return text(t) + st.FramePadding.x * 2; };
+  const auto row = [&](const std::vector<float>& items) { return display::RowWidth(items, st.ItemSpacing.x); };
+  std::vector<float> w = {
+      text(kNotAvailable),
+      row({text(in.lobby.my_code), button("Copy")}),
+      row({kCodeFieldWidth, button("Join"), button("Host")}),
+      button("Last code"),
+      text(np::rules::kBadCodeText),
+      row({kCodeFieldWidth, button("Reach out")}),
+      row({button("Start online session"), button("Leave online session"), button("Disconnect")}),
+      row({toggle("Auto"), toggle("Manual")}),
+      kCodeFieldWidth + st.ItemInnerSpacing.x + text("frames"),
+      text(kDelayNote),
+      toggle(kStatsLabel),
+      row({button("Check for Updates"), button("Restart game"), text(view.update_note.empty() ? updater::kOnlineText : view.update_note)}),
+      toggle(kNoticeLabel),
+      button("Open session logs"),
+  };
+  // the notes this state shows (each drawn on its own line, unwrapped)
+  for (const std::string* t : {&view.event_line, &view.diagnostics_line, &view.display_note, &view.session_note,
+                               &view.code_note, &view.join_host_note}) {
+    w.push_back(text(*t));
+  }
+  if (restart_warning) w.push_back(text(restart_warning));
+  return *std::max_element(w.begin(), w.end());
 }
 
 }  // namespace doa4

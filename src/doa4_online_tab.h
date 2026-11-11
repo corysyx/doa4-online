@@ -38,6 +38,9 @@ class OnlineTab {
             const std::function<bool(std::string_view, std::string_view, bool)>& save_then_set,
             const std::function<void()>& open_logs, const std::function<void()>& restart,
             const char* restart_warning);
+  // The widest row Draw draws without wrapping for this state (Task 12 fix round 2; the menu's minimum width), measured
+  // with the font in use.
+  static float WidestRow(const online_view::In& in, const online_view::View& view, const char* restart_warning);
 
  private:
   char join_[64] = {};

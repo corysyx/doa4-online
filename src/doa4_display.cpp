@@ -105,4 +105,15 @@ NoticeLayout NoticeLayoutFor(float display_h, float font_px, float pad_x, float 
   return l;
 }
 
+float RowWidth(const std::vector<float>& items, float spacing) {
+  float w = 0;
+  for (size_t i = 0; i < items.size(); ++i) w += items[i] + (i ? spacing : 0);
+  return w;
+}
+
+float MenuWindowWidth(float widest_row, float padding_x, float scrollbar, float display_w) {
+  const float want = std::max(kMenuMinWidth, widest_row + 2 * padding_x + scrollbar);
+  return std::min(want, display_w);
+}
+
 }  // namespace doa4::display
