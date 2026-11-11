@@ -41,10 +41,16 @@ inline constexpr uint64_t kMaxFileBytes = uint64_t(256) << 20;
 inline constexpr uint64_t kMaxSumsBytes = uint64_t(1) << 20;
 inline constexpr uint64_t kMaxListBytes = uint64_t(16) << 20;
 
+// What the release list said (Task 15: the start-up notice's memory follows it). kNewer: the channel's highest release
+// is newer than the running tag (every release, for a self-built game); kUpToDate: it is not; kFailed: no answer, an
+// error, no release of the channel, or nothing asked (a swap already done in this process, the game closing).
+enum class Found { kFailed, kUpToDate, kNewer };
+
 struct Result {
   bool ok = false;  // the files were swapped
   std::string tag;  // the release it looked at ("" when none was picked)
   std::string message;
+  Found found = Found::kFailed;
 };
 
 // What a check gets from whoever asked for it.
@@ -52,6 +58,7 @@ struct Request {
   std::function<void(const std::string&)> log;  // "[doa4][UPDATE] <text>" lines, from the check's own thread; may be empty
   std::function<bool()> may_swap;               // asked just before the swap: still offline and no session (empty = yes)
   bool confirm = false;                         // the second press that installs a release over a self-built game
+  std::function<void(const Result&)> done;      // Start: the result, on the check's thread, after its last log line
 };
 
 // Where a check reads from and writes to: the game's own (GameEnv), or the host test's fakes and temp folder.
@@ -76,6 +83,16 @@ Env GameEnv();
 // VerifyAndSwap; removes update_new in every case. After one successful swap, later checks in the same process download
 // nothing and say so (RestartPending). After Shutdown, nothing more is downloaded or swapped.
 Result CheckAndUpdate(const Request& request, const Env& env);
+
+// Task 15, the start-up notice: only the release list and Choose (blocks; call it from StartCheckOnly's thread). It never
+// downloads, never creates update_new and never swaps: the only Env call is the one GET of the list, and nothing here
+// reaches Download or VerifyAndSwap. ok stays false; found and tag say what the list holds; message: "Release <tag> is
+// available", Choose's "Already on the latest ..." / "No ... release found yet", or "Could not reach GitHub (...)".
+// Independent of Start: no Busy, no Message, no offer to a self-built game. After Shutdown: kFailed, nothing asked.
+Result CheckOnly(const Env& env);
+// CheckOnly on its own (detached) thread; `done` gets the result there (an exception in the check: kFailed). Returns false
+// when the thread could not start or after Shutdown (done is then never called).
+bool StartCheckOnly(Env env, std::function<void(const Result&)> done);
 
 // The decision once the releases JSON arrived (pure). `json`: GitHub's release list; `channel`: DOA4_RELEASE_CHANNEL;
 // `current`: DOA4_RELEASE_TAG. update = true when the highest release with kFiles + SHA256SUMS.txt (rules::PickRelease)

@@ -18,6 +18,10 @@ REXCVAR_DEFINE_BOOL(doa4_show_fps, false, "DOA4", "Show frames per second over t
 // carried to the other player (a session skips every movie on both PCs anyway).
 REXCVAR_DEFINE_BOOL(doa4_skip_intro, false, "DOA4", "Skip the intro at start-up: start at the title screen");
 
+// Online tab: the start-up update notice (doa4_update_notice.h), read once at start-up. Host-only: not carried to the other
+// player (a session relaunch never checks and never shows it).
+REXCVAR_DEFINE_BOOL(doa4_update_notice, true, "DOA4", "Tell me about new versions at start-up");
+
 // First-run setup (doa4_gamefiles.h): the folder the setup chose. The command
 // line's --game_data_root overrides it.
 REXCVAR_DEFINE_STRING(doa4_game_files, "", "DOA4",

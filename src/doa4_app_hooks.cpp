@@ -24,6 +24,7 @@
 
 #include "doa4_intro_skip.h"
 #include "doa4_title_word.h"
+#include "doa4_update_notice.h"
 #include "generated/default/dead_or_alive_4_init.h"
 
 
@@ -86,6 +87,20 @@ REX_HOOK_RAW(sub_823BB470) {
     REXLOG_INFO("[doa4][INTRO] first title logo draw at swap {} frame {} (lr {:08X}, {} thread {:#x})",
                 doa4::intro_skip::Swaps(), doa4::intro_skip::Frames(), uint32_t(ctx.lr),
                 thread && thread->main_thread() ? "main" : "guest", Tid());
+  }
+  // The start-up update notice (doa4_update_notice.h): PRESS START drawn this frame = a 0x30001 submission whose draw bit
+  // is set (byte 23 & 0x08; the original returns at once without drawing when it is clear). Its changes are logged, capped.
+  if (sprite == doa4::update_notice::kPressStartSprite) {
+    const bool visible = (rex::memory::load<uint8_t>(base + draw + 23) & 0x08) != 0;
+    const uint32_t swap = doa4::intro_skip::Swaps();
+    const auto event = doa4::update_notice::Title().NoteDraw(sprite, visible, swap);
+    static std::atomic<int> s_events{0};
+    if (event != doa4::update_notice::TitleWatch::Event::kNone && s_events.fetch_add(1) < 64) {
+      using E = doa4::update_notice::TitleWatch::Event;
+      REXLOG_INFO("[doa4][UPDATE] title: PRESS START {} at swap {} frame {}",
+                  event == E::kFirstVisible ? "first drawn" : event == E::kHidden ? "draw bit clear" : "drawn again", swap,
+                  doa4::intro_skip::Frames());
+    }
   }
   if (!g_title_word.load(std::memory_order_acquire) || sprite != doa4::title_word::kLogoSprite) {
     __imp__sub_823BB470(ctx, base);

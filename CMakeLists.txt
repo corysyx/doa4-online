@@ -31,6 +31,7 @@ set(DEADORALIVE4_SOURCES
     src/doa4_language_hooks.cpp
     src/doa4_title_word.cpp
     src/doa4_intro_skip.cpp
+    src/doa4_update_notice.cpp
     src/doa4_suits_manifest.cpp
     src/doa4_costumes.cpp
     src/doa4_suits.cpp

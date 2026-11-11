@@ -53,6 +53,11 @@ static int g_failures = 0;
   } while (0)
 
 static bool Has(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
+// Task 15: Result::found by name, so a failed check prints what it got
+static const char* FoundName(up::Found f) {
+  return f == up::Found::kNewer ? "newer" : f == up::Found::kUpToDate ? "up to date" : "failed";
+}
+#define CHECK_FOUND(r, want) CHECK_EQ(FoundName((r).found), FoundName(want))
 
 // ---- files ----
 static fs::path g_root;
@@ -952,6 +957,17 @@ static void TestShutdown() {
     CHECK(h.asked.size() == 2);
     CHECK(!up::Start(up::Request{}, [](const up::Request&) { return up::Result{}; }));
     CHECK(!up::Busy());
+    // Task 15: after Shutdown the check-only entry asks nothing, and its thread does not start (done never called)
+    FakeHttp h2;
+    Serve(h2, SumsText());
+    const up::Result co = up::CheckOnly(MakeEnv(h2, GameDir("shut_checkonly"), "netplay-v1.0.5"));
+    CHECK_FOUND(co, up::Found::kFailed);
+    CHECK(h2.asked.empty());
+    std::atomic<bool> called{false};
+    CHECK(!up::StartCheckOnly(MakeEnv(h2, GameDir("shut_checkonly2"), "netplay-v1.0.5"),
+                              [&](const up::Result&) { called = true; }));
+    Sleep(200);
+    CHECK(!called.load() && h2.asked.empty());
   }
   up::ResetForTest();
   {
@@ -985,6 +1001,170 @@ static void TestShutdown() {
   }
 }
 
+// ---- Task 15: what the list said (Result::found), the check-only entry and the done callback ----
+// CheckAndUpdate classifies the list for the button's memory refresh: newer even when the download or the swap fails
+// afterwards (the release exists), up to date, and failed for no answer / no release of the channel.
+static void TestFound() {
+  up::ResetForTest();
+  {
+    FakeHttp h;
+    h.bodies[kApi] = "[]";
+    const up::Result r = up::CheckAndUpdate(up::Request{}, MakeEnv(h, GameDir("found_none"), "netplay-v1.0.5"));
+    CHECK_FOUND(r, up::Found::kFailed);
+  }
+  {
+    FakeHttp h;
+    h.fail[kApi] = "no answer (error 12007)";
+    const up::Result r = up::CheckAndUpdate(up::Request{}, MakeEnv(h, GameDir("found_unreachable"), "netplay-v1.0.5"));
+    CHECK_FOUND(r, up::Found::kFailed);
+  }
+  {  // the same release: up to date; a running tag past every release: up to date too (not "newer", not "failed")
+    FakeHttp h;
+    Serve(h, SumsText());
+    const up::Result same = up::CheckAndUpdate(up::Request{}, MakeEnv(h, GameDir("found_same"), kTag));
+    CHECK_FOUND(same, up::Found::kUpToDate);
+    CHECK_EQ(same.tag, kTag);
+    const up::Result past = up::CheckAndUpdate(up::Request{}, MakeEnv(h, GameDir("found_past"), "netplay-v1.0.7"));
+    CHECK_FOUND(past, up::Found::kUpToDate);
+  }
+  {  // a newer release whose download fails: still newer (the release exists), nothing swapped
+    FakeHttp h;
+    Serve(h, SumsText(2));
+    const up::Result r = up::CheckAndUpdate(up::Request{}, MakeEnv(h, GameDir("found_badsum"), "netplay-v1.0.5"));
+    CHECK(!r.ok);
+    CHECK_FOUND(r, up::Found::kNewer);
+    CHECK_EQ(r.tag, kTag);
+  }
+  {  // a self-built game's first press (the offer): newer
+    FakeHttp h;
+    Serve(h, SumsText());
+    const up::Result r = up::CheckAndUpdate(up::Request{}, MakeEnv(h, GameDir("found_dev"), "dev"));
+    CHECK_FOUND(r, up::Found::kNewer);
+  }
+  up::ResetForTest();
+}
+
+// The check-only entry: one GET of the list, never a download, never update_new, never a swap or an offer, never the
+// shared Busy/Message.
+static void TestCheckOnly() {
+  up::ResetForTest();
+  up::Refuse("before");  // Message() must stay this
+  {  // newer: only the list asked for (the download addresses are served and never fetched), the folder unchanged
+    FakeHttp h;
+    Serve(h, SumsText());
+    const fs::path d = GameDir("co_newer");
+    const auto d0 = Snapshot(d);
+    const up::Result r = up::CheckOnly(MakeEnv(h, d, "netplay-v1.0.5"));
+    CHECK_FOUND(r, up::Found::kNewer);
+    CHECK_EQ(r.tag, kTag);
+    CHECK(!r.ok);
+    CHECK_EQ(r.message, "Release netplay-v1.0.6 is available");
+    CHECK(h.asked.size() == 1 && h.asked[0] == kApi);  // NOT the four downloads CheckAndUpdate would ask for
+    ExpectUnchanged("check only, newer", d, d0);
+  }
+  {  // up to date (same tag, and a running tag past it)
+    FakeHttp h;
+    Serve(h, SumsText());
+    const up::Result same = up::CheckOnly(MakeEnv(h, GameDir("co_same"), kTag));
+    CHECK_FOUND(same, up::Found::kUpToDate);
+    CHECK_EQ(same.message, "Already on the latest netplay release (netplay-v1.0.6)");
+    const up::Result past = up::CheckOnly(MakeEnv(h, GameDir("co_past"), "netplay-v1.0.7"));
+    CHECK_FOUND(past, up::Found::kUpToDate);
+    CHECK(h.asked.size() == 2);
+  }
+  {  // no answer
+    FakeHttp h;
+    h.fail[kApi] = "no answer (error 12007)";
+    const up::Result r = up::CheckOnly(MakeEnv(h, GameDir("co_fail"), "netplay-v1.0.5"));
+    CHECK_FOUND(r, up::Found::kFailed);
+    CHECK_EQ(r.message, "Could not reach GitHub (no answer (error 12007))");
+  }
+  {  // no release of the channel
+    FakeHttp h;
+    h.bodies[kApi] = "[]";
+    const up::Result r = up::CheckOnly(MakeEnv(h, GameDir("co_none"), "netplay-v1.0.5"));
+    CHECK_FOUND(r, up::Found::kFailed);
+    CHECK_EQ(r.message, "No netplay release found yet");
+  }
+  {  // a self-built game: newer, and no offer is recorded (the button's two-press confirm is not touched)
+    FakeHttp h;
+    Serve(h, SumsText());
+    const fs::path d = GameDir("co_dev");
+    const auto d0 = Snapshot(d);
+    const up::Result r = up::CheckOnly(MakeEnv(h, d, "dev"));
+    CHECK_FOUND(r, up::Found::kNewer);
+    CHECK(!up::OfferPending());
+    CHECK(h.asked.size() == 1);
+    ExpectUnchanged("check only, dev", d, d0);
+  }
+  CHECK_EQ(up::Message(), "before");
+  CHECK(!up::Busy());
+  // StartCheckOnly: its own thread, done gets the result there; Busy stays false meanwhile (a button check can start)
+  {
+    FakeHttp h;
+    Serve(h, SumsText());
+    std::atomic<bool> release{false}, called{false};
+    std::atomic<DWORD> tid{0};
+    up::Result got;
+    std::mutex gmu;
+    up::Env e = MakeEnv(h, GameDir("co_thread"), "netplay-v1.0.5");
+    auto inner = e.get;
+    e.get = [&release, inner](const std::string& u, bool api, const up::Sink& s, std::string* err) {
+      for (int i = 0; i < 500 && !release.load(); ++i) Sleep(10);
+      return inner(u, api, s, err);
+    };
+    CHECK(up::StartCheckOnly(e, [&](const up::Result& r) {
+      std::lock_guard<std::mutex> g(gmu);
+      got = r;
+      tid = GetCurrentThreadId();
+      called = true;
+    }));
+    CHECK(!up::Busy());
+    CHECK(up::Start(up::Request{}, [](const up::Request&) { return up::Result{}; }));  // not blocked by the start-up check
+    CHECK(WaitFor([] { return !up::Busy(); }, 3000));
+    release = true;
+    CHECK(WaitFor([&] { return called.load(); }, 5000));
+    std::lock_guard<std::mutex> g(gmu);
+    CHECK_FOUND(got, up::Found::kNewer);
+    CHECK(tid.load() != 0 && tid.load() != GetCurrentThreadId());
+  }
+  up::ResetForTest();
+}
+
+// Start's done: once, with the check's result, on the check's thread, after the last log line.
+static void TestStartDone() {
+  up::ResetForTest();
+  std::mutex mu;
+  std::vector<std::string> order;
+  std::atomic<int> calls{0};
+  up::Request q;
+  q.log = [&](const std::string& l) {
+    std::lock_guard<std::mutex> g(mu);
+    order.push_back("log " + l);
+  };
+  q.done = [&](const up::Result& r) {
+    std::lock_guard<std::mutex> g(mu);
+    order.push_back(std::string("done ") + FoundName(r.found) + " " + r.tag);
+    ++calls;
+  };
+  CHECK(up::Start(q, [](const up::Request&) {
+    up::Result r;
+    r.found = up::Found::kNewer;
+    r.tag = "netplay-v9.9.9";
+    r.message = "fake";
+    return r;
+  }));
+  CHECK(WaitFor([&] { return calls.load() == 1; }, 3000));
+  CHECK(WaitFor([] { return !up::Busy(); }, 3000));
+  std::lock_guard<std::mutex> g(mu);
+  CHECK(order.size() == 3);
+  if (order.size() == 3) {
+    CHECK_EQ(order[1], "log [doa4][UPDATE] fake");
+    CHECK_EQ(order[2], "done newer netplay-v9.9.9");
+  }
+  up::ResetForTest();
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   wchar_t tmp[MAX_PATH];
@@ -1009,6 +1189,9 @@ int main() {
   TestHostAllowed();
   TestStartBusy();
   TestCheckAndUpdate();
+  TestFound();
+  TestCheckOnly();
+  TestStartDone();
   TestSumsRefresh();
   TestShutdown();  // last: the cancel flag stays set
   fs::remove_all(g_root, ec);

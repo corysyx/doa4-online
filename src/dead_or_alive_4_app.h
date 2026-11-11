@@ -58,6 +58,7 @@
 #include "doa4_photo_notice.h"
 #include "doa4_photo_service.h"
 #include "doa4_photo_watch.h"
+#include "doa4_update_notice.h"
 #include "doa4_photo_win.h"
 #include "doa4_menu.h"
 #include "doa4_setup_dialog.h"
@@ -81,6 +82,7 @@
 #include "net/np_handoff.h"
 #include "net/np_online.h"
 #include "net/np_restart.h"
+#include "net/np_rules.h"
 #include "net/np_session.h"
 #include "net/np_transport.h"
 #include "net/np_upnp.h"
@@ -477,6 +479,20 @@ class DeadOrAlive4App : public rex::ReXApp {
   // (read, deleted, the variable cleared, its build checked, the host's guest settings applied and read back), the
   // switch gate (R22), a replay's recording rules (R21) and the pids.txt line.
   void NetplayAtStart() {
+    // The start-up update notice (Task 15): the three relaunch markers as this process got them, before this function
+    // clears two of them and OnPreSetup the third (doa4_wait_for_previous_instance).
+    {
+      const auto set = [](const char* name) {
+        const char* v = std::getenv(name);
+        return v && *v;
+      };
+      update_relaunch_env_ = (set("DOA4_NP_HANDOFF") ? "DOA4_NP_HANDOFF " : "") +
+                             std::string(set("DOA4_NP_AFTER_SESSION") ? "DOA4_NP_AFTER_SESSION " : "") +
+                             (set("DOA4_WAIT_PID") ? "DOA4_WAIT_PID " : "");
+      update_relaunch_ = doa4::update_notice::SessionRelaunch(std::getenv("DOA4_NP_HANDOFF"),
+                                                              std::getenv("DOA4_NP_AFTER_SESSION"),
+                                                              std::getenv("DOA4_WAIT_PID"), false);
+    }
     if (const char* t = std::getenv("DOA4_NP_TEST_DIR"); t && *t) test_dir_ = doa4::PathFromUtf8(t);
     bool had_handoff = false;
     if (const wchar_t* h = _wgetenv(L"DOA4_NP_HANDOFF"); h && *h) {
@@ -625,6 +641,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     } else {
       REXLOG_WARN("[doa4][GPU] failed to set readback_resolve cvar");
     }
+    StartUpdateNotice();  // after StartNetplaySession (np::Active is known); the check runs on its own thread
   }
   void OnPostLoadXexImage() override {
     REXLOG_INFO("[doa4][LIFE] OnPostLoadXexImage: XEX mapped into guest memory");
@@ -902,7 +919,124 @@ class DeadOrAlive4App : public rex::ReXApp {
       return !l || l->status().state == doa4::np::online::State::kOffline;
     };
     r.confirm = confirm;
+    // Task 15: the button's answer refreshes the start-up notice's memory (UI thread, PollUpdateNotice)
+    r.done = [](const doa4::updater::Result& res) {
+      doa4::update_notice::Post({true, res.found, res.tag});
+    };
     return r;
+  }
+
+  // ---- the start-up update notice (update G7, Task 15; doa4_update_notice.h) ----
+  // Test seam (inert unless set; one log line each when used; never set by the game or its launcher):
+  //   DOA4_TEST_UPDATE_TAG=<tag>    the running tag for the notice and its check, instead of DOA4_RELEASE_TAG
+  //   DOA4_TEST_UPDATE_FEED=<file>  the release list is read from that file instead of GitHub; "fail" = no answer
+  // The decision is made here, once (OnPostSetup); the check (updater::CheckOnly: the list only, never a download) runs
+  // on its own thread; its answer reaches PollUpdateNotice through update_notice::Post.
+  void StartUpdateNotice() {
+    namespace un = doa4::update_notice;
+    std::string running = DOA4_RELEASE_TAG;
+    if (const char* t = std::getenv("DOA4_TEST_UPDATE_TAG"); t && *t) {
+      running = t;
+      REXLOG_INFO("[doa4][UPDATE] TEST SEAM: running tag {} (DOA4_TEST_UPDATE_TAG; the build's is {})", running,
+                  DOA4_RELEASE_TAG);
+    }
+    const bool netplay = doa4::np::Active();
+    const bool relaunch = update_relaunch_ || netplay;
+    const bool enabled = rex::cvar::Query<bool>("doa4_update_notice");
+    const std::string remembered = un::ReadMemory(user_data_);  // <U> itself, also in a session process (never redirected)
+    update_remembered_ = remembered;
+    const un::StartPlan plan =
+        un::AtStart(enabled, running, doa4::np::rules::IsDevBuild(running), relaunch, remembered);
+    std::string relaunch_text;
+    if (relaunch) relaunch_text = " [" + update_relaunch_env_ + (netplay ? "netplay session" : "") + "]";
+    REXLOG_INFO("[doa4][UPDATE] start-up notice: {}{} (doa4_update_notice {}, running {}, remembered {})", plan.why,
+                relaunch_text, enabled ? "on" : "off", running, remembered.empty() ? "none" : remembered);
+    if (plan.clear_memory) SetUpdateMemory("");
+    if (!plan.show.empty()) update_notice_tag_ = plan.show;
+    if (!plan.check) return;
+    doa4::updater::Env env = doa4::updater::GameEnv();
+    env.current = running;
+    auto get = env.get;
+    if (const char* f = std::getenv("DOA4_TEST_UPDATE_FEED"); f && *f) {
+      const std::string feed = f;
+      REXLOG_INFO("[doa4][UPDATE] TEST SEAM: the release list comes from {} (DOA4_TEST_UPDATE_FEED), not GitHub", feed);
+      get = [feed](const std::string&, bool, const doa4::updater::Sink& sink, std::string* error) {
+        if (feed == "fail") {
+          *error = "TEST SEAM: no answer";
+          return false;
+        }
+        std::ifstream in(doa4::PathFromUtf8(feed), std::ios::binary);
+        const std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (!in && body.empty()) {
+          *error = "TEST SEAM: cannot read " + feed;
+          return false;
+        }
+        return sink(body.data(), body.size());
+      };
+    }
+    // every request the start-up check makes is logged (the evidence that a start asked, or did not)
+    env.get = [get](const std::string& url, bool api, const doa4::updater::Sink& sink, std::string* error) {
+      REXLOG_INFO("[doa4][UPDATE] start-up check: GET {}", url);
+      return get(url, api, sink, error);
+    };
+    const bool started = doa4::updater::StartCheckOnly(std::move(env), [](const doa4::updater::Result& r) {
+      REXLOG_INFO("[doa4][UPDATE] start-up check: {}", r.message);
+      doa4::update_notice::Post({false, r.found, r.tag});
+    });
+    if (!started) REXLOG_WARN("[doa4][UPDATE] start-up check: could not start");
+  }
+
+  // The memory file in the user-data folder (<U>/update_notice.txt); never written in an online session (R51): a process
+  // started for one (session_, guest_touched_: also after an aborted start) or any netplay session running (np::Active).
+  void SetUpdateMemory(const std::string& tag) {
+    if (session_.has_value() || guest_touched_ || doa4::np::Active()) {
+      REXLOG_INFO("[doa4][UPDATE] notice memory not written (a session process): {}", tag.empty() ? "clear" : tag);
+      return;
+    }
+    const std::string error = doa4::update_notice::WriteMemory(user_data_, tag);
+    if (!error.empty()) {
+      REXLOG_WARN("[doa4][UPDATE] notice memory: {}", error);
+      return;
+    }
+    update_remembered_ = tag;
+    REXLOG_INFO("[doa4][UPDATE] notice memory: {}", tag.empty() ? "cleared" : tag);
+  }
+
+  // UiTick: answers that arrived, then the title watch. The notice shows while PRESS START is drawn and goes for the rest of
+  // the run once the title is left (the first Start press, or the title's own attract).
+  void PollUpdateNotice() {
+    namespace un = doa4::update_notice;
+    for (const un::Arrival& a : un::TakeArrivals()) {
+      const un::MemoryPlan p = a.from_button ? un::RefreshFromButton(a.found, a.tag, update_remembered_)
+                                             : un::AfterCheck(a.found, a.tag, update_remembered_);
+      REXLOG_INFO("[doa4][UPDATE] {}: {}", a.from_button ? "Check for Updates" : "start-up check", p.why);
+      if (p.write) SetUpdateMemory(p.memory);
+      if (!p.show.empty()) {
+        if (update_title_left_) {
+          REXLOG_INFO("[doa4][UPDATE] notice: {} not shown (the title was left before the answer came)", p.show);
+        } else {
+          update_notice_tag_ = p.show;
+        }
+      }
+    }
+    un::TitleWatch& w = un::Title();
+    const uint32_t now = doa4::intro_skip::Swaps();
+    if (!update_title_left_ && w.Left(now)) {
+      update_title_left_ = true;
+      REXLOG_INFO("[doa4][UPDATE] title left at swap {}: PRESS START last drawn at swap {} ({} visible, {} hidden "
+                  "submissions)",
+                  now, w.LastVisibleSwap() - 1, w.VisibleCount(), w.HiddenCount());
+    }
+    const bool shown = !update_notice_tag_.empty() && !update_title_left_ && w.DrawnNow(now);
+    if (shown != update_notice_shown_) {
+      update_notice_shown_ = shown;
+      if (shown) {
+        REXLOG_INFO("[doa4][UPDATE] notice: shown \"{}\" (swap {})", un::DisplayText(update_notice_tag_), now);
+      } else {
+        REXLOG_INFO("[doa4][UPDATE] notice: hidden (swap {})", now);
+      }
+      UpdateNetOverlay();
+    }
   }
 
   // The host's save: every file below <U>/B13EBABEBABEBABE/544307D1/, named from <U> with '/' separators.
@@ -1034,6 +1168,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     c.banner = ov::BannerText(in.in_session && doa4::np::BannerWaiting(), ending);
     c.stats = ov::Describe(in).stats_lines;
     if (rex::cvar::Query<bool>("doa4_show_fps")) c.fps = fps_meter_.Text();
+    if (update_notice_shown_) c.notice = doa4::update_notice::DisplayText(update_notice_tag_);
     return c;
   }
 
@@ -1042,7 +1177,8 @@ class DeadOrAlive4App : public rex::ReXApp {
   void UpdateNetOverlay() {
     if (net_closing_.load(std::memory_order_acquire) || !drawer_) return;
     const doa4::online_view::In in = OnlineViewIn(false);
-    bool want = (in.show_stats && (in.in_session || in.lobby_open)) || rex::cvar::Query<bool>("doa4_show_fps");
+    bool want = (in.show_stats && (in.in_session || in.lobby_open)) || rex::cvar::Query<bool>("doa4_show_fps") ||
+                update_notice_shown_;  // Task 15: the start-up update notice on the title
     if (!want && in.in_session) {
       want = !NetOverlayContent().banner.empty();
     }
@@ -1103,6 +1239,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     LatchSuitsRestart();  // the Esc import ended (a timer, not a painted frame)
     PollExtrasRequest();
     SaveLanguageChoice();
+    PollUpdateNotice();  // Task 15: arrived answers, the title watch (a timer: a minimized window never paints)
     if (rex::cvar::Query<bool>("doa4_show_fps")) {
       const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
       fps_meter_.Sample(GpuSwaps(), now);
@@ -1707,6 +1844,13 @@ class DeadOrAlive4App : public rex::ReXApp {
   bool toml_had_ = false;
   bool guest_touched_ = false;   // a host-imposed setting was applied in this process (fix round I1)
   bool launch_refused_ = false;  // the session start was aborted: no runtime / no module launch (I1, I2)
+  // The start-up update notice (Task 15). update_relaunch_*: set once in NetplayAtStart; the rest on the UI thread.
+  bool update_relaunch_ = false;        // DOA4_NP_HANDOFF / DOA4_NP_AFTER_SESSION / DOA4_WAIT_PID at start-up
+  std::string update_relaunch_env_;     // which of them, for the log line
+  std::string update_remembered_;       // the memory file's tag as last read or written ("" = none)
+  std::string update_notice_tag_;       // the tag the notice shows ("" = none)
+  bool update_title_left_ = false;      // the title was left: the notice is gone for this run
+  bool update_notice_shown_ = false;    // the overlay shows the notice now
 
   // First-run setup (doa4_setup_dialog.h): the screen while it is open, and
   // the folder the game started from.

@@ -162,6 +162,19 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
   }
   if (const std::string msg = updater::Message(); !msg.empty()) ImGui::TextWrapped("%s", msg.c_str());
   if (view.show_restart && restart_warning) ImGui::TextColored(kErrorColor, "%s", restart_warning);
+  // The start-up update notice (Task 15, doa4_update_notice.h): read at the next start. Its own ID scope. In a session
+  // only in memory, as the F9 box above.
+  ImGui::PushID("update_notice");
+  bool notice = rex::cvar::Query<bool>("doa4_update_notice");
+  if (ImGui::Checkbox("Tell me about new versions at start-up", &notice)) {
+    const char* value = notice ? "true" : "false";
+    if (in.in_session) {
+      rex::cvar::SetFlagByName("doa4_update_notice", value);
+    } else {
+      save_then_set("doa4_update_notice", value, false);
+    }
+  }
+  ImGui::PopID();
   if (open_logs && ImGui::Button("Open session logs")) open_logs();
 }
 
