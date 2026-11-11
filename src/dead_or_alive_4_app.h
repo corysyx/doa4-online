@@ -545,7 +545,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     launch_refused_ = true;
     guest_touched_ = true;
     std::string e;
-    if (!doa4::np::restart::Relaunch(nullptr, true, &e)) {
+    if (!RelaunchGame(nullptr, true, &e)) {
       REXLOG_ERROR("[doa4][NET] offline relaunch failed: {}", e);
     }
     REXLOG_WARN("[doa4][NET] session start aborted ({}): offline relaunch started, this process quits", why);
@@ -770,7 +770,7 @@ class DeadOrAlive4App : public rex::ReXApp {
       app_context().CallInUIThreadDeferred([this, with_handoff] {
         std::string e;
         const std::filesystem::path h = restart::HandoffPath(user_data_);
-        if (!restart::Relaunch(with_handoff ? &h : nullptr, !with_handoff, &e)) {
+        if (!RelaunchGame(with_handoff ? &h : nullptr, !with_handoff, &e)) {
           REXLOG_ERROR("[doa4][NET] relaunch failed: {}", e);
           if (with_handoff) {  // fix round M5: no hand-off is left for a later start to pick up
             std::error_code ec;
@@ -825,7 +825,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   void RelaunchOffline() {
     app_context().CallInUIThreadDeferred([this] {
       std::string e;
-      if (!doa4::np::restart::Relaunch(nullptr, true, &e)) REXLOG_ERROR("[doa4][NET] relaunch failed: {}", e);
+      if (!RelaunchGame(nullptr, true, &e)) REXLOG_ERROR("[doa4][NET] relaunch failed: {}", e);
       app_context().QuitFromUIThread();
     });
   }
@@ -890,7 +890,7 @@ class DeadOrAlive4App : public rex::ReXApp {
           if (lobby_) lobby_->RestartFailed("DOA4_NP_TEST_NO_RESTART");
           return;
         }
-        if (!doa4::np::restart::Relaunch(&h, false, &e)) {
+        if (!RelaunchGame(&h, false, &e)) {
           REXLOG_ERROR("[doa4][NET] relaunch into the session failed: {}", e);
           std::error_code ec;
           std::filesystem::remove(h, ec);  // fix round M5
@@ -1870,6 +1870,18 @@ class DeadOrAlive4App : public rex::ReXApp {
     }
     doa4::np::LogLine("WARN session: the config file " + doa4::Utf8Generic(ConfigPath()) +
                       " changed during the session (host-imposed settings must never be saved): restored");
+  }
+
+  // Every relaunch of the game from this process (np::restart::Relaunch has no other caller in the app). Ruling R114
+  // (Task 12 review A Minor 2): a process that ran with host-imposed settings (session_ or guest_touched_, as OnShutdown's
+  // check) puts the player's config back BEFORE the new process starts: that process loads the config first (the SDK's
+  // rex_app.cpp LoadConfig) and waits for this one's exit only later (OnPreSetup, DOA4_WAIT_PID), so the restore at
+  // OnShutdown came too late for it (the SDK's F4 "Save to config" may have written the host's values). OnShutdown keeps
+  // its own call (a quit with no relaunch, and anything written after this point); with the file already restored it
+  // finds it unchanged and does nothing. A killed or crashed session process still never restores (known limit).
+  bool RelaunchGame(const std::filesystem::path* handoff, bool after_session, std::string* error) {
+    if (session_ || guest_touched_) CheckConfigUnchanged();
+    return doa4::np::restart::Relaunch(handoff, after_session, error);
   }
 
  private:
