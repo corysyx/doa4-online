@@ -167,18 +167,42 @@ TitleWatch::Event TitleWatch::NoteDraw(uint32_t sprite, bool visible, uint32_t s
   return was ? Event::kNone : Event::kVisibleAgain;
 }
 
-bool TitleWatch::Left(uint32_t now_swap) {
-  if (left_.load(std::memory_order_acquire)) return true;
+namespace {
+// PRESS START drawn at `swap`: drawn at most kGapSwaps swaps before it (a swap stamped before the last draw counts too).
+bool DrawnAt(uint32_t last_visible, uint32_t swap) {
+  if (last_visible == 0) return false;
+  const uint32_t drawn_at = last_visible - 1;
+  return swap <= drawn_at || swap - drawn_at <= kGapSwaps;
+}
+}  // namespace
+
+bool TitleWatch::NotePad(uint32_t user, uint16_t buttons, uint32_t swap) {
+  if (user >= 4) return false;
+  const uint32_t bit = 1u << user;
+  const bool down = (buttons & kPressButtons) != 0;
+  const uint32_t before = down ? pad_down_.fetch_or(bit, std::memory_order_acq_rel)
+                               : pad_down_.fetch_and(~bit, std::memory_order_acq_rel);
+  if (!down || (before & bit)) return false;  // released, or held since an earlier read
+  if (!DrawnAt(last_visible_.load(std::memory_order_acquire), swap)) return false;  // not on the title (the attract)
+  press_.store(swap + 1, std::memory_order_release);
+  return true;
+}
+
+uint32_t TitleWatch::PressSwap() const { return press_.load(std::memory_order_acquire); }
+
+bool TitleWatch::Ended(uint32_t now_swap) {
+  if (ended_.load(std::memory_order_acquire)) return true;
   const uint32_t last = last_visible_.load(std::memory_order_acquire);
-  if (last == 0) return false;  // never drawn: the title has not come yet
-  const uint32_t drawn_at = last - 1;
-  if (now_swap <= drawn_at || now_swap - drawn_at <= kGapSwaps) return false;
-  left_.store(true, std::memory_order_release);
+  const uint32_t press = press_.load(std::memory_order_acquire);
+  if (press == 0 || DrawnAt(last, now_swap)) return false;  // no press on the title, or PRESS START still drawn
+  const uint32_t drawn_at = last - 1, pressed_at = press - 1;
+  if (drawn_at > pressed_at && drawn_at - pressed_at > kPressLeadSwaps) return false;  // the title ignored that press
+  ended_.store(true, std::memory_order_release);
   return true;
 }
 
 bool TitleWatch::DrawnNow(uint32_t now_swap) {
-  return last_visible_.load(std::memory_order_acquire) != 0 && !Left(now_swap);
+  return DrawnAt(last_visible_.load(std::memory_order_acquire), now_swap) && !Ended(now_swap);
 }
 
 uint32_t TitleWatch::LastVisibleSwap() const { return last_visible_.load(std::memory_order_acquire); }

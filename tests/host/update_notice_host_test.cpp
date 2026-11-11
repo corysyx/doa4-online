@@ -244,45 +244,113 @@ static void TestArrivals() {
 // ---- the PRESS START watch ----
 static void TestTitleWatch() {
   using E = un::TitleWatch::Event;
-  {  // before the title (the boot movie: nothing submitted yet): neither drawn nor left
+  constexpr uint16_t kStart = 0x0010, kA = 0x1000, kB = 0x2000;
+  // PRESS START drawn on every swap of [from, to]
+  const auto draw = [](un::TitleWatch& w, uint32_t from, uint32_t to) {
+    for (uint32_t s = from; s <= to; ++s) w.NoteDraw(un::kPressStartSprite, true, s);
+  };
+  {  // before the title (the boot movie: nothing submitted yet): neither drawn nor ended; a press then is not on the title
     un::TitleWatch w;
-    CHECK(!w.DrawnNow(100) && !w.Left(100) && !w.Left(100000));
+    CHECK(!w.DrawnNow(100) && !w.Ended(100) && !w.Ended(100000));
+    CHECK(!w.NotePad(0, kStart, 100));
+    CHECK(w.PressSwap() == 0);
   }
   {  // other sprites (the logo 0x30000, the shadow 0x30002) and a PRESS START submission with the draw bit clear: not drawn
     un::TitleWatch w;
     CHECK(w.NoteDraw(0x30000, true, 5) == E::kNone);
     CHECK(w.NoteDraw(0x30002, true, 5) == E::kNone);
     CHECK(w.NoteDraw(un::kPressStartSprite, false, 5) == E::kNone);
-    CHECK(!w.DrawnNow(5) && !w.Left(200));
+    CHECK(!w.DrawnNow(5) && !w.Ended(200));
     CHECK(w.HiddenCount() == 1 && w.VisibleCount() == 0);
   }
-  {  // drawn from swap 10; still drawn at a gap of exactly kGapSwaps; left one swap later, for good
+  {  // drawn from swap 10: drawn at a gap of exactly kGapSwaps, not one swap later; a gap alone never ends it
     un::TitleWatch w;
     CHECK(w.NoteDraw(un::kPressStartSprite, true, 10) == E::kFirstVisible);
     CHECK(w.LastVisibleSwap() == 11);
-    CHECK(w.DrawnNow(10) && w.DrawnNow(40) && !w.Left(40));
-    CHECK(!w.DrawnNow(41) && w.Left(41));
-    CHECK(w.NoteDraw(un::kPressStartSprite, true, 50) == E::kNone);  // after the title was left: still left
-    CHECK(!w.DrawnNow(50) && w.Left(50));
+    CHECK(w.DrawnNow(10) && w.DrawnNow(40));
+    CHECK(!w.DrawnNow(41) && !w.Ended(41));
   }
-  {  // the draw bit's changes are reported; a hidden stretch shorter than the gap is not "left"
+  {  // R103, the attract (run 6's timeline: drawn 21..1845, gone, back at the title): hidden in the gap, shown again
+     // after it, never ended (NOT ou15's rule, under which the first gap ended it for the run)
+    un::TitleWatch w;
+    draw(w, 21, 1845);
+    CHECK(w.DrawnNow(1845) && !w.Ended(1845));
+    CHECK(!w.DrawnNow(2000) && !w.Ended(2000));  // the attract
+    CHECK(!w.NotePad(0, kStart, 2400));          // START in the attract: not a press on the title
+    CHECK(!w.NotePad(0, 0, 2410));
+    draw(w, 2640, 2700);                         // the title again
+    CHECK(w.DrawnNow(2700) && !w.Ended(2700));
+    CHECK(!w.DrawnNow(3000) && !w.Ended(3000));  // a second attract
+    draw(w, 3500, 3510);
+    CHECK(w.DrawnNow(3510) && !w.Ended(3510));
+  }
+  {  // R103, the Start press on the title (run 6: START at 2946 -> MODE SELECT): ended once PRESS START is gone, and it
+     // stays ended when the title comes back (B from the menu)
+    un::TitleWatch w;
+    draw(w, 2640, 2950);
+    CHECK(w.NotePad(0, kStart, 2946));  // newly down while drawn
+    CHECK(w.PressSwap() == 2947);
+    CHECK(!w.NotePad(0, kStart, 2947));  // held: not a new press
+    CHECK(w.DrawnNow(2960) && !w.Ended(2960));  // still drawn within the gap: not yet
+    CHECK(!w.DrawnNow(2981) && w.Ended(2981));  // gone after the press: ended
+    draw(w, 4000, 4100);                          // back at the title later
+    CHECK(!w.DrawnNow(4100) && w.Ended(4100));
+  }
+  {  // A counts as the press too; B does not; another user's pad counts
+    un::TitleWatch a;
+    draw(a, 10, 100);
+    CHECK(a.NotePad(1, kA, 100));
+    CHECK(a.Ended(200));
+    un::TitleWatch b;
+    draw(b, 10, 100);
+    CHECK(!b.NotePad(0, kB, 100));
+    CHECK(!b.Ended(200) && b.PressSwap() == 0);
+  }
+  {  // a press the title ignored (still drawn long after it), then the attract: NOT ended
+    un::TitleWatch w;
+    draw(w, 10, 1845);
+    CHECK(w.NotePad(0, kStart, 100));
+    CHECK(!w.DrawnNow(2000) && !w.Ended(2000));  // 1745 swaps from the press to the last draw > kPressLeadSwaps
+    draw(w, 2640, 2700);
+    CHECK(w.DrawnNow(2700));
+  }
+  {  // the press-to-gone bound: kPressLeadSwaps from the press to the last draw ends it, one more does not
+    un::TitleWatch w;
+    draw(w, 10, 100 + un::kPressLeadSwaps);
+    CHECK(w.NotePad(0, kStart, 100));
+    CHECK(w.Ended(100 + un::kPressLeadSwaps + un::kGapSwaps + 1));
+    un::TitleWatch v;
+    draw(v, 10, 101 + un::kPressLeadSwaps);
+    CHECK(v.NotePad(0, kStart, 100));
+    CHECK(!v.Ended(101 + un::kPressLeadSwaps + un::kGapSwaps + 1));
+  }
+  {  // the press edge is per user: user 1 holding START does not hide user 0's new press
+    un::TitleWatch w;
+    draw(w, 10, 100);
+    CHECK(w.NotePad(1, kStart, 50));
+    CHECK(w.NotePad(0, kStart, 60));
+    CHECK(w.PressSwap() == 61);
+    CHECK(!w.NotePad(4, kStart, 70));  // no fifth user
+  }
+  {  // the draw bit's changes are reported; a hidden stretch shorter than the gap is still "drawn"
     un::TitleWatch w;
     CHECK(w.NoteDraw(un::kPressStartSprite, true, 10) == E::kFirstVisible);
     CHECK(w.NoteDraw(un::kPressStartSprite, true, 11) == E::kNone);
     CHECK(w.NoteDraw(un::kPressStartSprite, false, 12) == E::kHidden);
     CHECK(w.NoteDraw(un::kPressStartSprite, false, 13) == E::kNone);
-    CHECK(!w.Left(40) && w.DrawnNow(40));
+    CHECK(w.DrawnNow(40));
     CHECK(w.NoteDraw(un::kPressStartSprite, true, 41) == E::kVisibleAgain);
-    CHECK(w.DrawnNow(71) && !w.Left(71));
+    CHECK(w.DrawnNow(71));
     CHECK(w.VisibleCount() == 3 && w.HiddenCount() == 2);
   }
-  {  // swap 0 counts; a reader with an older swap count than the last draw is not "left" (no wrap-around)
+  {  // swap 0 counts; a reader with an older swap count than the last draw sees it drawn (no wrap-around)
     un::TitleWatch w;
     w.NoteDraw(un::kPressStartSprite, true, 0);
-    CHECK(w.DrawnNow(0) && w.DrawnNow(30) && !w.Left(30) && w.Left(31));
+    CHECK(w.DrawnNow(0) && w.DrawnNow(30) && !w.DrawnNow(31));
     un::TitleWatch v;
     v.NoteDraw(un::kPressStartSprite, true, 1000);
-    CHECK(v.DrawnNow(990) && !v.Left(990));
+    CHECK(v.DrawnNow(990));
+    CHECK(v.NotePad(0, kStart, 990));  // a pad read stamped before the draw's swap: still on the title
   }
 }
 

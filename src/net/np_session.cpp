@@ -50,6 +50,7 @@
 #include "../doa4_photo_win.h"
 #include "../doa4_tweaks.h"
 #include "../doa4_unlocks.h"
+#include "../doa4_update_notice.h"
 #include "np_core.h"
 #include "np_det.h"
 #include "np_det_internal.h"
@@ -1985,15 +1986,30 @@ REX_HOOK_RAW(sub_824F4498) {
 
 // r3 = user (0-3), r4 = X_INPUT_STATE* (be32 packet number, then the 12-byte
 // XINPUT_GAMEPAD). Returns r3 = 0 (connected) or ERROR_DEVICE_NOT_CONNECTED.
+// The start-up update notice (Task 15, R103; doa4_update_notice.h): the buttons this read hands the game, for the
+// title's Start press. A read that failed hands nothing.
+static void NoteTitlePad(uint32_t user, uint32_t state, uint8_t* base) {
+  if (!state) return;
+  const uint16_t buttons = rex::memory::load_and_swap<uint16_t>(base + state + 4);  // XINPUT_GAMEPAD.wButtons
+  const uint32_t swap = doa4::intro_skip::Swaps();
+  if (doa4::update_notice::Title().NotePad(user, buttons, swap)) {
+    static std::atomic<int> s_logged{0};
+    if (s_logged.fetch_add(1) < 16)
+      REXLOG_INFO("[doa4][UPDATE] title: START/A read by the game for user {} at swap {} while PRESS START is drawn",
+                  user, swap);
+  }
+}
+
 REX_HOOK_RAW(sub_82792040) {
   if (doa4::lagtrace::On()) doa4::lagtrace::OnPad();  // the latency trace: the pad read
   const doa4::np::FrameInput* in = doa4::np::StagedInput();
-  if (!in) {
-    __imp__sub_82792040(ctx, base);
-    return;
-  }
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r4.u32;
+  if (!in) {
+    __imp__sub_82792040(ctx, base);
+    if (ctx.r3.u32 == 0) NoteTitlePad(user, state, base);  // ERROR_SUCCESS
+    return;
+  }
   if (user >= uint32_t(doa4::np::kUsers) || !(in->connected & (1u << user))) {
     ctx.r3.u64 = doa4::np::kNotConnected;
     return;
@@ -2003,6 +2019,7 @@ REX_HOOK_RAW(sub_82792040) {
     doa4::np::PadToGuest(in->pad[user], base + state + 4);
   }
   ctx.r3.u64 = 0;
+  NoteTitlePad(user, state, base);
 }
 
 // r3 = user, r4 = flags, r5 = X_INPUT_CAPABILITIES*: a standard wired gamepad

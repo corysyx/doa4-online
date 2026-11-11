@@ -1003,7 +1003,7 @@ class DeadOrAlive4App : public rex::ReXApp {
   }
 
   // UiTick: answers that arrived, then the title watch. The notice shows while PRESS START is drawn and goes for the rest of
-  // the run once the title is left (the first Start press, or the title's own attract).
+  // the run with the Start press on the title (R103: the attract only hides it until the title is back).
   void PollUpdateNotice() {
     namespace un = doa4::update_notice;
     for (const un::Arrival& a : un::TakeArrivals()) {
@@ -1012,8 +1012,9 @@ class DeadOrAlive4App : public rex::ReXApp {
       REXLOG_INFO("[doa4][UPDATE] {}: {}", a.from_button ? "Check for Updates" : "start-up check", p.why);
       if (p.write) SetUpdateMemory(p.memory);
       if (!p.show.empty()) {
-        if (update_title_left_) {
-          REXLOG_INFO("[doa4][UPDATE] notice: {} not shown (the title was left before the answer came)", p.show);
+        if (update_title_ended_) {
+          REXLOG_INFO("[doa4][UPDATE] notice: {} not shown (Start was pressed on the title before the answer came)",
+                      p.show);
         } else {
           update_notice_tag_ = p.show;
         }
@@ -1021,13 +1022,24 @@ class DeadOrAlive4App : public rex::ReXApp {
     }
     un::TitleWatch& w = un::Title();
     const uint32_t now = doa4::intro_skip::Swaps();
-    if (!update_title_left_ && w.Left(now)) {
-      update_title_left_ = true;
-      REXLOG_INFO("[doa4][UPDATE] title left at swap {}: PRESS START last drawn at swap {} ({} visible, {} hidden "
-                  "submissions)",
-                  now, w.LastVisibleSwap() - 1, w.VisibleCount(), w.HiddenCount());
+    if (!update_title_ended_ && w.Ended(now)) {
+      update_title_ended_ = true;
+      REXLOG_INFO("[doa4][UPDATE] title: Start pressed on the title at swap {}, PRESS START last drawn at swap {} (now "
+                  "{}; {} visible, {} hidden submissions): the notice ends for this run",
+                  w.PressSwap() - 1, w.LastVisibleSwap() - 1, now, w.VisibleCount(), w.HiddenCount());
     }
-    const bool shown = !update_notice_tag_.empty() && !update_title_left_ && w.DrawnNow(now);
+    // PRESS START's own comings and goings (the attract), logged whether or not there is a notice (capped)
+    const uint32_t last = w.LastVisibleSwap();
+    const bool drawn = last != 0 && (now <= last - 1 || now - (last - 1) <= un::kGapSwaps);
+    if (drawn != update_title_drawn_) {
+      update_title_drawn_ = drawn;
+      if (update_title_lines_ < 32) {
+        ++update_title_lines_;
+        REXLOG_INFO("[doa4][UPDATE] title: PRESS START {} at swap {} (last drawn at swap {})", drawn ? "on screen" : "gone",
+                    now, w.LastVisibleSwap() - 1);
+      }
+    }
+    const bool shown = !update_notice_tag_.empty() && !update_title_ended_ && w.DrawnNow(now);
     if (shown != update_notice_shown_) {
       update_notice_shown_ = shown;
       if (shown) {
@@ -1849,7 +1861,9 @@ class DeadOrAlive4App : public rex::ReXApp {
   std::string update_relaunch_env_;     // which of them, for the log line
   std::string update_remembered_;       // the memory file's tag as last read or written ("" = none)
   std::string update_notice_tag_;       // the tag the notice shows ("" = none)
-  bool update_title_left_ = false;      // the title was left: the notice is gone for this run
+  bool update_title_ended_ = false;     // Start was pressed on the title: the notice is gone for this run (R103)
+  bool update_title_drawn_ = false;     // PRESS START on screen at the last tick (for its log lines)
+  int update_title_lines_ = 0;          // how many of those lines were logged (capped at 32)
   bool update_notice_shown_ = false;    // the overlay shows the notice now
 
   // First-run setup (doa4_setup_dialog.h): the screen while it is open, and
