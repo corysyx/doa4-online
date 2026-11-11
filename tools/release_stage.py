@@ -2,7 +2,7 @@
 download and, when given, the launcher zip (the release workflow does not give one while the launcher is retired). The release workflow publishes every file of the staging folder.
 
   py -3 -I tools/release_stage.py --build <out/build/win-amd64-release> --out <staging> --tag <alpha-vX.Y.Z>
-      --port-commit <sha> --sdk-commit <sha> [--launcher-zip <path>] [--extra <name>]
+      --port-commit <sha> --sdk-commit <sha> [--launcher-zip <path>] [--changelog <path>] [--extra <name>]
 
 <staging> then holds exactly:
   dead_or_alive_4.exe, rexruntime.dll, TracyClient.dll   byte copies from --build (picked by name: nothing else there
@@ -10,11 +10,14 @@ download and, when given, the launcher zip (the release workflow does not give o
   SHA256SUMS.txt                                          "<sha256 lower hex>  <name>" per game file, LF, in that order
   THIRD_PARTY_NOTICES.md                                  a byte copy of the repository's file (the BSD notice duty)
   DOA4-<tag>-win64.zip                                    the three, SHA256SUMS.txt, THIRD_PARTY_NOTICES.md and README-netplay.txt
+                                                          (README-netplay.txt carries the tag's CHANGELOG.md section)
   DOA4-launcher.zip                                       a copy of --launcher-zip (only when given)
 Never game data. Refused (exit 1, the message names the file; nothing is staged): a missing game file; a name under
 a folder or matching *.xex, *.afs, *.sfd, *.dat (game data); a name that is not one of the three; a name given
 twice; a staging folder that is not empty; a tag that is not <channel>-v<major>.<minor>.<patch>; a commit that is not
-hex. --extra NAME (tests only) adds one more name, relative to --build, so the refusal rules can be exercised.
+hex; a CHANGELOG.md without a section for the tag's <major>.<minor>.<patch> (tools/changelog_section.py).
+--changelog PATH (tests only) replaces the repository's CHANGELOG.md. --extra NAME (tests only) adds one more name,
+relative to --build, so the refusal rules can be exercised.
 """
 import argparse
 import hashlib
@@ -24,6 +27,10 @@ import shutil
 import sys
 import zipfile
 
+sys.dont_write_bytecode = True  # the import below must not leave tools/__pycache__ in the tree
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I leaves the script's folder off the path
+import changelog_section  # noqa: E402
+
 GAME_FILES = ("dead_or_alive_4.exe", "rexruntime.dll", "TracyClient.dll")
 SUMS = "SHA256SUMS.txt"
 README = "README-netplay.txt"
@@ -31,7 +38,7 @@ NOTICES = "THIRD_PARTY_NOTICES.md"
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAUNCHER = "DOA4-launcher.zip"
 GAME_DATA = re.compile(r".*\.(xex|afs|sfd|dat)", re.IGNORECASE)
-TAG = re.compile(r"[a-z0-9]+-v\d+\.\d+\.\d+")
+TAG = re.compile(r"[a-z0-9]+-v(\d+\.\d+\.\d+)")
 COMMIT = re.compile(r"[0-9a-f]{7,40}")
 
 
@@ -56,10 +63,15 @@ def sha256(path):
     return h.hexdigest()
 
 
-def readme_text(tag, port_commit, sdk_commit):
+def readme_text(tag, port_commit, sdk_commit, changes):
+    """changes: the tag's CHANGELOG.md section (changelog_section.section), placed under the build lines."""
     lines = [
         f"Dead or Alive 4 Online {tag}",
         f"Built from the port commit {port_commit} with the SDK commit {sdk_commit} (LLVM 23.1.4).",
+        "",
+        f"What's new in {TAG.fullmatch(tag).group(1)}:",
+        "",
+        *changes.rstrip("\n").split("\n"),
         "",
         "Both players need this same release: the online handshake compares the compiled code.",
         "Put dead_or_alive_4.exe, rexruntime.dll and TracyClient.dll together in one folder (replacing older",
@@ -87,6 +99,14 @@ def check_args(a):
     for opt, value in (("--port-commit", a.port_commit), ("--sdk-commit", a.sdk_commit)):
         if not COMMIT.fullmatch(value or ""):
             raise Refused(f"{opt} {value!r}: not a commit id (7 to 40 lower-case hex digits)")
+    version = TAG.fullmatch(a.tag).group(1)
+    if not os.path.isfile(a.changelog):
+        raise Refused(f"{a.changelog}: not found, so there is no section for {version}")
+    with open(a.changelog, encoding="utf-8-sig") as f:
+        try:
+            a.changes = changelog_section.section(f.read(), version)
+        except changelog_section.NoSection as e:
+            raise Refused(f"{a.changelog}: {e}: add the release's notes first")
     names = list(GAME_FILES) + ([a.extra] if a.extra is not None else [])
     for name in names:
         problem = name_problem(name)
@@ -125,7 +145,7 @@ def stage(a):
         for name in GAME_FILES + (SUMS,):
             z.write(os.path.join(a.out, name), arcname=name)
         z.write(os.path.join(a.out, NOTICES), arcname=NOTICES)
-        z.writestr(README, readme_text(a.tag, a.port_commit, a.sdk_commit))
+        z.writestr(README, readme_text(a.tag, a.port_commit, a.sdk_commit, a.changes))
     expected = set(GAME_FILES) | {SUMS, NOTICES, zip_name}
     if a.launcher_zip is not None:
         shutil.copyfile(a.launcher_zip, os.path.join(a.out, LAUNCHER))
@@ -145,6 +165,7 @@ def main(argv=None):
     ap.add_argument("--port-commit", required=True)
     ap.add_argument("--sdk-commit", required=True)
     ap.add_argument("--launcher-zip")
+    ap.add_argument("--changelog", default=changelog_section.DEFAULT, help="tests only: replaces the repository's CHANGELOG.md")
     ap.add_argument("--extra", help="tests only: one more name, relative to --build, to exercise the refusal rules")
     a = ap.parse_args(argv)
     try:

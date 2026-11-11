@@ -123,6 +123,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $pin = Get-Content doa4-recomp/netplay_sdk.txt | ConvertFrom-StringData
+          # the version's CHANGELOG.md section goes above the fixed text; a version without a section is not published
+          $m = [regex]::Match('${{ steps.version.outputs.tag }}', '^[a-z0-9]+-v([0-9]+\.[0-9]+\.[0-9]+)$')
+          if (-not $m.Success) { throw 'the tag is not <channel>-v<x.y.z>' }
+          $version = $m.Groups[1].Value
+          python -I doa4-recomp/tools/changelog_section.py $version --changelog doa4-recomp/CHANGELOG.md --out changes.md
+          if ($LASTEXITCODE -ne 0) { throw "CHANGELOG.md has no section for ${version}: add '## $version (<date>)' with the release's notes" }
+          $changes = Get-Content -Raw -Encoding utf8 changes.md
           $notes = @"
           Dead or Alive 4 Online, built from commit $env:GITHUB_SHA (SDK $($pin.repo) $($pin.commit), LLVM 23.1.4).
 
@@ -133,6 +140,7 @@ jobs:
 
           Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate of the raised cloth budget on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc).
           "@
+          $notes = "What's new in ${version}:`n`n$changes`n$notes"
           Set-Content notes.md $notes -Encoding utf8
           gh release create ${{ steps.version.outputs.tag }} (Get-ChildItem staging).FullName --repo $env:GITHUB_REPOSITORY `
             --prerelease --target $env:GITHUB_SHA --title "Dead or Alive 4 Online ${{ steps.version.outputs.tag }}" --notes-file notes.md
