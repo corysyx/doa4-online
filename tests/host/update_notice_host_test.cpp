@@ -402,6 +402,42 @@ static void TestTitleWatch() {
     CHECK(v.DrawnNow(990));
     CHECK(v.NotePad(0, kStart, 990));  // a pad read stamped before the draw's swap: still on the title
   }
+  // Deferred item 388: the draw-bit filter for sprites other than PRESS START, and the learned set's cap.
+  {  // a sprite submitted with its draw bit clear is no sprite on screen: no census line, never learned as the title's, never
+     // a confirmation; the same id drawn visibly afterwards is new (and confirms a pending press)
+    un::TitleWatch w;
+    title(w, 10, 50);
+    CHECK(w.NoteDraw(0x50002, false, 50) == E::kNone);  // NOT kNewSprite: not drawn
+    title(w, 51, 100);
+    CHECK(w.NotePad(0, kStart, 100));
+    CHECK(w.NoteDraw(kMenu, false, 101) == E::kNone);   // NOT kConfirmed: the next screen's sprite, but not drawn
+    CHECK(!w.Ended() && w.Pending(101));
+    CHECK(w.NoteDraw(0x50002, true, 102) == E::kConfirmed);  // NOT learned at swap 50 although the title was on
+    CHECK(w.Ended() && w.ConfirmSprite() == 0x50002);
+  }
+  {  // the cap: the 256th id is learned, the 257th never is (reported as new at each submission and, unknown, it confirms a
+     // press, as the header says: past the cap an unknown id counts as not the title's)
+    CHECK(un::kSpriteSetSize == 256);
+    un::TitleWatch w;
+    title(w, 10, 20);  // kLogo, PRESS START and kShadow: 3 learned ids
+    bool all_new = true;
+    for (uint32_t i = 0; i < 256 - 3; ++i) {
+      const bool is_new = w.NoteDraw(0x60000 + i, true, 20) == E::kNewSprite;  // every id is submitted, whatever came before
+      all_new = all_new && is_new;
+    }
+    CHECK(all_new);
+    const uint32_t last_in = 0x60000 + 256 - 4, first_out = 0x60000 + 256 - 3;
+    CHECK(w.NoteDraw(last_in, true, 21) == E::kNone);       // the 256th id: learned (NOT kNewSprite again)
+    CHECK(w.NoteDraw(first_out, true, 21) == E::kNewSprite);
+    CHECK(w.NoteDraw(first_out, true, 22) == E::kNewSprite);  // the 257th: never learned, new again
+    title(w, 21, 30);
+    CHECK(w.NotePad(0, kStart, 30));
+    CHECK(w.NoteDraw(0x60000, true, 31) == E::kNone);      // the first learned id: the title's, no confirmation
+    CHECK(w.NoteDraw(last_in, true, 31) == E::kNone);      // the 256th: the title's too
+    CHECK(!w.Ended());
+    CHECK(w.NoteDraw(first_out, true, 32) == E::kConfirmed);  // drawn on the title, but past the cap: unknown
+    CHECK(w.Ended() && w.ConfirmSprite() == first_out);
+  }
 }
 
 int main() {
