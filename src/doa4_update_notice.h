@@ -98,7 +98,8 @@ std::vector<Arrival> TakeArrivals();
 // R105): the notice hides at once (M2), and the press is CONFIRMED (Ended, latched for the rest of the process) only by a
 // signal an accepted press alone produces: the next screen's own sprite through the same sub_823BB470 hook, i.e. a visible
 // submission of a sprite id never submitted while the title was on screen with no press pending (the title's own sprites
-// are learned as it draws them). The pending press is CANCELLED, and the notice shows again with the title, when PRESS
+// are learned as it draws them) and outside the title's own family (R117, kTitleSpriteFamily below). The pending press
+// is CANCELLED, and the notice shows again with the title, when PRESS
 // START has been gone more than kCancelGapSwaps with no confirmation (the attract's start) or kConfirmSwaps passed (a
 // press the title ignored). Measured (fix round 1, ou15c, np_run sessions): an accepted START is confirmed by sprite 0xf7
 // (the first of MODE SELECT's: 0xf7-0xfa, 0x12a, 0x4003d, 0x5000x) exactly 35 swaps after the press, both on the title
@@ -113,6 +114,15 @@ inline constexpr uint32_t kConfirmSwaps = 300;     // 5 s at 60 swaps a second f
 inline constexpr uint32_t kCancelGapSwaps = 90;    // PRESS START gone this long with no confirmation: the attract
 inline constexpr uint16_t kPressButtons = 0x1010;  // XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_A
 inline constexpr size_t kSpriteSetSize = 256;      // learned sprite ids; past it an unknown id counts as not the title's
+// Ruling R117 (Task 12, residual I1 of the Task 15 re-review): the title's own sprite family, (id >> 16) == 0x3 (0x30000 the
+// logo, 0x30001 PRESS START, 0x30002 its shadow, 0x30003; 0x30005 seen), never confirms a pending press, learned or not.
+// Measured on ou12 (ou_runs/t12/runs/r12_idle_attract/game.log:516, :519): at the SECOND title -> attract change, 0x30005,
+// which the title had never drawn, was first drawn at swap 18680, 2 swaps after PRESS START's last draw (18678): with a
+// press pending (an A the title ignored up to kConfirmSwaps before) it would have confirmed it and ended the notice
+// falsely. Every confirming sprite measured lies outside the family: MODE SELECT's 0xf7 (35-37 swaps after an accepted
+// press: r8, r9, r12_attract_start), and its 0xf8-0xfa, 0x12a, 0x4003d, 0x40002, 0x5000x.
+inline constexpr uint32_t kTitleSpriteFamily = 0x3;
+constexpr bool InTitleFamily(uint32_t sprite) { return (sprite >> 16) == kTitleSpriteFamily; }
 class TitleWatch {
  public:
   // kNewSprite: a sprite id's first visible submission (the census); kConfirmed: it confirmed the pending press.

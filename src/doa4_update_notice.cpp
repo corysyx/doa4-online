@@ -205,7 +205,8 @@ TitleWatch::Event TitleWatch::NoteDraw(uint32_t sprite, bool visible, uint32_t s
     if (ev == Event::kNone) ev = Event::kNewSprite;
   }
   if (seen && title_on && !pending) seen->title = true;  // the title's own sprites, learned as it draws them
-  if (pending && !(seen && seen->title)) {               // a sprite the title never drew: the next screen
+  // a sprite the title never drew, outside the title's own family (R117): the next screen
+  if (pending && !(seen && seen->title) && !InTitleFamily(sprite)) {
     confirm_sprite_.store(sprite, std::memory_order_release);
     ended_.store(true, std::memory_order_release);
     ev = Event::kConfirmed;

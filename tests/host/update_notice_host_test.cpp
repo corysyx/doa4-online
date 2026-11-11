@@ -438,6 +438,70 @@ static void TestTitleWatch() {
     CHECK(w.NoteDraw(first_out, true, 32) == E::kConfirmed);  // drawn on the title, but past the cap: unknown
     CHECK(w.Ended() && w.ConfirmSprite() == first_out);
   }
+  // Ruling R117: a sprite of the title's own family ((id >> 16) == 0x3) never confirms a pending press.
+  CHECK(!un::InTitleFamily(0x2ffff) && un::InTitleFamily(0x30000) && un::InTitleFamily(0x30005));
+  CHECK(un::InTitleFamily(0x3ffff) && !un::InTitleFamily(0x40000) && !un::InTitleFamily(0xf7));
+  // The title as Task 12's runs drew it (ou12, r12_idle_attract game.log:168-172): 0x30000, 0x30003, PRESS START, 0x30002.
+  constexpr uint32_t kTitle3 = 0x30003, kTitle5 = 0x30005;
+  const auto title12 = [&](un::TitleWatch& w, uint32_t from, uint32_t to) {
+    for (uint32_t s = from; s <= to; ++s) {
+      w.NoteDraw(kLogo, true, s);
+      w.NoteDraw(kTitle3, true, s);
+      w.NoteDraw(un::kPressStartSprite, true, s);
+      w.NoteDraw(kShadow, true, s);
+    }
+  };
+  {  // (a) r12_idle_attract (game.log:237, :491, :516, :519): the title at 30-1854, the attract, the title again at 16852-18678,
+     // then the second attract's first new id 0x30005 at 18680 (+2). With a press pending (an A the title ignored at 18500),
+     // 0x30005 does NOT confirm it; the gap cancels the press as before, and the notice shows with the next title.
+    un::TitleWatch w;
+    title12(w, 30, 1854);
+    title12(w, 16852, 18500);
+    CHECK(w.NotePad(0, kA, 18500));
+    title12(w, 18501, 18678);  // the title's own sprites while the press is pending: no confirmation
+    CHECK(!w.Ended() && w.Pending(18680));
+    CHECK(w.NoteDraw(kTitle5, true, 18680) == E::kNewSprite);  // NOT kConfirmed
+    CHECK(!w.Ended() && w.ConfirmSprite() == 0);
+    CHECK(w.Pending(18678 + un::kCancelGapSwaps));
+    CHECK(!w.Pending(18679 + un::kCancelGapSwaps) && !w.Ended());  // cancelled by the gap
+    title12(w, 33676, 33700);  // the title back after the second attract
+    CHECK(w.DrawnNow(33700) && !w.Ended());
+  }
+  {  // the same timeline: an A ignored at 18400, so the deadline (kConfirmSwaps) cancels it before the gap would
+    un::TitleWatch w;
+    title12(w, 16852, 18400);
+    CHECK(w.NotePad(0, kA, 18400));
+    title12(w, 18401, 18678);
+    CHECK(w.NoteDraw(kTitle5, true, 18680) == E::kNewSprite);
+    CHECK(w.Pending(18400 + un::kConfirmSwaps) && !w.Pending(18401 + un::kConfirmSwaps) && !w.Ended());
+    title12(w, 33676, 33700);
+    CHECK(w.DrawnNow(33700) && !w.Ended());
+  }
+  {  // (b) r12_attract_start (game.log:234, :327, :333, :335): PRESS START 21-1845, START at 1847 (+2), MODE SELECT's 0xf7 at
+     // 1882 (+37): still confirmed
+    un::TitleWatch w;
+    title12(w, 21, 1845);
+    CHECK(w.NotePad(0, kStart, 1847));
+    CHECK(w.Pending(1881) && !w.Ended());
+    CHECK(w.NoteDraw(0xf7, true, 1882) == E::kConfirmed);
+    CHECK(w.Ended() && w.ConfirmSprite() == 0xf7);
+  }
+  {  // (c) any never-seen 0x3xxxx id while a press is pending, the title still on: no confirmation; the first id past the
+     // family (0x40000) still confirms
+    un::TitleWatch w;
+    title12(w, 10, 100);
+    CHECK(w.NotePad(0, kStart, 100));
+    CHECK(w.NoteDraw(0x3abcd, true, 101) == E::kNewSprite);
+    CHECK(w.NoteDraw(0x3ffff, true, 101) == E::kNewSprite);
+    CHECK(w.NoteDraw(0x30000 + 0x10, true, 102) == E::kNewSprite);
+    CHECK(!w.Ended() && w.Pending(102));
+    CHECK(w.NoteDraw(0x40000, true, 103) == E::kConfirmed);
+    CHECK(w.Ended() && w.ConfirmSprite() == 0x40000);
+    un::TitleWatch v;  // and the id just below the family confirms too
+    title12(v, 10, 100);
+    CHECK(v.NotePad(0, kStart, 100));
+    CHECK(v.NoteDraw(0x2ffff, true, 101) == E::kConfirmed);
+  }
 }
 
 int main() {
