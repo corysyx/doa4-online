@@ -236,6 +236,12 @@ that need a restart, and changing the game folder.
 - **Logs:** `logs\dead_or_alive_4_NNN.log` next to the exe. Send the newest one with a bug report.
 - **Online session logs:** **Open session logs** in the Online tab ([Online play in more detail](#online-play-in-more-detail)).
 
+## Linux
+
+Linux is not officially supported yet. One player reports that under Proton and Wine (GE-Proton11-12) the game does not
+open as intended: it shows only a black screen. They could still join an online session with another player, and after
+that the game ran fine. Solo offline play does not seem to work under Linux for now.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -271,6 +277,7 @@ that need a restart, and changing the game folder.
 | The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
 | Online: if the joining player presses Start at the title screen, the session can freeze for both players. | Only the host should press Start; if it freezes, leave the session and start a new one. |
 | Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
+| Linux (Proton / Wine): the game starts to a black screen instead of opening as intended (reported by one player on GE-Proton11-12). | Joining an online session with another player is reported to still work, and the game runs fine after that. Solo offline play does not seem to work yet. |
 
 ## Roadmap
 
@@ -280,6 +287,8 @@ Planned, no dates:
 - Online lobbies with up to 4 players.
 - Costumes imported from other DOA titles, for example Dead or Alive 2 Ultimate (each from your own disc, as
   with DOAX2).
+- A free camera / noclip mode.
+- A toggle to show hitboxes and hurtboxes.
 
 ## Credits
 
@@ -309,6 +318,10 @@ Planned, no dates:
 - Thanks to everyone who helped playtest the online play.
 
 The same names, and the licences of the code taken, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Contributing
+
+Pull requests are welcome. To build the game yourself, see [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Reporting bugs
 
