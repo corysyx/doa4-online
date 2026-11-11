@@ -14,6 +14,11 @@
 #include <fmt/format.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xevent.h>
+#include <rex/system/xobject.h>
+
+#include <map>
 
 #include "np_det.h"
 #include "np_session.h"
@@ -188,6 +193,15 @@ struct Keep {  // guest bytes [lo, hi) a load leaves as they are
   uint32_t lo = 0, hi = 0;
 };
 
+// A kernel object at the save. The kernel (events, semaphores, threads, files) lives in the host, outside guest
+// memory, so the snapshot does not hold it: a guest dispatcher header (an event or a critical section's waiter) carries
+// only a stash of its host object's handle ("REX\0" + handle at +8 / +12, xobject.cpp GetNativeObject).
+struct KObj {
+  const void* ptr = nullptr;
+  uint32_t type = 0;
+  int32_t state = -1;  // events: signalled 1 / not 0
+};
+
 struct Snap {
   SnapConfig cfg;
   unsigned char seen[kPages] = {};   // pages the game's code wrote since the session started
@@ -222,6 +236,8 @@ struct Snap {
   std::vector<uint32_t> dev_extra; // DOA4_NP_SNAPTEST_DEVLIVE: more device offsets kept live in restore mode
   std::vector<uint32_t> dev_live;  // restore mode: the device offsets kept live in this test
   bool dev_listed = false;         // the full list of changed device words was logged once
+  std::map<uint32_t, struct KObj> kobj_save;  // the kernel's objects at the save, by handle
+  bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
   std::vector<uint8_t> b1_buf;
 };
@@ -492,6 +508,115 @@ void CaptureTestPages(Snap& s, uint8_t* base, std::vector<Chunk>* chunks, std::v
   Capture(base, map.data(), chunks, buf);
 }
 
+const char* KTypeName(uint32_t t) {
+  using T = rex::system::XObject::Type;
+  switch (T(t)) {
+    case T::Event: return "event";
+    case T::Semaphore: return "semaphore";
+    case T::Mutant: return "mutant";
+    case T::Thread: return "thread";
+    case T::Timer: return "timer";
+    case T::File: return "file";
+    default: return "other";
+  }
+}
+
+std::map<uint32_t, KObj> KernelObjects() {
+  std::map<uint32_t, KObj> out;
+  auto* ks = rex::system::kernel_state();
+  if (!ks) return out;
+  for (auto& o : ks->object_table()->GetAllObjects()) {
+    if (!o) continue;
+    KObj k;
+    k.ptr = o.get();
+    k.type = uint32_t(o->type());
+    if (o->type() == rex::system::XObject::Type::Event) {
+      uint32_t st = 0;
+      static_cast<rex::system::XEvent*>(o.get())->Query(nullptr, &st);
+      k.state = int32_t(st);
+    }
+    for (uint32_t h : o->handles()) out[h] = k;
+  }
+  return out;
+}
+
+// At a load, before the memory goes back: the kernel objects made, gone and (events) set or reset since the save.
+// Unless DOA4_NP_SNAPTEST_KOBJ=leave, the events that still exist go back to their state at the save.
+void KernelObjectsAtLoad(Snap& s) {
+  const std::map<uint32_t, KObj> now = KernelObjects();
+  std::map<std::string, uint32_t> made, gone;
+  std::string made_text, gone_text, changed_text;
+  uint32_t changed = 0, put_back = 0;
+  for (const auto& [h, k] : now) {
+    auto it = s.kobj_save.find(h);
+    if (it == s.kobj_save.end() || it->second.ptr != k.ptr) {
+      if (++made[KTypeName(k.type)] <= 6) made_text += fmt::format(" {} {:08X}", KTypeName(k.type), h);
+      continue;
+    }
+    if (k.type == uint32_t(rex::system::XObject::Type::Event) && it->second.state >= 0 && it->second.state != k.state) {
+      if (++changed <= 16) changed_text += fmt::format(" {:08X} {}->{}", h, it->second.state, k.state);
+      if (s.kobj_fix) {
+        auto* ev = static_cast<rex::system::XEvent*>(const_cast<void*>(k.ptr));
+        if (it->second.state) ev->Set(0, false);
+        else ev->Reset();
+        ++put_back;
+      }
+    }
+  }
+  for (const auto& [h, k] : s.kobj_save) {
+    auto it = now.find(h);
+    if (it == now.end() || it->second.ptr != k.ptr) {
+      if (++gone[KTypeName(k.type)] <= 6) gone_text += fmt::format(" {} {:08X}", KTypeName(k.type), h);
+    }
+  }
+  auto counts = [](const std::map<std::string, uint32_t>& m) {
+    std::string t;
+    for (const auto& [n, c] : m) t += fmt::format("{}{} {}", t.empty() ? "" : ", ", c, n);
+    return t.empty() ? std::string("none") : t;
+  };
+  Out(fmt::format("kernel objects since the save: made {}{}{}; gone {}{}{}; {} events set or reset{}{}{}",
+                  counts(made), made_text.empty() ? "" : " (e.g.", made_text.empty() ? "" : made_text + ")",
+                  counts(gone), gone_text.empty() ? "" : " (e.g.", gone_text.empty() ? "" : gone_text + ")", changed,
+                  changed ? ":" : "", changed_text,
+                  put_back ? fmt::format(" ({} put back to the save)", put_back) : std::string()));
+}
+
+// After the memory went back: guest dispatcher headers in the restored pages whose stash names a host object that is
+// gone, or whose handle now belongs to another object, would make the game wait on (or crash in) the wrong object.
+// Unless DOA4_NP_SNAPTEST_KOBJ=leave, such a stash is cleared, so the next use makes a new host object from the
+// header's restored state (as at the header's first use).
+void RepairStashes(Snap& s, uint8_t* base) {
+  if (!rex::system::kernel_state()) return;
+  const std::map<uint32_t, KObj> now = KernelObjects();
+  uint32_t stashes = 0, stale = 0;
+  std::string text;
+  for (const Chunk& c : s.chunks) {
+    for (uint32_t o = 0; o + 16 <= c.len; o += 4) {
+      const uint32_t a = c.addr + o;
+      if (Kept(s, a + 8)) continue;
+      auto* h = reinterpret_cast<rex::system::X_DISPATCH_HEADER*>(base + a);
+      if (h->wait_list_flink != rex::system::kXObjSignature) continue;
+      ++stashes;
+      const uint32_t handle = h->wait_list_blink;
+      auto saved = s.kobj_save.find(handle);
+      auto obj = now.find(handle);
+      const bool ok = obj != now.end() && saved != s.kobj_save.end() && saved->second.ptr == obj->second.ptr;
+      if (ok) continue;
+      if (++stale <= 12) {
+        text += fmt::format(" {:08X}->{:08X}{}", a, handle,
+                            obj == now.end() ? " (gone)" : saved == s.kobj_save.end() ? " (made since)" : " (another object)");
+      }
+      if (s.kobj_fix) {
+        h->wait_list_flink = 0;
+        h->wait_list_blink = 0;
+      }
+    }
+  }
+  Out(fmt::format("{} kernel-object stashes in the restored memory, {} naming an object made or gone since the save{}{}{}",
+                  stashes, stale, stale ? ":" : "", text,
+                  stale && s.kobj_fix ? " (cleared)" : ""));
+}
+
 void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
@@ -537,6 +662,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   const Fence fence = ReadFence(s, base);
   s.fence_at_save = fence.issued;
   const uint32_t clocks = np::det::SaveClocks();
+  s.kobj_save = KernelObjects();
   std::memset(s.test, 0, sizeof s.test);
   s.fib_save = Fibers();
   s.h1.assign(1, Hash(s, base));
@@ -605,6 +731,7 @@ void Load(Snap& s, uint8_t* base) {
     Out(fmt::format("device words left as they are (they moved with the ring, or DOA4_NP_SNAPTEST_DEVLIVE): {}:{}",
                     s.dev_live.size(), DevLiveText(s, base)));
   }
+  KernelObjectsAtLoad(s);
   const auto t0 = std::chrono::steady_clock::now();
   const Fence fence_before = ReadFence(s, base);  // the device's counter before the restore (restore mode puts it back)
   // the kept bytes as they are now
@@ -643,6 +770,7 @@ void Load(Snap& s, uint8_t* base) {
   }
   const uint32_t clocks = np::det::RestoreClocks();
   const double ms = MsSince(t0);
+  RepairStashes(s, base);
   Sleep(kSettleMs);
   const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
   Out(fmt::format("restored the state of frame {} ({:.1f} MB, {} kept ranges, {} thread clocks) in {:.1f} ms{}{}{}",
@@ -748,6 +876,8 @@ bool SnapActive() {
         rest = comma == std::string_view::npos ? std::string_view() : rest.substr(comma + 1);
       }
     }
+    const char* kobj = std::getenv("DOA4_NP_SNAPTEST_KOBJ");
+    s.kobj_fix = !(kobj && std::string(kobj) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page
     np::LogLine(fmt::format("[doa4][RB] snaptest: on - {} tests of {} frames, the first entering frame {}, then every {} "
                             "frames; snapshot of {}",

@@ -974,6 +974,19 @@ static void WriteCrashReport(const CrashJob& job) {
     for (int k = 0; k < got; ++k) CrashAdd("%s%08X", k % 8 == 0 ? "\r\n  " : " ", words[k]);
     CrashAdd("\r\n");
     CrashFlush();
+    // the objects the registers point at (heap and game data): 32 words from 32 bytes before each
+    for (int r = 0; r < 32; ++r) {
+      const uint32_t v = (uint32_t)regs[r]->u64;
+      const bool heap = v >= 0x40000000u && v < 0x50000000u, data = v >= 0x82000000u && v < 0x84000000u;
+      if (!heap && !data) continue;
+      static uint32_t obj[32];
+      const uint32_t from = (v & ~3u) - 32;
+      const int k = ReadGuestWords(from, obj, 32);
+      CrashAdd("r%d %08X: memory from %08X (%d words):", r, v, from, k);
+      for (int i = 0; i < k; ++i) CrashAdd("%s%08X", i % 8 == 0 ? "\r\n  " : " ", obj[i]);
+      CrashAdd("\r\n");
+      CrashFlush();
+    }
   } else {
     CrashAdd("not a guest thread\r\n");
   }

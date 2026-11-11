@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.113 (2026-11-11)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Changed
+- SnapTest: the kernel's objects (events, semaphores, threads) live outside guest memory, so a snapshot cannot hold
+  them. A load now reports which were made, which are gone and which events were set or reset since the save, puts the
+  events back to their state at the save, and clears the handle stashes in the restored memory that name an object
+  made or gone since then (the game then makes a fresh one at the next use). `DOA4_NP_SNAPTEST_KOBJ=leave` only reports.
+- `crash.txt` also shows the memory the registers point at.
+- SnapTest round 10: the runner logs the kernel's lazily made objects (`REX_LOG_LAZY_OBJECTS=1`).
+
 ## 0.3.112 (2026-11-11)
 
 corysyx rollback research build (otherwise the same as 0.3.110).

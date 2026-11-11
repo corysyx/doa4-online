@@ -1,6 +1,6 @@
 @echo off
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
-rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.112 or later) and double-click it. The game plays a scripted
+rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.113 or later) and double-click it. The game plays a scripted
 rem Versus fight by itself twice (about 2 minutes each), rewinds it 12 times each time and checks that every replay
 rem comes out the same (the D3D device's render state goes back with the snapshot): first from frame 3600, then
 rem with the first test at frame 4096, where the third test of the first run has crashed so far.
@@ -52,6 +52,7 @@ set "DOA4_NP_SNAPTEST_DEVICE=state"
 set "DOA4_NP_SNAPTEST=1"
 if "%1"=="b4096" set "DOA4_NP_SNAPTEST=4096,8,240,12"
 set "DOA4_NP_SNAPTEST_DEVLIVE="
+set "REX_LOG_LAZY_OBJECTS=1"
 echo.
 echo Run %1 ...
 start "" "%HERE%dead_or_alive_4.exe" "--user_data_root=%RUN%\userdata" "--log_file=%RUN%\game.log" --headless=true %CACHEARG%
