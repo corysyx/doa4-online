@@ -36,9 +36,11 @@
 #include <utility>
 #include <vector>
 
+#include "../../src/doa4_language.h"
 #include "../../src/doa4_tweaks.h"
 
 namespace ho = doa4::np::handoff;
+namespace lang = doa4::language;
 namespace rules = doa4::np::rules;
 using Bytes = std::vector<uint8_t>;
 
@@ -168,6 +170,8 @@ static const NotCarried kSdkNotCarried[] = {
     {"force_convert_quad_lists_to_triangle_lists", "gpu-render"},
     {"force_convert_triangle_fans_to_lists", "gpu-render"},
     {"fullscreen", "window"},
+    {"fullscreen_exclusive", "window"},  // Task 9: presentation only (DXGI exclusive fullscreen on the host's own monitor)
+    {"fullscreen_exclusive_mode", "window"},  // Task 9c: presentation only (the host monitor's mode; never the guest's video mode)
     {"game_data_root", "path"},
     {"gamma_render_target_as_unorm16", "gpu-render"},
     {"gpu_3d_to_2d_texture", "gpu-render"},
@@ -234,6 +238,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"perf_log_csv", "log"},
     {"pre_mask_resolve_l2_block", "gpu-render"},
     {"present_allow_overscan_cutoff", "present"},
+    {"present_before_vblank_wait", "present"},  // Task 8: host present timing only (the guest's order is unchanged)
     {"present_cas_additional_sharpness", "present"},
     {"present_dither", "present"},
     {"present_effect", "present"},
@@ -244,6 +249,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"present_render_pass_clear", "present"},
     {"present_safe_area_x", "present"},
     {"present_safe_area_y", "present"},
+    {"present_vsync", "present"},  // Task 9b: presentation only (presented on the UI thread; never changes guest timing or memory; not the guest's vsync)
     {"primitive_processor_cache_min_indices", "gpu-budget"},
     {"progress_log_frequency", "codegen"},
     {"render_target_path_d3d12", "gpu-backend"},
@@ -285,14 +291,21 @@ static const NotCarried kSdkNotCarried[] = {
     {"vulkan_submit_on_primary_buffer_end", "gpu-budget"},
     {"vulkan_tessellation_wireframe", "gpu-render"},
     {"vulkan_validation_enabled", "gpu-backend"},
+    {"window_client_size", "window"},  // Task 9c: presentation only (the window's client size; unlike window_width it never feeds the guest)
     {"writable_executable_memory", "unused"},
 };
 // (Task 9 adds the Online tab's netplay_* settings: each player's own network preferences; the input delay a session
 // uses travels in the hand-off itself, not as a guest setting.)
 // doa4_suits_full_bust is carried (Task 5, kPortCarried): its rescale writes guest memory, so the two players must agree on it.
 // doa4_suits_import_pending: a player's own start-up state; never carried into a session.
-// doa4_skip_intro: offline only (a session skips every movie through kMovie), so it is never carried.
-static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_skip_intro", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
+// doa4_skip_intro (update G6, Task 14, ruling R50): not carried; a session skips every movie on both PCs (kMovie), and the
+// intro rule never applies in a session (doa4_intro_skip.h), so both sides are equal by construction.
+// doa4_update_notice (update G7, Task 15): not carried, host-only; a session relaunch never checks or shows the notice
+// (doa4_update_notice.h), and nothing it does touches guest memory.
+// doa4_idle_waits (issue #4, CPU heat): not carried, host-only; it changes only the host time between the guest's own checks
+// (the loader and fence waits sleep instead of spinning), never a guest-visible value: a fight recorded with it off and with
+// it on is equal on every digest frame, sweep block and progress counter (ou_runs/cpu det_off / det_on, 2026-11-11).
+static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_skip_intro", "doa4_update_notice", "doa4_idle_waits", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
                                               "netplay_port", "netplay_delay_auto", "netplay_delay", "netplay_last_join",
                                               "netplay_show_stats", "netplay_upnp", "netplay_autohost", "netplay_autojoin", "doa4_rb_wmap"};
 // the trust class: carried settings whose non-default value weakens a boundary of the PC that applies it
@@ -317,11 +330,13 @@ static constexpr size_t kSdkCount = sizeof(kSdkNames) / sizeof(kSdkNames[0]);
 static constexpr size_t kSdkNotCarriedCount = sizeof(kSdkNotCarried) / sizeof(kSdkNotCarried[0]);
 static constexpr size_t kPortNotCarriedCount = sizeof(kPortNotCarried) / sizeof(kPortNotCarried[0]);
 static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
-static constexpr size_t kSdkTotal = 194;  // the distinct cvar names the SDK's src defines at that commit
+static constexpr size_t kSdkTotal = 199;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c)
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
-// The port's own carried setting beyond the tweaks: it changes guest memory and is no trust matter (np_handoff.cpp kPortSettings).
-static const char* const kPortCarried[] = {"doa4_suits_full_bust"};
+// The port's own carried settings beyond the tweaks: they change guest memory and are no trust matter (np_handoff.cpp
+// kPortSettings). doa4_language and doa4_subtitles (update G1): in a session both PCs boot with the host's language and subtitles.
+static const char* const kPortCarried[] = {"doa4_suits_full_bust", "doa4_language", "doa4_subtitles"};
+static constexpr size_t kPortCarriedCount = sizeof(kPortCarried) / sizeof(kPortCarried[0]);
 
 static std::vector<std::string> ExpectedNames() {
   std::vector<std::string> v(kSdkNames, kSdkNames + kSdkCount);
@@ -1502,6 +1517,22 @@ static void TestGuestNames() {
         uniq.count("doa4_mp_hidden_characters") && uniq.count("doa4_suits_full_bust"));
   CHECK(uniq.count("async_shader_compilation"));  // fix round 1: a draw skipped while its pipeline is built drops readback work
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) CHECK(uniq.count(t.cvar));
+
+  Group("guest settings: the list ends with the port's three, the language pair last; neither language name is in the trust class");
+  CHECK(names.size() >= 3);
+  if (names.size() >= 3) {
+    CHECK(names[names.size() - 3] == "doa4_suits_full_bust");
+    CHECK(names[names.size() - 2] == "doa4_language");
+    CHECK(names[names.size() - 1] == "doa4_subtitles");
+  }
+  for (const char* n : {"doa4_language", "doa4_subtitles"}) {
+    g_ctx = n;
+    CHECK(!IsTrusted(n));
+    bool in_module_class = false;
+    for (const ho::TrustedSetting& t : ho::TrustedSettings()) in_module_class = in_module_class || t.name == n;
+    CHECK(!in_module_class);
+  }
+  g_ctx.clear();
 }
 
 // The reader of a session's bust setting (np::SessionFullBust) takes it from the hand-off's text. T2.2: the likeliest wrong
@@ -1522,6 +1553,176 @@ static void TestGuestSettingValue() {
       [](const std::string& name) { return name == "doa4_suits_full_bust" ? std::string("true") : std::string("0"); });
   CHECK(!captured.empty());
   CHECK(ho::GuestSettingValue(captured, "doa4_suits_full_bust") == std::optional<std::string>("true"));
+}
+
+// R1: a replay keeps its recording's guest text as one meta value (np_session GuestMeta: the lines joined by ';',
+// "(none)" when the recording has none); np::SessionGuestValue reads one name from it. T2.2: the likeliest wrong versions
+// are a prefix match, the separator taken as '\n' (only the first line found), and "(none)" read as a text.
+static void TestGuestMetaValue() {
+  Group("guest meta value: the exact name's value from a ';'-joined guest text; \"(none)\" and a missing name give nothing");
+  const std::string meta = "doa4_language_old=5;vsync=1;doa4_language=3;doa4_subtitles=8;";
+  CHECK(ho::GuestMetaValue(meta, "doa4_language") == std::optional<std::string>("3"));  // NOT the _old line's 5
+  CHECK(ho::GuestMetaValue(meta, "doa4_subtitles") == std::optional<std::string>("8"));     // the last line
+  CHECK(ho::GuestMetaValue(meta, "doa4_language_old") == std::optional<std::string>("5"));  // the first line
+  CHECK(!ho::GuestMetaValue(meta, "doa4_lang").has_value());
+  CHECK(!ho::GuestMetaValue("(none)", "doa4_language").has_value());
+  CHECK(!ho::GuestMetaValue("", "vsync").has_value());
+  // a recording made before G1: its guest text has no language line
+  CHECK(!ho::GuestMetaValue("vsync=1;doa4_suits_full_bust=false;", "doa4_language").has_value());
+  CHECK(ho::GuestMetaValue("vsync=1;doa4_suits_full_bust=false;", "doa4_suits_full_bust") == std::optional<std::string>("false"));
+  // the real text: what Capture writes, joined the way np_session joins it
+  std::string captured = ho::CaptureGuestSettings([](const std::string& name) {
+    return name == "doa4_language" ? std::string("2") : name == "doa4_subtitles" ? std::string("-1") : std::string("0");
+  });
+  CHECK(!captured.empty());
+  std::replace(captured.begin(), captured.end(), '\n', ';');
+  CHECK(ho::GuestMetaValue(captured, "doa4_language") == std::optional<std::string>("2"));
+  CHECK(ho::GuestMetaValue(captured, "doa4_subtitles") == std::optional<std::string>("-1"));
+}
+
+// #428/#429: doa4_language and doa4_subtitles are also what a REMOTE host imposes on the joiner. The hand-off checks names,
+// lines and the trust class, never a value, so 42 and abc travel exactly as the same value in another carried integer
+// (video_mode_width) does; the joiner's language code then takes only a valid id (doa4::language::ResolveText) and
+// boots with the game's own language and subtitles, naming the ignored value. (What the joiner's cvar setter does with abc
+// is the SDK's int parser, not reachable here.)
+static void TestHostileLanguage() {
+  for (const char* bad : {"42", "abc"}) {
+    Group(std::string_view(bad) == "42" ? "hostile host: 42 passes the hand-off as in another carried integer, and resolves to the game's own"
+                                        : "hostile host: abc passes the hand-off as in another carried integer, and resolves to the game's own");
+    for (const char* name : {"doa4_language", "doa4_subtitles", "video_mode_width"}) {
+      g_ctx = std::string(name) + "=" + bad;
+      ho::Handoff h = Full();
+      h.guest_settings = TextWith(name, bad);
+      const Bytes b = ho::Pack(h);
+      ho::Handoff out;
+      CHECK(!b.empty());
+      CHECK(ho::Unpack(S(b), &out).empty());
+      CHECK(ho::GuestSettingValue(out.guest_settings, name) == std::optional<std::string>(bad));
+      std::vector<std::string> given;  // ApplyGuestSettings hands the value to the game's setter unchanged
+      CHECK(ho::ApplyGuestSettings(out.guest_settings, [&](const std::string& n, const std::string& v) {
+              if (n == name) given.push_back(v);
+              return true;
+            }).empty());
+      CHECK(given == std::vector<std::string>{bad});
+    }
+    g_ctx = bad;
+    std::string note = "stale";
+    const lang::Saved s = lang::ResolveText(std::string(bad), std::string(bad), &note);
+    CHECK(!s.text.has_value() && !s.subtitles.has_value());       // the game's own language and subtitles
+    CHECK(note.find(std::string("language ") + bad) != std::string::npos);  // the log names each ignored value
+    CHECK(note.find(std::string("subtitles ") + bad) != std::string::npos);
+  }
+  g_ctx.clear();
+  Group("hostile host: a valid pair from a hand-off resolves to itself; a missing line is the game's own, silently");
+  {
+    std::string note = "stale";
+    const lang::Saved s = lang::ResolveText(std::string("2"), std::string("8"), &note);
+    CHECK(s.text == std::optional<uint8_t>(2) && s.subtitles == std::optional<uint8_t>(8));
+    CHECK(note.empty());
+    const lang::Saved none = lang::ResolveText(std::nullopt, std::nullopt, &note);
+    CHECK(!none.text.has_value() && !none.subtitles.has_value() && note.empty());
+  }
+}
+
+// `text` without the lines of `names` (a recording made before those names were carried).
+static std::string Without(const std::string& text, std::initializer_list<const char*> names) {
+  std::string out;
+  for (size_t i = 0; i < text.size();) {
+    const size_t end = text.find('\n', i);
+    const std::string line = text.substr(i, end - i + 1);
+    i = end + 1;
+    bool drop = false;
+    for (const char* n : names) drop = drop || line.rfind(std::string(n) + "=", 0) == 0;
+    if (!drop) out += line;
+  }
+  return out;
+}
+
+// R13 (the user's decision): a REPLAY of a recording made before a port setting existed applies it at its default; a
+// hand-off without it is still refused, and a replay without an SDK or tweak setting is still refused. T2.2: the likeliest
+// wrong versions are a fill that also reaches hand-offs, a fill of every missing name (SDK ones included), and a fill
+// that duplicates a line the text already has.
+static void TestReplayDefaults() {
+  using Filled = std::vector<std::pair<std::string, std::string>>;
+  // defaults the test can tell apart from every Store() value
+  const auto default_of = [](const std::string& n) { return "<default of " + n + ">"; };
+  const std::string full = GoodText();
+  const std::string old_text = Without(full, {"doa4_language", "doa4_subtitles"});  // a recording made before G1
+  CHECK(old_text.size() < full.size() && old_text.find("doa4_language=") == std::string::npos);
+  std::map<std::string, std::string> set;
+  const auto record = [&](const std::string& n, const std::string& v) {
+    set[n] = v;
+    return true;
+  };
+
+  Group("replay defaults: a replay text without doa4_language and doa4_subtitles gets both at their defaults, named, and applies");
+  {
+    Filled filled = {{"stale", "x"}};
+    const std::string done = ho::CompleteGuestText(old_text, ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled == Filled({{"doa4_language", "<default of doa4_language>"}, {"doa4_subtitles", "<default of doa4_subtitles>"}}));
+    CHECK(done.rfind(old_text, 0) == 0);  // every recorded line kept as it is, first
+    set.clear();
+    CHECK(ho::ApplyGuestSettings(done, record).empty());
+    CHECK(set.size() == ExpectedNames().size());
+    CHECK(Val(set, "doa4_language") == "<default of doa4_language>" && Val(set, "doa4_subtitles") == "<default of doa4_subtitles>");
+    const std::map<std::string, std::string> store = Store();
+    for (const std::string& n : ExpectedNames()) {  // the rest of the recording's text exactly as recorded
+      if (n == "doa4_language" || n == "doa4_subtitles") continue;
+      g_ctx = n;
+      CHECK(Val(set, n) == Val(store, n));
+    }
+    g_ctx.clear();
+  }
+  Group("replay defaults: the same text as a hand-off is not completed and is refused exactly as before");
+  {
+    Filled filled = {{"stale", "x"}};
+    const std::string as_handoff = ho::CompleteGuestText(old_text, ho::TextSource::kHandoff, default_of, &filled);
+    CHECK(as_handoff == old_text && filled.empty());
+    CHECK(ho::ApplyGuestSettings(as_handoff, record) == "guest setting doa4_language: missing");
+    ho::Handoff h = Full();
+    h.guest_settings = as_handoff;
+    CHECK(ho::Pack(h).empty());
+    Raw r;
+    r.guest = as_handoff;
+    CHECK(UnpackRefusal(Encode(r)) == "guest setting doa4_language: missing");
+  }
+  Group("replay defaults: a replay text without an SDK or a tweak setting is still refused (only port names are filled)");
+  for (const char* other : {"vsync", "doa4_tag_all_stages"}) {
+    g_ctx = other;
+    Filled filled;
+    const std::string done =
+        ho::CompleteGuestText(Without(old_text, {other}), ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled.size() == 2);
+    CHECK(ho::ApplyGuestSettings(done, record) == "guest setting " + std::string(other) + ": missing");
+  }
+  g_ctx.clear();
+  Group("replay defaults: a complete text is unchanged; a recording without the bust setting gets it too");
+  {
+    Filled filled = {{"stale", "x"}};
+    CHECK(ho::CompleteGuestText(full, ho::TextSource::kReplay, default_of, &filled) == full && filled.empty());
+    const std::string done =
+        ho::CompleteGuestText(Without(full, {"doa4_suits_full_bust"}), ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled == Filled({{"doa4_suits_full_bust", "<default of doa4_suits_full_bust>"}}));
+    CHECK(ho::ApplyGuestSettings(done, record).empty());
+  }
+  Group("replay defaults: a replay text without a final newline is completed on new lines; its last line keeps its value");
+  {
+    std::string cut = old_text;
+    CHECK(!cut.empty() && cut.back() == '\n');
+    cut.pop_back();  // the last recorded line (doa4_suits_full_bust) now has no newline
+    CHECK(cut.substr(cut.rfind('\n') + 1).rfind("doa4_suits_full_bust=", 0) == 0);
+    Filled filled;
+    const std::string done = ho::CompleteGuestText(cut, ho::TextSource::kReplay, default_of, &filled);
+    CHECK(filled.size() == 2);
+    set.clear();
+    CHECK(ho::ApplyGuestSettings(done, record).empty());  // NOT "doa4_language: missing" (merged into the bust line)
+    CHECK(Val(set, "doa4_suits_full_bust") == Val(Store(), "doa4_suits_full_bust"));
+    CHECK(Val(set, "doa4_language") == "<default of doa4_language>");
+    // nothing to fill: the text is left as it is, and its unterminated last line is refused as before
+    const std::string unfilled = ho::CompleteGuestText(full.substr(0, full.size() - 1), ho::TextSource::kReplay, default_of, &filled);
+    CHECK(unfilled == full.substr(0, full.size() - 1) && filled.empty());
+    CHECK(ho::ApplyGuestSettings(unfilled, record) == "the last guest setting line has no newline");
+  }
 }
 
 static void TestCapture() {
@@ -2132,8 +2333,9 @@ static void TestSdkNames(const std::string& sdk_src, const std::string& port_src
   std::set<std::string> port_expected(kPortNotCarried, kPortNotCarried + kPortNotCarriedCount);
   for (const doa4::tweaks::Tweak& t : doa4::tweaks::AllTweaks()) CHECK(port_expected.insert(t.cvar).second);
   for (const char* n : kPortCarried) CHECK(port_expected.insert(n).second);
-  CHECK(port_expected.size() == kPortNotCarriedCount + doa4::tweaks::AllTweaks().size() + 1);
-  CHECK(!IsTrusted("doa4_suits_full_bust"));  // carried at the host's value, not forced: it is no boundary of the PC
+  CHECK(port_expected.size() == kPortNotCarriedCount + doa4::tweaks::AllTweaks().size() + kPortCarriedCount);
+  CHECK(kPortCarriedCount == 3);
+  for (const char* n : kPortCarried) CHECK(!IsTrusted(n));  // carried at the host's value, not forced: no boundary of the PC
   for (const auto& d : port) {
     g_ctx = d.first;
     CHECK(port_expected.count(d.first) == 1);
@@ -2185,7 +2387,7 @@ static void TestSdkNames(const std::string& sdk_src, const std::string& port_src
     CHECK(guarded == kGuarded);
     CHECK(bare == kHarmless);
     CHECK(extras_request_bare == 0);      // the record-run stand-in: the same class of switch, on the count-copy rule's path
-    CHECK(extras_request_guarded == 3);   // the hook's rule, SyncCostumeCounts and PollExtrasRequest
+    CHECK(extras_request_guarded == 4);   // the hook's rule, SyncCostumeCounts, PollExtrasRequest and the language frame step's session check
   }
 
   // every carried name is a cvar of the SDK or the port (a typo would refuse every session)
@@ -2241,6 +2443,9 @@ int main(int argc, char** argv) {
   TestFuzz();
   TestGuestNames();
   TestGuestSettingValue();
+  TestGuestMetaValue();
+  TestHostileLanguage();
+  TestReplayDefaults();
   TestCapture();
   TestApply();
   TestTrustClass();

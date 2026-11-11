@@ -1,15 +1,18 @@
-// In-game menu (Escape): Video, Controls and Extras tabs. See doa4_menu.h.
+// In-game menu (Escape): Game, Controls, Photo, Extras and Online tabs. See doa4_menu.h.
 
 #include "doa4_menu.h"
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <array>
 #include <cfloat>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -18,6 +21,8 @@
 #include <rex/input/input_system.h>
 #include <rex/input/pad_remap.h>
 #include <rex/logging.h>
+#include <rex/ui/d3d12/d3d12_presenter.h>
+#include <rex/ui/display_mode.h>
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/ui_event.h>
@@ -33,8 +38,10 @@
 #include <windows.h>
 
 #include "doa4_config.h"
+#include "doa4_display.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
+#include "doa4_language.h"
 #include "doa4_photo_win.h"
 #include "doa4_suits_import_view.h"
 #include "doa4_speakers.h"
@@ -116,6 +123,42 @@ constexpr std::array<UnlockRow, 5> kUnlockRows = {{
     {unlocks::Unlock::kStages, "Unlock all stages"},
     {unlocks::Unlock::kEverything, "Unlock everything"},
 }};
+
+// Texts drawn without wrapping, named so the window width (MenuDialog::WidestRow) measures exactly what is drawn.
+constexpr std::array<const char*, 3> kDisplayModes = {"Windowed", "Borderless fullscreen",
+                                                      "Exclusive fullscreen (experimental)"};
+constexpr const char* kDisplayModeNote = "Experimental: measured no lower input lag than borderless fullscreen.";
+constexpr const char* kVsyncNote =
+    "Removes tearing on monitors without G-Sync/FreeSync; can add up to one screen refresh of input lag.";
+constexpr const char* kOutputSizeLabel = "Output size";
+constexpr float kOutputSizeComboWidth = 260.0f;
+constexpr const char* kOutputSizeNote = "The size the picture is shown at. Render scale sets how sharp the game draws.";
+constexpr const char* kShowFpsLabel = "Show FPS over the game (F7)";
+constexpr std::array<const char*, 2> kAntiAliasingNote = {
+    "The game uses 2x MSAA; FXAA Extreme suits it best. FXAA also softens", "text a little."};
+constexpr std::array<const char*, 2> kTextureFilteringNote = {
+    "Applies to textures as the game draws them; you may see it after the", "next screen loads."};
+constexpr std::array<const char*, 2> kSpeakersNote = {
+    "Automatic follows Windows: 5.1 when the speakers are set to 5.1 or more,",
+    "stereo otherwise. 5.1 surround always sends six channels."};
+constexpr float kLanguageComboWidth = 220.0f;
+constexpr const char* kSkipIntroLabel = "Skip the intro at start-up";
+constexpr const char* kSkipIntroNote = "Starts at the title screen. Applies at the next start.";
+constexpr const char* kGameFilesNote = "A new location is used from the next start.";
+constexpr const char* kButtonNotesNote = "The game's Type A layout. Its Button Config (Options) can change these.";
+constexpr const char* kNoControllerNote = "No controller in this slot.";
+constexpr const char* kKeyboardLabel = "Use keyboard as controller";
+constexpr const char* kPadListenText = "Press a button... (Esc cancels)";
+constexpr const char* kKeyListenText = "Press a key or mouse button... (Esc cancels)";
+constexpr float kTableFirstColumnWidth = 140.0f;
+constexpr float kExtrasButtonWidth = 220.0f;
+constexpr const char* kLoadProfileNote = "Load a profile first (reach the main menu).";
+constexpr const char* kWipeQuestion = "Lock everything again, as in a new save?";
+constexpr const char* kBustLabel = "Full DOAX2 breast movement";
+constexpr const char* kBustNote = "Up and down range of DOAX2 instead of the character's DOA4 range. Takes effect at once.";
+constexpr const char* kPhotoMonitorNote = "Monitor size: at x4 the same clean, supersampled image you see on screen.";
+constexpr const char* kPhotoCopyLabel = "Also save a full-quality copy when you save a snapshot to the in-game Album";
+constexpr const char* kPhotoCopyNote = "The copy is the game's 3:2 photo, at the render scale's full quality.";
 
 uint32_t PressedControls(const rex::input::X_INPUT_GAMEPAD& pad) {
   uint32_t mask = 0;
@@ -213,22 +256,26 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   // The Online tab's state and the session locks are logged whichever tab is shown (the log is the test hook:
   // the session's shots never hold the menu).
   PollNetState();
-  // On every tab: the Video and Online tabs show the unsaved warning too.
+  // The exclusive mode list, whichever tab is shown and before any radio (Task 10 review I1): made while exclusive
+  // fullscreen is off, at this opening's first frame.
+  EnsureExclusiveModes();
+  // On every tab: the Game and Online tabs show the unsaved warning too.
   if (ImGui::GetTime() >= next_save_poll_) {
     if (host_.guest && host_.extras) PollSaved(*host_.guest, host_.save_dir, host_.extras);
     next_save_poll_ = ImGui::GetTime() + 1.0;
   }
   ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                           ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
+  // Task 12 fix round 2: wide enough for the widest unwrapped row of every tab (measured, WidestRow), and never narrower
+  // (a constraint, so a narrower size from an earlier opening or a drag cannot cut text off); clamped to the display.
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const float width = display::MenuWindowWidth(WidestRow(), style.WindowPadding.x, style.ScrollbarSize, io.DisplaySize.x);
+  ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
   if (ImGui::Begin("DOA4###doa4_menu", nullptr, ImGuiWindowFlags_NoCollapse)) {
     if (ImGui::BeginTabBar("tabs")) {
-      if (ImGui::BeginTabItem("Video")) {
-        DrawVideoTab();
-        ImGui::EndTabItem();
-      }
-      if (ImGui::BeginTabItem("Audio")) {
-        DrawAudioTab();
+      if (ImGui::BeginTabItem("Game")) {
+        DrawGameTab();
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Controls")) {
@@ -249,10 +296,6 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
         DrawOnlineTab();
         ImGui::EndTabItem();
       }
-      if (ImGui::BeginTabItem("Game")) {
-        DrawGameTab();
-        ImGui::EndTabItem();
-      }
       ImGui::EndTabBar();
     }
     if (!status_.empty()) {
@@ -267,25 +310,109 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   ImGui::End();
 }
 
-void MenuDialog::DrawVideoTab() {
-  ImGui::SeparatorText("Display mode");
-  const bool fullscreen = host_.window->IsFullscreen();
-  bool want = fullscreen;
-  if (ImGui::RadioButton("Windowed", !fullscreen)) want = false;
-  if (ImGui::RadioButton("Borderless fullscreen", fullscreen)) want = true;
-  if (want != fullscreen) {
-    rex::ui::Window* window = host_.window;
-    host_.defer([window, want] { window->SetFullscreen(want); });
-    SetAndSave("fullscreen", want ? "true" : "false", false);
+// Task 12 fix round 2: the widest row any tab draws without wrapping, measured with the font in use (ImGui sizes a
+// radio button or checkbox as square + inner spacing + label, a button as its label + frame padding). TextWrapped texts
+// follow the window and are not measured. Dynamic texts are measured as they are now (the suits notes, the custom
+// texture filter value; the Online tab's notes in OnlineTab::WidestRow), so one that appears widens the window then.
+float MenuDialog::WidestRow() {
+  const ImGuiStyle& st = ImGui::GetStyle();
+  const float frame = ImGui::GetFrameHeight();
+  const auto text = [](const std::string& t) { return ImGui::CalcTextSize(t.c_str(), nullptr, true).x; };
+  const auto toggle = [&](const std::string& t) { return display::ToggleWidth(frame, st.ItemInnerSpacing.x, text(t)); };
+  const auto button = [&](const std::string& t) { return text(t) + st.FramePadding.x * 2; };
+  const auto row = [&](const std::vector<float>& items) { return display::RowWidth(items, st.ItemSpacing.x); };
+  // a row of the two-column tables (first column kTableFirstColumnWidth): each column's cell padding and the 1-pixel inner
+  // border (ImGuiTableFlags_BordersInnerV)
+  const auto table = [&](float second) { return kTableFirstColumnWidth + second + st.CellPadding.x * 4 + 1.0f; };
+  const auto toggles = [&](const auto& labels) {
+    std::vector<float> items;
+    for (const auto& l : labels) items.push_back(toggle(l));
+    return row(items);
+  };
+  std::vector<float> w;
+  // Game
+  for (const char* m : kDisplayModes) w.push_back(toggle(m));
+  for (const char* t : {kDisplayModeNote, kVsyncNote, kOutputSizeNote, kSkipIntroNote, kGameFilesNote}) w.push_back(text(t));
+  w.push_back(toggle("VSync"));
+  w.push_back(row({text(kOutputSizeLabel), kOutputSizeComboWidth}));
+  w.push_back(toggle(kShowFpsLabel));
+  for (const char* s : graphics::kRenderScales) w.push_back(toggle(s));
+  w.push_back(text(fmt::format("Applies after a restart (running at x{}).", graphics::kRenderScales.size())));
+  w.push_back(button("Restart now"));
+  {
+    std::vector<std::string> aa, tf, sp;
+    for (const auto& c : graphics::kAntiAliasing) aa.push_back(c.label);
+    for (const auto& c : graphics::kTextureFiltering) tf.push_back(c.label);
+    for (const auto& c : speakers::kChoices) {
+      sp.push_back(c.label);
+      w.push_back(text(fmt::format("Applies after a restart (running on {}).", c.label)));
+    }
+    w.push_back(toggles(aa));
+    w.push_back(toggles(tf));
+    w.push_back(toggles(sp));
   }
+  for (const char* t : kAntiAliasingNote) w.push_back(text(t));
+  for (const char* t : kTextureFilteringNote) w.push_back(text(t));
+  for (const char* t : kSpeakersNote) w.push_back(text(t));
+  w.push_back(text(fmt::format("Custom ({}) set in dead_or_alive_4.toml.", rex::cvar::Query<int32_t>("anisotropic_override"))));
+  {
+    ExtrasState unsaved;  // both restart warnings (UnsavedUnlocksWarning), whichever shows
+    unsaved.waiting_for_save = true;
+    w.push_back(text(UnsavedUnlocksWarning(unsaved)));
+    unsaved.pending_wipe = true;
+    w.push_back(text(UnsavedUnlocksWarning(unsaved)));
+  }
+  w.push_back(row({kLanguageComboWidth, text(online_view::kLockedText)}));
+  w.push_back(toggle(kSkipIntroLabel));
+  w.push_back(row({button("Change..."), text(online_view::kLockedText), button("Open folder")}));
+  // Controls
+  w.push_back(toggles(std::array<std::string, 4>{"Player 1", "Player 2", "Player 3", "Player 4"}));
+  w.push_back(text(kNoControllerNote));
+  w.push_back(text(kButtonNotesNote));
+  for (const auto& note : kButtonNotes) w.push_back(table(text(note[1])));
+  w.push_back(table(button(kPadListenText)));
+  w.push_back(table(button(kKeyListenText)));
+  w.push_back(button("Reset Player 4"));
+  w.push_back(toggle(kKeyboardLabel));
+  w.push_back(row({text("Keyboard is"), toggle("P1##kbd"), toggle("P2##kbd"), toggle("P3##kbd"), toggle("P4##kbd")}));
+  w.push_back(button("Reset keyboard"));
+  // Photo
+  for (const auto& f : photo::kFormats) w.push_back(toggle(f.label));
+  w.push_back(text(kPhotoMonitorNote));
+  w.push_back(row({button("Choose folder..."), button("Open folder"), button("Use default")}));
+  w.push_back(toggle(kPhotoCopyLabel));
+  w.push_back(text(kPhotoCopyNote));
+  // Extras
+  w.push_back(text(online_view::kLockedText));
+  w.push_back(text(kLoadProfileNote));
+  w.push_back(row({kExtrasButtonWidth, text("Unlocked")}));
+  w.push_back(text(kWipeQuestion));
+  w.push_back(row({button("Yes, wipe unlocks"), button("Cancel")}));
+  w.push_back(text("Waiting for the game to save..."));
+  for (const tweaks::Tweak& t : tweaks::AllTweaks()) w.push_back(toggle(t.label));
+  w.push_back(toggle(kBustLabel));
+  w.push_back(text(kBustNote));
+  for (const std::string& note : host_.suits_notes) w.push_back(text(note));
+  // Online
+  online_view::In in;
+  if (host_.online.state) in = host_.online.state(false);
+  w.push_back(OnlineTab::WidestRow(in, online_view::Describe(in),
+                                   host_.extras ? UnsavedUnlocksWarning(*host_.extras) : nullptr));
+  float widest = 0;
+  for (float x : w) widest = std::max(widest, x);
+  return widest;
+}
+
+// The Game tab's first part: display mode, Show FPS, render scale, anti-aliasing, texture filtering.
+void MenuDialog::DrawVideoSettings() {
+  ImGui::SeparatorText("Display mode");
+  DrawDisplayRows();
 
   bool show_fps = rex::cvar::Query<bool>("doa4_show_fps");
-  if (ImGui::Checkbox("Show FPS over the game (F7)", &show_fps)) {
-    // Near a session nothing is written to the config (it is restored at the session's end): only in memory, as F7 does.
-    const char* value = show_fps ? "true" : "false";
-    const bool ok = SessionLocked() ? rex::cvar::SetFlagByName("doa4_show_fps", value)
-                                    : SaveThenSet("doa4_show_fps", value, false);
-    if (ok && host_.online.shown_changed) host_.online.shown_changed();
+  if (ImGui::Checkbox(kShowFpsLabel, &show_fps)) {
+    if (SetPresentationSetting("doa4_show_fps", show_fps ? "true" : "false", false) && host_.online.shown_changed) {
+      host_.online.shown_changed();
+    }
   }
 
   ImGui::SeparatorText("Render scale");
@@ -333,8 +460,7 @@ void MenuDialog::DrawVideoTab() {
     }
   }
   ImGui::PopID();
-  ImGui::TextDisabled("The game uses 2x MSAA; FXAA Extreme suits it best. FXAA also softens");
-  ImGui::TextDisabled("text a little.");
+  for (const char* line : kAntiAliasingNote) ImGui::TextDisabled("%s", line);
 
   ImGui::SeparatorText("Texture filtering");
   ImGui::PushID("aniso");
@@ -351,11 +477,11 @@ void MenuDialog::DrawVideoTab() {
   if (row < 0) {
     ImGui::TextColored(kNoteColor, "Custom (%d) set in dead_or_alive_4.toml.", aniso);
   }
-  ImGui::TextDisabled("Applies to textures as the game draws them; you may see it after the");
-  ImGui::TextDisabled("next screen loads.");
+  for (const char* line : kTextureFilteringNote) ImGui::TextDisabled("%s", line);
 }
 
-void MenuDialog::DrawAudioTab() {
+// The Game tab's speakers part: the Speakers choice (its own separator) and the Output device block.
+void MenuDialog::DrawSpeakerSettings() {
   ImGui::SeparatorText("Speakers");
   if (!host_.saved_speakers) return;
   std::string& saved = *host_.saved_speakers;
@@ -390,8 +516,7 @@ void MenuDialog::DrawAudioTab() {
       ImGui::TextColored(kErrorColor, "%s", warning);
     }
   }
-  ImGui::TextDisabled("Automatic follows Windows: 5.1 when the speakers are set to 5.1 or more,");
-  ImGui::TextDisabled("stereo otherwise. 5.1 surround always sends six channels.");
+  for (const char* line : kSpeakersNote) ImGui::TextDisabled("%s", line);
 
   ImGui::SeparatorText("Output device");
   const rex::audio::OutputInfo info = rex::audio::GetOutputInfo();
@@ -409,7 +534,7 @@ void MenuDialog::DrawControlsTab() {
   ImGui::Spacing();
   ImGui::SeparatorText("What the buttons do");
   if (ImGui::BeginTable("button_notes", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-    ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+    ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, kTableFirstColumnWidth);
     ImGui::TableSetupColumn("Action");
     for (const auto& note : kButtonNotes) {
       ImGui::TableNextRow();
@@ -420,7 +545,7 @@ void MenuDialog::DrawControlsTab() {
     }
     ImGui::EndTable();
   }
-  ImGui::TextDisabled("The game's Type A layout. Its Button Config (Options) can change these.");
+  ImGui::TextDisabled("%s", kButtonNotesNote);
   ImGui::Spacing();
   DrawKeyboardSection();
 }
@@ -452,12 +577,12 @@ void MenuDialog::DrawPadSection() {
   }
   const bool connected = pad_connected_ && result == X_ERROR_SUCCESS;
   if (!pad_connected_) {
-    ImGui::TextDisabled("No controller in this slot.");
+    ImGui::TextDisabled("%s", kNoControllerNote);
   }
 
   const PadRemap remap = CurrentRemap(slot_);
   if (ImGui::BeginTable("pad", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, kTableFirstColumnWidth);
     ImGui::TableSetupColumn("Driven by");
     for (size_t row = 0; row < rex::input::kPadControlCount; ++row) {
       ImGui::TableNextRow();
@@ -466,7 +591,7 @@ void MenuDialog::DrawPadSection() {
       ImGui::TableNextColumn();
       ImGui::PushID(static_cast<int>(row));
       const bool listening = listen_ == Listen::kPad && listen_row_ == row;
-      const char* text = listening ? "Press a button... (Esc cancels)"
+      const char* text = listening ? kPadListenText
                                    : kPadLabels[static_cast<size_t>(remap.source[row])];
       if (ImGui::Button(text, ImVec2(-FLT_MIN, 0.0f)) && !listening) {
         StartPadListen(row, connected ? &raw.gamepad : nullptr);
@@ -485,7 +610,7 @@ void MenuDialog::DrawPadSection() {
 void MenuDialog::DrawKeyboardSection() {
   ImGui::SeparatorText("Keyboard");
   bool mnk_mode = rex::cvar::Query<bool>("mnk_mode");
-  if (ImGui::Checkbox("Use keyboard as controller", &mnk_mode)) {
+  if (ImGui::Checkbox(kKeyboardLabel, &mnk_mode)) {
     SetAndSave("mnk_mode", mnk_mode ? "true" : "false", false);
   }
   const int32_t user = rex::cvar::Query<int32_t>("mnk_user_index");
@@ -499,7 +624,7 @@ void MenuDialog::DrawKeyboardSection() {
   }
 
   if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, kTableFirstColumnWidth);
     ImGui::TableSetupColumn("Key");
     for (size_t row = 0; row < kKeyRows.size(); ++row) {
       ImGui::TableNextRow();
@@ -509,7 +634,7 @@ void MenuDialog::DrawKeyboardSection() {
       ImGui::PushID(static_cast<int>(100 + row));
       const bool listening = listen_ == Listen::kKey && listen_row_ == row;
       std::string key = rex::cvar::Query<std::string>(kKeyRows[row].cvar);
-      std::string text = listening ? "Press a key or mouse button... (Esc cancels)"
+      std::string text = listening ? kKeyListenText
                                    : (key.empty() ? "(none)" : key);
       if (ImGui::Button(text.c_str(), ImVec2(-FLT_MIN, 0.0f)) && !listening) {
         listen_ = Listen::kKey;
@@ -539,12 +664,12 @@ void MenuDialog::DrawExtrasTab() {
   const std::optional<uint32_t> profile =
       host_.guest ? unlocks::FindProfile(*host_.guest) : std::nullopt;
   if (!profile) {
-    ImGui::TextDisabled("Load a profile first (reach the main menu).");
+    ImGui::TextDisabled("%s", kLoadProfileNote);
   }
   for (const UnlockRow& row : kUnlockRows) {
     const bool done = profile && unlocks::IsUnlocked(*host_.guest, *profile, row.what);
     ImGui::BeginDisabled(!profile || done || extras_locked);
-    if (ImGui::Button(row.label, ImVec2(220.0f, 0.0f)) &&
+    if (ImGui::Button(row.label, ImVec2(kExtrasButtonWidth, 0.0f)) &&
         !(host_.refuse && host_.refuse(std::string("unlock ") + row.label, &status_))) {
       std::string error;
       if (UnlockWithBackup(*host_.guest, *profile, row.what, host_.save_dir, host_.backup_root,
@@ -618,11 +743,11 @@ void MenuDialog::DrawExtrasTab() {
   ImGui::TextWrapped("Imported suits come after each character's own and extra costumes.");
   bool full_bust = rex::cvar::Query<bool>("doa4_suits_full_bust");
   ImGui::BeginDisabled(extras_locked);  // its rescale writes guest memory
-  if (ImGui::Checkbox("Full DOAX2 breast movement", &full_bust)) {
+  if (ImGui::Checkbox(kBustLabel, &full_bust)) {
     SaveThenSet("doa4_suits_full_bust", full_bust ? "true" : "false", false);
   }
   ImGui::EndDisabled();
-  ImGui::TextDisabled("Up and down range of DOAX2 instead of the character's DOA4 range. Takes effect at once.");
+  ImGui::TextDisabled("%s", kBustNote);
   DrawSuitsImport();
 }
 
@@ -654,9 +779,9 @@ void MenuDialog::DrawWipeUnlocks(const std::optional<uint32_t>& profile, bool lo
   ImGui::Spacing();
   ImGui::BeginDisabled(!profile || locked);
   if (!wipe_armed_) {
-    if (ImGui::Button("Wipe unlocks...", ImVec2(220.0f, 0.0f))) wipe_armed_ = true;
+    if (ImGui::Button("Wipe unlocks...", ImVec2(kExtrasButtonWidth, 0.0f))) wipe_armed_ = true;
   } else {
-    ImGui::TextColored(kErrorColor, "Lock everything again, as in a new save?");
+    ImGui::TextColored(kErrorColor, "%s", kWipeQuestion);
     ImGui::TextWrapped(
         "Characters, costumes, voices, stages and Story clears go back to a new save's, including ones you earned, and "
         "the extra costumes turn off. A backup is made first. Album, settings and other records stay.");
@@ -722,6 +847,10 @@ void MenuDialog::TestAction(std::string_view action) {
       }
       StartSuitsImport();
     }
+  } else if (action.rfind("language ", 0) == 0 && action.size() == 10 && action[9] >= '0' && action[9] <= '9') {
+    PickLanguage(uint8_t(action[9] - '0'));  // as a pick in the dropdown: "language 2"
+  } else if (action == "skip_intro 0" || action == "skip_intro 1") {
+    SetSkipIntro(action.back() == '1');  // as a click on the Game tab's box
   } else if (action.rfind("tweak", 0) == 0 && action.size() == 8 && host_.guest) {  // tweak<index><0|1>, as "tweak 21"
     const size_t index = size_t(action[6] - '0');
     if (index < tweaks::AllTweaks().size()) SetTweak(index, action[7] == '1');
@@ -750,7 +879,213 @@ void MenuDialog::DrawOnlineTab() {
       [this] { Restart(online_view::Control::kUpdateRestart); }, UnsavedUnlocksWarning(*host_.extras));
 }
 
+// The Language dropdown: the game's text language. The selected row is the saved choice when it is a text id, else what the
+// game is showing now (a never-saved game shows its actual language).
+void MenuDialog::DrawLanguageSettings() {
+  const std::optional<uint8_t> saved = language::ValidText(rex::cvar::Query<int32_t>("doa4_language"));
+  std::optional<uint8_t> shown = saved;
+  if (!shown && host_.guest) shown = language::ValidText(language::Read(*host_.guest).text);
+  const char* preview = "";
+  for (const language::Choice& choice : language::kTextChoices) {
+    if (shown && choice.id == *shown) preview = choice.label;
+  }
+  const bool locked = Locked(online_view::Control::kLanguage);
+  ImGui::BeginDisabled(locked);
+  ImGui::SetNextItemWidth(kLanguageComboWidth);
+  if (ImGui::BeginCombo("##language", preview)) {
+    for (const language::Choice& choice : language::kTextChoices) {
+      const bool selected = shown && choice.id == *shown;
+      if (ImGui::Selectable(choice.label, selected) && !selected) PickLanguage(uint8_t(choice.id));
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  if (locked) {
+    ImGui::SameLine();
+    ImGui::TextColored(kNoteColor, "%s", online_view::kLockedText);
+  }
+}
+
+// A pick in the dropdown (and the test action's): refused exactly when the dropdown is disabled; saves the choice, then asks the
+// game thread to apply the text (language::RequestLiveText).
+void MenuDialog::PickLanguage(uint8_t id) {
+  if (online_view::Refuse(online_view::Control::kLanguage, SessionLocked(), "change language", &status_,
+                          [](const std::string& line) { REXLOG_INFO("{}", line); })) {
+    return;
+  }
+  if (!language::ValidText(id)) return;
+  if (SaveThenSet("doa4_language", std::to_string(id), false)) language::RequestLiveText(id);
+}
+
+// Not locked in a session: a session skips every movie on both PCs whatever the box says (doa4_intro_skip.h).
+void MenuDialog::DrawIntroSettings() {
+  bool skip = rex::cvar::Query<bool>("doa4_skip_intro");
+  if (ImGui::Checkbox(kSkipIntroLabel, &skip)) SetSkipIntro(skip);
+  ImGui::TextDisabled("%s", kSkipIntroNote);
+}
+
+void MenuDialog::SetSkipIntro(bool on) {
+  SetPresentationSetting("doa4_skip_intro", on ? "true" : "false", false);
+}
+
+// R60. Near a session nothing is written to the config (the session restores it at its end): only in memory, as F7 does.
+bool MenuDialog::SetPresentationSetting(std::string_view name, std::string_view value, bool quote) {
+  if (!SessionLocked()) return SaveThenSet(name, value, quote);
+  if (rex::cvar::SetFlagByName(name, value)) return true;
+  status_ = fmt::format("Could not set {} to {}.", name, value);
+  return false;
+}
+
+// The display rows of the Game tab. None is locked in a session (presentation only). Every Window call goes through
+// host_.defer (the UI thread, after the frame), never from this draw.
+void MenuDialog::DrawDisplayRows() {
+  rex::ui::Window* window = host_.window;
+  enum Mode { kWindowed, kBorderless, kExclusive };
+  // The live state: IsFullscreenExclusiveActive is true only while DXGI exclusive is on, so a lost one shows as Borderless.
+  const bool fullscreen = window->IsFullscreen();
+  const Mode mode = !fullscreen ? kWindowed : window->IsFullscreenExclusiveActive() ? kExclusive : kBorderless;
+
+  ImGui::PushID("display_mode");
+  Mode want = mode;
+  if (ImGui::RadioButton(kDisplayModes[0], mode == kWindowed)) want = kWindowed;
+  if (ImGui::RadioButton(kDisplayModes[1], mode == kBorderless)) want = kBorderless;
+  if (ImGui::RadioButton(kDisplayModes[2], mode == kExclusive)) want = kExclusive;
+  // A click on Borderless while the wish is still exclusive (entry refused or lost) also clears the wish.
+  if (want != mode || (want == kBorderless && window->IsFullscreenExclusive())) {
+    const bool fs = want != kWindowed;
+    const bool exclusive = want == kExclusive;
+    if (exclusive) {
+      // Fullscreen first, then the wish: the window is in fullscreen when the exclusive entry is posted.
+      host_.defer([window] {
+        window->SetFullscreen(true);
+        window->SetFullscreenExclusive(true);
+      });
+    } else {
+      // The wish first, so leaving exclusive (SetFullscreen(false) leaves it itself) or entering fullscreen is as asked.
+      host_.defer([window, fs] {
+        window->SetFullscreenExclusive(false);
+        window->SetFullscreen(fs);
+      });
+    }
+    SetPresentationSetting("fullscreen", fs ? "true" : "false", false);
+    SetPresentationSetting("fullscreen_exclusive", exclusive ? "true" : "false", false);
+  }
+  ImGui::TextDisabled("%s", kDisplayModeNote);
+  ImGui::PopID();
+
+  ImGui::PushID("vsync");
+  bool vsync = rex::cvar::Query<bool>("present_vsync");
+  if (ImGui::Checkbox("VSync", &vsync)) SetPresentationSetting("present_vsync", vsync ? "true" : "false", false);
+  ImGui::TextDisabled("%s", kVsyncNote);
+  ImGui::PopID();
+
+  ImGui::PushID("output_size");
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(kOutputSizeLabel);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(kOutputSizeComboWidth);
+  if (mode == kBorderless) {
+    ImGui::BeginDisabled();
+    if (ImGui::BeginCombo("##size", "Desktop size")) ImGui::EndCombo();
+    ImGui::EndDisabled();
+  } else {
+    display::OutputSizeList list;
+    if (mode == kWindowed) {
+      // The window's live client size is the current size (a drag or a maximize shows truthfully); the saved one only
+      // before the window has a size.
+      uint32_t w = window->GetActualPhysicalWidth(), h = window->GetActualPhysicalHeight();
+      if (!w || !h) {
+        unsigned sw = 0, sh = 0;
+        const std::string saved = rex::cvar::Query<std::string>("window_client_size");
+        if (std::sscanf(saved.c_str(), "%ux%u", &sw, &sh) == 2) w = sw, h = sh;
+      }
+      list = display::WindowedSizeList(window->ListWindowedClientSizes(), w, h);
+    } else {
+      list = display::ExclusiveSizeList(ExclusiveModes().modes,
+                                        rex::cvar::Query<std::string>("fullscreen_exclusive_mode"));
+    }
+    const char* preview = list.selected >= 0 ? list.entries[size_t(list.selected)].label.c_str() : "";
+    if (ImGui::BeginCombo("##size", preview)) {
+      for (size_t i = 0; i < list.entries.size(); ++i) {
+        const display::OutputSizeEntry& e = list.entries[i];
+        ImGui::PushID(int(i));
+        if (ImGui::Selectable(e.label.c_str(), int(i) == list.selected) && int(i) != list.selected) {
+          if (mode == kWindowed) {
+            SetPresentationSetting("window_client_size", e.value, true);
+            const uint32_t w = e.width, h = e.height;
+            host_.defer([window, w, h] { window->SetWindowedClientSize(w, h); });
+          } else {
+            // While exclusive the mode changes in place through the reapply call: SetFullscreenExclusive(false) then (true)
+            // would coalesce into nothing.
+            SetPresentationSetting("fullscreen_exclusive_mode", e.value, true);
+            host_.defer([window] { window->ReapplyFullscreenExclusiveMode(); });
+          }
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+  }
+  ImGui::TextDisabled("%s", kOutputSizeNote);
+  ImGui::PopID();
+}
+
+// The monitor's exclusive modes (Task 10 review I1). The listing builds a DXGI factory, so it runs from host_.defer, never
+// inside the draw, and at most once per opening while exclusive is off (display::ExclusiveModesStep). The SDK merges the
+// output's live mode in as the desktop entry: made while exclusive is off that is the desktop mode; made while it is on
+// (only when the game started in exclusive and no list exists yet) it is the mode exclusive set, so it is dropped.
+void MenuDialog::EnsureExclusiveModes() {
+  const bool first_frame = exclusive_modes_first_frame_;
+  exclusive_modes_first_frame_ = false;
+  if (!host_.window) return;
+  const display::ExclusiveModesCache& cache = ExclusiveModes();
+  if (display::ExclusiveModesStep(first_frame, exclusive_modes_attempted_, cache.built, cache.from_active,
+                                  host_.window->IsFullscreenExclusiveActive()) != display::ModesStep::kBuild) {
+    return;
+  }
+  exclusive_modes_attempted_ = true;
+  GuardedDefer()([this] {
+    std::vector<rex::ui::display_mode::DisplayMode> modes;
+    rex::ui::display_mode::DisplayMode desktop;
+    if (!rex::ui::d3d12::D3D12Presenter::ListExclusiveFullscreenModes(host_.window->GetNativeWindowHandle(), modes,
+                                                                     desktop)) {
+      // No output for the window now: the cache stays as it was. Not tried again in this opening (attempted), only at
+      // the next one.
+      return;
+    }
+    const bool active_now = host_.window->IsFullscreenExclusiveActive();
+    display::ExclusiveModesCache& cache = ExclusiveModes();
+    if (active_now && cache.built) return;  // exclusive came on before this ran: keep the list made with it off
+    cache.modes.clear();
+    for (const auto& m : modes) {
+      cache.modes.push_back({m.width, m.height, rex::ui::display_mode::RefreshHz(m), rex::ui::display_mode::ModeText(m)});
+    }
+    if (active_now) display::DropModeText(cache.modes, rex::ui::display_mode::ModeText(desktop));
+    cache.built = true;
+    cache.from_active = active_now;
+  });
+}
+
 void MenuDialog::DrawGameTab() {
+  // Each section has its own ID scope: the video and speakers parts both have a "Restart now" button, and both show when a
+  // render scale and a speakers choice are pending (ImGui's ID-conflict highlight). Wrapping at the call keeps every return
+  // path of a section balanced.
+  ImGui::PushID("video");
+  DrawVideoSettings();
+  ImGui::PopID();
+  ImGui::Spacing();
+  ImGui::PushID("speakers");
+  DrawSpeakerSettings();
+  ImGui::PopID();
+  ImGui::SeparatorText("Language");
+  ImGui::PushID("language");
+  DrawLanguageSettings();
+  ImGui::PopID();
+  ImGui::SeparatorText("Start-up");
+  ImGui::PushID("intro");
+  DrawIntroSettings();
+  ImGui::PopID();
   const gamefiles::GameTab tab = gamefiles::DescribeGameTab(
       host_.game_files, host_.game_files_from_command_line,
       PathFromUtf8(rex::cvar::Query<std::string>("doa4_game_files")));
@@ -781,7 +1116,7 @@ void MenuDialog::DrawGameTab() {
       photo::OpenInExplorer(dir);
     });
   }
-  ImGui::TextDisabled("A new location is used from the next start.");
+  ImGui::TextDisabled("%s", kGameFilesNote);
   ImGui::SeparatorText("Saves");
   ImGui::TextWrapped("%s", Utf8(host_.user_data).c_str());
 }
@@ -802,7 +1137,7 @@ void MenuDialog::DrawPhotoTab() {
     }
   }
   ImGui::PopID();
-  ImGui::TextDisabled("Monitor size: at x4 the same clean, supersampled image you see on screen.");
+  ImGui::TextDisabled("%s", kPhotoMonitorNote);
 
   ImGui::SeparatorText("Folder");
   const std::string custom = rex::cvar::Query<std::string>("doa4_photo_dir");
@@ -843,11 +1178,10 @@ void MenuDialog::DrawPhotoTab() {
 
   ImGui::SeparatorText("In-game snapshots");
   bool auto_copy = rex::cvar::Query<bool>("doa4_photo_auto");
-  if (ImGui::Checkbox("Also save a full-quality copy when you save a snapshot to the in-game Album",
-                      &auto_copy)) {
+  if (ImGui::Checkbox(kPhotoCopyLabel, &auto_copy)) {
     SaveThenSet("doa4_photo_auto", auto_copy ? "true" : "false", false);
   }
-  ImGui::TextDisabled("The copy is the game's 3:2 photo, at the render scale's full quality.");
+  ImGui::TextDisabled("%s", kPhotoCopyNote);
 
   if (host_.photo_result) {
     const photo::Result result = host_.photo_result();

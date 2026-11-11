@@ -33,6 +33,7 @@ REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 TOOLS = os.path.join(REPO, "tools")
 HOST = os.path.join(REPO, "tests", "host")
 STAGE = os.path.join(TOOLS, "release_stage.py")
+SECTION = os.path.join(TOOLS, "changelog_section.py")
 RUN_HOST = os.path.join(TOOLS, "run_host_tests.py")
 GAME_FILES = ["dead_or_alive_4.exe", "rexruntime.dll", "TracyClient.dll"]
 PORT = "0123456789abcdef0123456789abcdef01234567"
@@ -98,9 +99,24 @@ def make_build(root, skip=None, decoys=True):
     return build
 
 
-def stage(root, build, *extra, launcher=True, out_name="staging"):
+# A synthetic CHANGELOG.md, newest first: the staged tag's version (0.3.0) sits between a newer and an older section,
+# and each body has its own '###' headings, so a cut at the wrong line, or the wrong section, gives a different text.
+BODY_030 = ("### New\n- Thirty feature one.\n- Thirty feature two.\n\n### Fixed\n- Thirty fix.\n\n"
+            "### Notes\n- Thirty note.\n")
+CHANGELOG = ("# Changelog\n\n"
+             "## 0.3.1 (2026-11-11)\n\n### New\n- Thirty-one feature.\n\n"
+             "## 0.3.0 (2026-11-08)\n\n" + BODY_030 + "\n"
+             "## 0.2.9 (2026-11-01)\n\n### Fixed\n- Twenty-nine fix.\n")
+
+
+def stage(root, build, *extra, launcher=True, out_name="staging", tag=TAG, changelog=CHANGELOG):
+    """changelog: the text of a CHANGELOG.md passed with --changelog, or None to leave the option out (the repo's file)."""
     out = os.path.join(root, out_name)
-    args = ["--build", build, "--out", out, "--tag", TAG, "--port-commit", PORT, "--sdk-commit", SDK]
+    args = ["--build", build, "--out", out, "--tag", tag, "--port-commit", PORT, "--sdk-commit", SDK]
+    if changelog is not None:
+        cp = os.path.join(root, "CHANGELOG_" + out_name + ".md")
+        write(cp, changelog.encode("utf-8"))
+        args += ["--changelog", cp]
     if launcher:
         lz = os.path.join(root, "launcher_pkg.zip")
         write(lz, b"PK launcher stand-in")
@@ -158,7 +174,15 @@ def test_stage_exact_set(root):
     check(readme.startswith(f"Dead or Alive 4 Online {TAG}"), f"stage: README-netplay.txt starts with the build's name and tag: {readme[:60]!r}")
     check("USA copy of Dead or Alive Xtreme 2" in readme and "No DOAX2 data is in this release." in readme,
           f"stage: README-netplay.txt has the optional swimsuit line: {readme}")
-    lp = os.path.join(out, "DOA4-launcher.zip")
+    # Task 13: the tag's CHANGELOG section (0.3.0's whole body, CRLF like the rest of the file), under its own line;
+    # NOT the newer (0.3.1) or the older (0.2.9) section, and not a '## ' heading line
+    want_changes = ("What's new in 0.3.0:\r\n\r\n" + BODY_030.replace("\n", "\r\n")).encode("ascii")
+    raw = members.get("README-netplay.txt", b"")
+    check(want_changes in raw, f"stage: README-netplay.txt carries 0.3.0's CHANGELOG section\n{raw!r}")
+    for needle in ("Thirty-one", "Twenty-nine", "## 0."):
+        check(needle not in readme, f"stage: README-netplay.txt has no {needle!r} (another version's section)\n{readme}")
+    check(b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b""), f"stage: README-netplay.txt has CRLF line ends only\n{raw!r}")
+    lp =os.path.join(out, "DOA4-launcher.zip")
     check(os.path.isfile(lp) and read(lp) == b"PK launcher stand-in", "stage: DOA4-launcher.zip is a copy of --launcher-zip")
 
 
@@ -220,6 +244,114 @@ def test_stage_refuses_a_used_folder_and_a_bad_tag(root):
         code, text = run(STAGE, "--build", build, "--out", o, "--tag", tag, "--port-commit", PORT, "--sdk-commit", SDK)
         check(code == 1 and "--tag" in text, f"stage --tag {tag!r}: refused by the tag rule: exit {code}\n{text}")
         check(staged_names(o) == [], f"stage --tag {tag!r}: nothing staged: {staged_names(o)}")
+
+
+def test_stage_changelog_refusals(root):
+    # Task 13: no section for the tag's version, or no CHANGELOG file: refused with the clean message, nothing staged
+    build = make_build(root, decoys=False)
+    no_030 = CHANGELOG.replace("## 0.3.0 (2026-11-08)", "## 0.3.00 (2026-11-08)")  # a near miss, not 0.3.0's heading
+    code, text, out = stage(root, build, changelog=no_030, out_name="out_nosec")
+    check(code == 1 and "0.3.0" in text and "no section" in text and "Traceback" not in text,
+          f"stage, no 0.3.0 section: refused with the message: exit {code}\n{text}")
+    check(staged_names(out) == [], f"stage, no 0.3.0 section: nothing staged: {staged_names(out)}")
+    missing = os.path.join(root, "no such CHANGELOG.md")
+    code, text, out = stage(root, build, "--changelog", missing, changelog=None, out_name="out_nofile")
+    check(code == 1 and "not found" in text and "Traceback" not in text,
+          f"stage, no CHANGELOG file: refused with the message: exit {code}\n{text}")
+    check(staged_names(out) == [], f"stage, no CHANGELOG file: nothing staged: {staged_names(out)}")
+
+
+def test_stage_default_changelog(root):
+    # called as the workflow calls it (no --changelog): the repository's CHANGELOG.md, here its 0.3.1 section
+    build = make_build(root, decoys=False)
+    code, text, out = stage(root, build, launcher=False, tag="alpha-v0.3.1", changelog=None)
+    check(code == 0, f"stage alpha-v0.3.1 with the repository's CHANGELOG.md: exit {code}\n{text}")
+    zp = os.path.join(out, "DOA4-alpha-v0.3.1-win64.zip")
+    raw = b""
+    if os.path.isfile(zp):
+        with zipfile.ZipFile(zp) as z:
+            raw = z.read("README-netplay.txt") if "README-netplay.txt" in z.namelist() else b""
+    for needle in (b"What's new in 0.3.1:\r\n\r\n### New\r\n- Language and subtitles are saved",
+                   b"### Notes\r\n- The first start after updating rebuilds the shader cache, so it is slower once.\r\n"):
+        check(needle in raw, f"stage alpha-v0.3.1: README-netplay.txt carries {needle!r}\n{raw!r}")
+
+
+def refusal(fn, *args):
+    """The message of the NoSection that fn(*args) raises, or None when it returns."""
+    try:
+        fn(*args)
+    except Exception as e:  # any other class is reported by the caller's check on the class name
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def section_or_refusal(cs, text, version):
+    """cs.section(text, version), or the refusal's text: a wrong refusal fails its own check, not the whole test."""
+    try:
+        return cs.section(text, version)
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def test_changelog_section(root):
+    cs = load("changelog_section")
+    sec = lambda text, version: section_or_refusal(cs, text, version)  # noqa: E731
+    # the body under '## <version> (...)' up to the next '## ' heading: the middle, the first (newest) and the last
+    check(sec(CHANGELOG, "0.3.0") == BODY_030, f"section 0.3.0: exactly its body: {sec(CHANGELOG, '0.3.0')!r}")
+    check(sec(CHANGELOG, "0.3.1") == "### New\n- Thirty-one feature.\n", f"section 0.3.1 (the first): its body, not 0.3.0's: {sec(CHANGELOG, '0.3.1')!r}")
+    check(sec(CHANGELOG, "0.2.9") == "### Fixed\n- Twenty-nine fix.\n", f"section 0.2.9 (the last): its body to the end: {sec(CHANGELOG, '0.2.9')!r}")
+    check(sec(CHANGELOG.rstrip("\n"), "0.2.9") == "### Fixed\n- Twenty-nine fix.\n",
+          "section 0.2.9, no newline at the end of the file: the same body")
+    # a CRLF checkout (git's autocrlf on a Windows runner) gives the same LF body
+    check(sec(CHANGELOG.replace("\n", "\r\n"), "0.3.0") == BODY_030, "section 0.3.0 of a CRLF file: the same LF body")
+    # refused: no section, a heading that only starts with the version, an empty section, the version twice
+    for text, version, token in ((CHANGELOG, "0.4.0", "no section"),
+                                 ("## 0.3.10 (2026-12-01)\n\n- Ten.\n", "0.3.1", "no section"),
+                                 ("## 0.3.0 (2026-11-08)\n\n\n## 0.2.9 (2026-11-01)\n- Fix.\n", "0.3.0", "empty"),
+                                 (CHANGELOG + "\n## 0.3.0 (2026-10-01)\n- Again.\n", "0.3.0", "twice")):
+        msg = refusal(cs.section, text, version)
+        check(msg is not None and msg.startswith("NoSection") and token in msg and version in msg,
+              f"section {version} of {text[:40]!r}...: NoSection naming it ({token!r}): {msg!r}")
+    # the command line, as the workflow calls it: --out gets the body as LF bytes, no BOM; without --out, stdout
+    cp = os.path.join(root, "CHANGELOG.md")
+    write(cp, CHANGELOG.replace("\n", "\r\n").encode("ascii"))
+    o = os.path.join(root, "changes.md")
+    code, text = run(SECTION, "0.3.0", "--changelog", cp, "--out", o)
+    check(code == 0 and os.path.isfile(o) and read(o) == BODY_030.encode("ascii"),
+          f"changelog_section 0.3.0 --out: exit {code}, the body's bytes: {read(o) if os.path.isfile(o) else None!r}\n{text}")
+    code, text = run(SECTION, "0.3.0", "--changelog", cp)
+    check(code == 0 and text == BODY_030, f"changelog_section 0.3.0 to stdout: exit {code}: {text!r}")
+    for i, (args, token) in enumerate(((["0.4.0", "--changelog", cp], "no section"),
+                                       (["0.4", "--changelog", cp], "x.y.z"),
+                                       (["0.4.0", "--changelog", os.path.join(root, "absent.md")], "not found"))):
+        o = os.path.join(root, f"refused_{i}.md")
+        code, text = run(SECTION, *args, "--out", o)
+        check(code == 1 and token in text and args[0] in text and "Traceback" not in text,
+              f"changelog_section {args[0]} ({token}): exit 1 with the message: exit {code}\n{text}")
+        check(not os.path.exists(o), f"changelog_section {args[0]} ({token}): no --out file written")
+
+
+def test_repo_changelog(root):
+    # the repository's CHANGELOG.md: ASCII, newest first, and the 0.3.1 section has the three headings. A checkout with
+    # git's autocrlf (a Windows runner) has CRLF, so the line ends are read as the checkout has them: all CRLF or all LF.
+    cs = load("changelog_section")
+    raw = read(os.path.join(REPO, "CHANGELOG.md"))
+    if raw.count(b"\r\n") == raw.count(b"\n"):
+        raw = raw.replace(b"\r\n", b"\n")
+    check(raw.isascii() and b"\r" not in raw and raw.startswith(b"# Changelog\n\n## "),
+          f"CHANGELOG.md: ASCII, one kind of line end, '# Changelog' then a '## ' section: {raw[:40]!r}")
+    versions = [tuple(int(n) for n in m) for m in re.findall(rb"^## (\d+)\.(\d+)\.(\d+) \(", raw, re.M)]
+    check(len(versions) >= 1 and versions == sorted(versions, reverse=True), f"CHANGELOG.md: sections newest first: {versions}")
+    body = section_or_refusal(cs, raw.decode("ascii", "replace"), "0.3.1")
+    check(body.startswith("### New\n- ") and "\n### Fixed\n- " in body and "\n### Notes\n- " in body,
+          f"CHANGELOG.md 0.3.1: New, Fixed, Notes: {body!r}")
+    # the version the release workflow will publish (DOA4_NETPLAY_VERSION, read as its Version step reads it) has a
+    # section, so a raised version without notes fails here, not at the end of the release job
+    cmake = read(os.path.join(REPO, "CMakeLists.txt")).decode("utf-8", "replace")
+    m = re.search(r'set\(DOA4_NETPLAY_VERSION "([0-9]+\.[0-9]+\.[0-9]+)"', cmake)
+    version = m.group(1) if m else "?"
+    got = section_or_refusal(cs, raw.decode("ascii", "replace"), version)
+    check(m is not None and not got.startswith("NoSection"), f"CHANGELOG.md has a section for DOA4_NETPLAY_VERSION {version}: {got!r}")
 
 
 # ---- run_host_tests.py --------------------------------------------------------------------------------------------

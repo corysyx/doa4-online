@@ -476,6 +476,31 @@ void RefreshFolderSums(const Request& request, const fs::path& dir, const std::s
   }
 }
 
+// The release list (one GET) and Choose, shared by CheckAndUpdate and CheckOnly; nothing else. false = the list did not
+// arrive (r->message says why, r->found kFailed). true: *c is Choose's answer; r->tag, r->found and r->message are set from
+// it (message: Choose's when there is nothing to update to).
+static bool ListAndChoose(const Env& env, Choice* c, Result* r) {
+  std::string json, err;
+  const bool listed = env.get && env.get("https://api.github.com/repos/" + env.repo + "/releases?per_page=30", true,
+                                         [&](const char* data, size_t n) {
+                                           if (g_cancel.load() || json.size() + n > kMaxListBytes) return false;
+                                           json.append(data, n);
+                                           return true;
+                                         },
+                                         &err);
+  if (!listed) {
+    r->found = Found::kFailed;
+    r->message = "Could not reach GitHub (" + (err.empty() ? std::string("no answer") : err) + ")";
+    return false;
+  }
+  *c = Choose(json, env.channel, env.current);
+  r->tag = c->tag;
+  // Choose: no pick -> tag "" (no release of the channel: failed); a pick not newer -> up to date; else newer
+  r->found = c->update ? Found::kNewer : c->tag.empty() ? Found::kFailed : Found::kUpToDate;
+  if (!c->update) r->message = c->message;
+  return true;
+}
+
 Result CheckAndUpdate(const Request& request, const Env& env) {
   Result r;
   {
@@ -490,24 +515,9 @@ Result CheckAndUpdate(const Request& request, const Env& env) {
     r.message = "The update check was stopped: the game is closing";
     return r;
   }
-  std::string json, err;
-  const bool listed = env.get && env.get("https://api.github.com/repos/" + env.repo + "/releases?per_page=30", true,
-                                         [&](const char* data, size_t n) {
-                                           if (g_cancel.load() || json.size() + n > kMaxListBytes) return false;
-                                           json.append(data, n);
-                                           return true;
-                                         },
-                                         &err);
-  if (!listed) {
-    r.message = "Could not reach GitHub (" + (err.empty() ? std::string("no answer") : err) + ")";
-    return r;
-  }
-  const Choice c = Choose(json, env.channel, env.current);
-  r.tag = c.tag;
-  if (!c.update) {
-    r.message = c.message;
-    return r;
-  }
+  Choice c;
+  if (!ListAndChoose(env, &c, &r)) return r;
+  if (!c.update) return r;
   if (c.replaces_dev) {  // review I-2: a self-built game is replaced only on a second, confirming press
     bool confirmed = false;
     {
@@ -579,6 +589,39 @@ Result CheckAndUpdate(const Request& request, const Env& env) {
   return r;
 }
 
+Result CheckOnly(const Env& env) {
+  Result r;
+  if (g_cancel.load()) {
+    r.message = "The update check was stopped: the game is closing";
+    return r;
+  }
+  Choice c;
+  if (ListAndChoose(env, &c, &r) && c.update) r.message = "Release " + c.tag + " is available";
+  return r;
+}
+
+bool StartCheckOnly(Env env, std::function<void(const Result&)> done) {
+  if (g_cancel.load()) return false;
+  try {
+    std::thread([env = std::move(env), done = std::move(done)] {
+      Result r;
+      try {
+        r = CheckOnly(env);
+      } catch (...) {
+        r = Result{};
+        r.message = "The update check stopped unexpectedly";
+      }
+      try {  // R107: nothing reaches the app once Shutdown has begun
+        if (done && !g_cancel.load()) done(r);
+      } catch (...) {
+      }
+    }).detach();
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
 // ---- one check at a time ----
 
 bool Start(Request request, CheckFn check) {
@@ -603,9 +646,15 @@ bool Start(Request request, CheckFn check) {
         std::lock_guard<std::mutex> lock(g_mu);
         g_message = r.message;
       }
-      try {
-        if (request.log) request.log("[doa4][UPDATE] " + r.message);
-      } catch (...) {
+      if (!g_cancel.load()) {  // R107: nothing reaches the app (its log, its notice) once Shutdown has begun
+        try {
+          if (request.log) request.log("[doa4][UPDATE] " + r.message);
+        } catch (...) {
+        }
+        try {  // Task 15: the start-up notice's memory follows the button's answer
+          if (request.done) request.done(r);
+        } catch (...) {
+        }
       }
       std::lock_guard<std::mutex> lock(g_mu);  // last: once Busy is false, the check has logged everything
       g_busy = false;
@@ -648,6 +697,8 @@ void Shutdown(uint32_t max_wait_ms) {
   g_cancel.store(true);
   if (g_swap_mu.try_lock_for(std::chrono::milliseconds(max_wait_ms))) g_swap_mu.unlock();
 }
+
+bool Cancelling() { return g_cancel.load(); }
 
 void ResetForTest() {
   std::lock_guard<std::mutex> lock(g_mu);

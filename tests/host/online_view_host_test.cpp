@@ -292,8 +292,8 @@ static void TestEventLine() {
 }
 
 static void TestLocks() {
-  const Control all[] = {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kGameChange,
-                         Control::kUpdateRestart};
+  const Control all[] = {Control::kExtras,   Control::kVideoRestart, Control::kAudioRestart,
+                         Control::kLanguage, Control::kGameChange,   Control::kUpdateRestart};
   for (const Control c : all) {
     CHECK(LockedInSession(c, true));
     CHECK(!LockedInSession(c, false));
@@ -315,12 +315,12 @@ static void TestLocks() {
   }
   CHECK(Refuse(Control::kExtras, true, "a", nullptr, {}));  // null status and empty log are allowed
   CHECK_EQ(LockedLine(true),
-           "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 game_change=1");
+           "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 language=1 game_change=1");
   CHECK_EQ(LockedLine(false), "");
 }
 
 // Fix round M2: one notion of "locked" - in a session, or the lobby is Starting / Restarting - and the input delay, the
-// four controls and the tab's session note all follow it.
+// six controls and the tab's session note all follow it.
 static void TestSessionLocks() {
   const State all[] = {State::kOffline,    State::kHosting,    State::kConnecting, State::kConnected,
                        State::kStarting,   State::kRestarting, State::kInSession};
@@ -335,10 +335,13 @@ static void TestSessionLocks() {
         CHECK(SessionLocks(in) == want);
         // the input delay and the controls read the same answer
         CHECK(Describe(in).delay_enabled == !SessionLocks(in));
-        for (const Control c : {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kGameChange,
-                                Control::kUpdateRestart}) {
+        for (const Control c : {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kLanguage,
+                                Control::kGameChange, Control::kUpdateRestart}) {
           CHECK(LockedInSession(c, SessionLocks(in)) == want);
         }
+        // the language dropdown is locked exactly when the video "Restart now" is, in every row of this table
+        CHECK(LockedInSession(Control::kLanguage, SessionLocks(in)) ==
+              LockedInSession(Control::kVideoRestart, SessionLocks(in)));
         locked_states += want;
       }
     }
@@ -353,7 +356,7 @@ static void TestSessionLocks() {
   In s;
   s.in_session = true;
   CHECK(SessionLocks(s));
-  // a Starting lobby locks the four controls
+  // a Starting lobby locks the six controls
   CHECK(LockedInSession(Control::kExtras, SessionLocks(Open(State::kStarting, true))));
   CHECK(!LockedInSession(Control::kExtras, SessionLocks(Open(State::kHosting, true))));
 }

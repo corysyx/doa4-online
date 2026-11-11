@@ -11,10 +11,21 @@ REXCVAR_DEFINE_BOOL(doa4_helena_opera, false, "DOA4", "Helena's opera dress as a
 REXCVAR_DEFINE_BOOL(doa4_kokoro_kimonos, false, "DOA4", "Kokoro's pink and blue kimonos as extra costumes");
 REXCVAR_DEFINE_BOOL(doa4_christie_costume, false, "DOA4", "Christie's cutscene costume as an extra costume");
 
-// Video tab and F7: frames per second over the game. Host-only: not carried to the other player.
+// Game tab and F7: frames per second over the game. Host-only: not carried to the other player.
 REXCVAR_DEFINE_BOOL(doa4_show_fps, false, "DOA4", "Show frames per second over the game");
-REXCVAR_DEFINE_BOOL(doa4_skip_intro, true, "DOA4",
-                    "Skip the opening movie when the game starts (offline; online sessions skip every movie)");
+
+// Issue #4 (CPU heat): the loader and GPU fence waits sleep instead of spinning a core each (doa4_idle_waits.cpp). Read once
+// at start-up; not in the menu (a fallback and the A/B switch). Host-only: not carried to the other player (it changes no
+// guest state, only the host time between the guest's own checks).
+REXCVAR_DEFINE_BOOL(doa4_idle_waits, true, "DOA4", "Let the game's loader and GPU waits sleep instead of spinning (lower CPU use)");
+
+// Game tab: skip the boot intro (doa4_intro_skip.h), read once at start-up: the game starts at the title screen. Host-only: not
+// carried to the other player (a session skips every movie on both PCs anyway).
+REXCVAR_DEFINE_BOOL(doa4_skip_intro, true, "DOA4", "Skip the intro at start-up: start at the title screen");
+
+// Online tab: the start-up update notice (doa4_update_notice.h), read once at start-up. Host-only: not carried to the other
+// player (a session relaunch never checks and never shows it).
+REXCVAR_DEFINE_BOOL(doa4_update_notice, true, "DOA4", "Tell me about new versions at start-up");
 
 // First-run setup (doa4_gamefiles.h): the folder the setup chose. The command
 // line's --game_data_root overrides it.
@@ -65,6 +76,15 @@ REXCVAR_DEFINE_STRING(netplay_autojoin, "", "DOA4",
 // Rollback, milestone 1 (src/net/rb_wmap.h): measure which guest pages the game writes per frame (offline only).
 REXCVAR_DEFINE_BOOL(doa4_rb_wmap, false, "DOA4",
                     "Rollback research: log which memory pages the game writes each frame (offline play only)");
+// The game's text and subtitles language (doa4_language.h), saved when the player changes them on the game's own options
+// screen and applied at boot (doa4_language_hooks.cpp). -1: never saved, the game's own. Carried into a session (np_handoff
+// kPortSettings): both PCs boot with the host's, and nothing in a session saves them.
+REXCVAR_DEFINE_INT32(doa4_language, -1, "DOA4",
+                     "Game text language: -1 the game's own, 0 Japanese, 1 English, 2 French, 3 German, 4 Italian, "
+                     "5 Spanish, 6 Traditional Chinese, 7 Korean");
+REXCVAR_DEFINE_INT32(doa4_subtitles, -1, "DOA4",
+                     "Game subtitles language (Language > Subtitles in the game's options): -1 the game's own, 0-7 as the "
+                     "text language, 8 off/default");
 // Extras tab: DOAX2 swimsuits (doa4_suits_bust.h).
 REXCVAR_DEFINE_BOOL(doa4_suits_full_bust, false, "DOA4",
                     "DOAX2 swimsuits: full DOAX2 up and down breast movement");

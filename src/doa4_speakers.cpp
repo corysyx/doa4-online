@@ -1,4 +1,4 @@
-// The Audio tab's speaker choices. See doa4_speakers.h.
+// The Game tab's speaker choices. See doa4_speakers.h.
 
 #include "doa4_speakers.h"
 

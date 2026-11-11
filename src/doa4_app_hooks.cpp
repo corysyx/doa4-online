@@ -20,8 +20,11 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
+#include <rex/system/xthread.h>
 
+#include "doa4_intro_skip.h"
 #include "doa4_title_word.h"
+#include "doa4_update_notice.h"
 #include "generated/default/dead_or_alive_4_init.h"
 
 
@@ -77,8 +80,37 @@ void doa4::title_word::EnableWordDraw() { g_title_word.store(true, std::memory_o
 
 REX_HOOK_RAW(sub_823BB470) {
   const uint32_t draw = ctx.r3.u32;
-  if (!g_title_word.load(std::memory_order_acquire) ||
-      rex::memory::load_and_swap<uint32_t>(base + draw + 4) != doa4::title_word::kLogoSprite) {
+  const uint32_t sprite = rex::memory::load_and_swap<uint32_t>(base + draw + 4);
+  // The first title logo draw of the run (doa4_intro_skip.h): the intro skip's latch, set once, never reset.
+  if (doa4::intro_skip::NoteSpriteDraw(sprite)) {
+    auto* thread = rex::system::XThread::IsInThread() ? rex::system::XThread::GetCurrentThread() : nullptr;
+    REXLOG_INFO("[doa4][INTRO] first title logo draw at swap {} frame {} (lr {:08X}, {} thread {:#x})",
+                doa4::intro_skip::Swaps(), doa4::intro_skip::Frames(), uint32_t(ctx.lr),
+                thread && thread->main_thread() ? "main" : "guest", Tid());
+  }
+  // The start-up update notice (doa4_update_notice.h): every submission with its draw bit (byte 23 & 0x08; the original
+  // returns at once without drawing when it is clear). PRESS START (0x30001) drawn = the title on screen; a sprite id the
+  // title never drew, submitted while a press on the title is pending, confirms that press (R105). Logged, capped: PRESS
+  // START's draw-bit changes, each sprite id's first visible submission (the census), the confirming sprite.
+  {
+    const bool visible = (rex::memory::load<uint8_t>(base + draw + 23) & 0x08) != 0;
+    const uint32_t swap = doa4::intro_skip::Swaps();
+    const auto event = doa4::update_notice::Title().NoteDraw(sprite, visible, swap);
+    using E = doa4::update_notice::TitleWatch::Event;
+    static std::atomic<int> s_events{0}, s_new{0};
+    if (event == E::kConfirmed) {
+      REXLOG_INFO("[doa4][UPDATE] title: press confirmed by sprite {:#x} at swap {} frame {}", sprite, swap,
+                  doa4::intro_skip::Frames());
+    } else if (event == E::kNewSprite) {
+      if (s_new.fetch_add(1) < 64)
+        REXLOG_INFO("[doa4][UPDATE] sprite census: {:#x} first drawn at swap {}", sprite, swap);
+    } else if (event != E::kNone && s_events.fetch_add(1) < 64) {
+      REXLOG_INFO("[doa4][UPDATE] title: PRESS START {} at swap {} frame {}",
+                  event == E::kFirstVisible ? "first drawn" : event == E::kHidden ? "draw bit clear" : "drawn again", swap,
+                  doa4::intro_skip::Frames());
+    }
+  }
+  if (!g_title_word.load(std::memory_order_acquire) || sprite != doa4::title_word::kLogoSprite) {
     __imp__sub_823BB470(ctx, base);
     return;
   }
@@ -755,6 +787,86 @@ std::condition_variable g_loader_init_cv;
 bool g_loader_init_done = false;
 }  // namespace
 
+// Idle waits (issue #4, CPU heat; doa4_idle_wait.h, doa4_idle_waits.cpp): the loader loop below is the generated body of
+// sub_823FC5A0 (generated/default/dead_or_alive_4_recomp.9.cpp, DEFINE_REX_FUNC(sub_823FC5A0)) copied verbatim, so every
+// guest register, stack word and memory write stays what the guest loop makes. Two calls are added: the idle branch (the
+// slot was not queued) sleeps in doa4_loader_idle_wait after leaving the critical section, and a pass that ran a job
+// reports it (doa4_loader_ran_job, the missed-wake count). The original spins a host core on the idle branch.
+extern "C" bool doa4_idle_waits_on();
+extern "C" void doa4_loader_idle_wait(uint8_t* base);
+extern "C" void doa4_loader_ran_job();
+extern "C" {
+REX_EXTERN(__imp__RtlEnterCriticalSection);
+REX_EXTERN(__imp__RtlLeaveCriticalSection);
+REX_EXTERN(sub_8277EFC8);
+REX_EXTERN(__savegprlr_25);
+}
+
+static void LoaderLoopWithIdleWaits(PPCContext& __restrict ctx, uint8_t* base) {
+  REX_FUNC_PROLOGUE();
+  uint32_t ea{};
+  ctx.r12.u64 = ctx.lr;
+  ctx.lr = 0x823FC5A8;
+  __savegprlr_25(ctx, base);
+  ea = -160 + ctx.r1.u32;
+  REX_STORE_U32(ea, ctx.r1.u32);
+  ctx.r1.u32 = ea;
+  ctx.r11.s64 = -2096431104;
+  ctx.r25.s64 = 2;
+  ctx.r29.s64 = ctx.r11.s64 + -9268;
+  ctx.r11.s64 = -2096431104;
+  ctx.r26.s64 = 3;
+  ctx.r30.s64 = ctx.r11.s64 + -9464;
+loc_823FC5C4:
+  ctx.r3.u64 = ctx.r29.u64;
+  ctx.lr = 0x823FC5CC;
+  __imp__RtlEnterCriticalSection(ctx, base);
+  ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
+  ctx.r10.s64 = ctx.r30.s64 + 4;
+  ctx.r9.u64 = __builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 1) & 0xFFFFFFFE;
+  ctx.r11.u64 = ctx.r11.u64 + ctx.r9.u64;
+  ctx.r11.u64 = __builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 2) & 0xFFFFFFFC;
+  ctx.r31.u64 = ctx.r11.u64 + ctx.r10.u64;
+  ctx.r10.u64 = REX_LOAD_U8(ctx.r31.u32 + 0);
+  ctx.cr6.compare<uint32_t>(ctx.r10.u32, 1, ctx.xer);
+  if (!ctx.cr6.eq) goto loc_823FC640_idle;
+  REX_STORE_U8(ctx.r31.u32 + 0, ctx.r25.u8);
+  ctx.r3.u64 = ctx.r29.u64;
+  ctx.r9.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
+  ctx.r28.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
+  ctx.r27.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
+  REX_STORE_U32(ctx.r1.u32 + 80, ctx.r9.u32);
+  ctx.lr = 0x823FC60C;
+  __imp__RtlLeaveCriticalSection(ctx, base);
+  ctx.r4.u64 = ctx.r27.u64;
+  ctx.r3.u64 = ctx.r28.u64;
+  ctx.lr = 0x823FC618;
+  sub_8277EFC8(ctx, base);
+  doa4_loader_ran_job();  // added (missed-wake count); touches no guest state
+  ctx.r3.u64 = ctx.r29.u64;
+  ctx.lr = 0x823FC620;
+  __imp__RtlEnterCriticalSection(ctx, base);
+  REX_STORE_U8(ctx.r31.u32 + 0, ctx.r26.u8);
+  ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
+  ctx.r11.s64 = ctx.r11.s64 + 1;
+  ctx.cr6.compare<int32_t>(ctx.r11.s32, 16, ctx.xer);
+  REX_STORE_U32(ctx.r30.u32 + 0, ctx.r11.u32);
+  if (ctx.cr6.lt) goto loc_823FC640;
+  ctx.r11.s64 = 0;
+  REX_STORE_U32(ctx.r30.u32 + 0, ctx.r11.u32);
+loc_823FC640:
+  ctx.r3.u64 = ctx.r29.u64;
+  ctx.lr = 0x823FC648;
+  __imp__RtlLeaveCriticalSection(ctx, base);
+  goto loc_823FC5C4;
+loc_823FC640_idle:  // the same leave as loc_823FC640, reached from the "not queued" branch; then the added sleep
+  ctx.r3.u64 = ctx.r29.u64;
+  ctx.lr = 0x823FC648;
+  __imp__RtlLeaveCriticalSection(ctx, base);
+  doa4_loader_idle_wait(base);  // added: sleeps until the enqueue wakes it or 5 ms; touches no guest state
+  goto loc_823FC5C4;
+}
+
 REX_HOOK_RAW(sub_824F4560) {
   __imp__sub_824F4560(ctx, base);
   {
@@ -791,6 +903,10 @@ REX_HOOK_RAW(sub_823FC5A0) {
   } else {
     REXLOG_INFO("[doa4][FIX][Loader] loader thread starts after the critical section init ({}; waited {:.1f} ms)",
                 waited ? "it started before the init returned" : "the init had returned", ms);
+  }
+  if (doa4_idle_waits_on()) {
+    LoaderLoopWithIdleWaits(ctx, base);  // never returns, like the guest loop
+    return;
   }
   __imp__sub_823FC5A0(ctx, base);
 }

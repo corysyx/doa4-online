@@ -35,6 +35,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "../doa4_guest.h"
 #include "../doa4_photo.h"
@@ -113,11 +114,19 @@ void EarlyLog(const std::string& line);
 // (guest_skipped=).
 bool ApplyGuestText(const std::string& text, std::string* why, bool* touched);
 // Replay parity (R21): at OnPostInitLogging, a replay (DOA4_NP=replay) reads its recording's meta and applies the
-// recording's guest settings (when it has any) exactly as a session does; the unlock (meta unlock=1) runs in the frame
-// hook. No-op otherwise.
+// recording's guest settings (when it has any) exactly as a session does, except that a port setting the recording
+// predates is applied at its default, logged "replay: the recording has no <name>; using its default <value> ..." (R13,
+// handoff::CompleteGuestText); the unlock (meta unlock=1) runs in the frame hook. No-op otherwise.
 void PrepareReplayRules();
 bool Online();
-// The hand-off's doa4_suits_full_bust in a session ("true" reads true), nothing outside one. Fixed when the session starts.
+// A replay (DOA4_NP=replay) that was not refused: set by Start before any guest code runs.
+bool Replaying();
+// A carried guest setting's value for this process (R1): the hand-off's text in an online session, the recording's
+// guest text (meta guest=, ';'-joined, "(none)" for none) in a replay, nothing otherwise; nothing too for a name the
+// text lacks (a recording made before the name was carried). Fixed once Start has run, before any guest code.
+std::optional<std::string> SessionGuestValue(std::string_view name);
+// The hand-off's doa4_suits_full_bust in a session ("true" reads true), nothing outside one (a replay included). Fixed
+// when the session starts.
 std::optional<bool> SessionFullBust();
 // True in an online session whose hand-off says mixed. Costume code acts on it; nothing else does.
 bool SessionSuitsMixed();

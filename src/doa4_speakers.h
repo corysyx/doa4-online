@@ -1,4 +1,4 @@
-// The Audio tab's speaker choices: what each row shows, the audio_speakers
+// The Game tab's speaker choices: what each row shows, the audio_speakers
 // value it saves, and the read-out of the output device. No SDK headers, so a
 // host test can check the values against the SDK's accepted ones.
 

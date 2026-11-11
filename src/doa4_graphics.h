@@ -1,4 +1,4 @@
-// The Video tab's graphics choices: what each row shows and the cvar value it
+// The Game tab's graphics choices: what each row shows and the cvar value it
 // saves. No SDK headers, so a host test can check the values against the
 // SDK's accepted ones.
 

@@ -5,15 +5,17 @@
 **Dead or Alive 4 Online** is a native Windows build of **Dead or Alive 4** (Xbox 360) with two-player
 online play, statically recompiled with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). It
 also builds **34 swimsuits from Dead or Alive Xtreme 2** (DOAX2) on your PC from your own disc, as extra
-costumes. This is **alpha 0.3.0**: it works and is used, but it is still an alpha, and the
+costumes. This is **alpha 0.3.2**: it works and is used, but it is still an alpha, and the
 [known issues](#known-issues) are listed below. **No game data is included.** You need your own copy of
 the game, and the swimsuits need your own DOAX2 disc.
 
 It is a fork of [parkerallan/doa4-recomp](https://github.com/parkerallan/doa4-recomp), published at
 [Dwreckgg/doa4-online](https://github.com/Dwreckgg/doa4-online). On top of it: two-player **online
-play**, frame pacing, an Esc menu (Video / Audio / Controls / Photo / Extras / Online / Game tabs),
-graphics options, full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts
-the game files. Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
+play**, frame pacing, an Esc menu (Game / Controls / Photo / Extras / Online tabs), graphics and display
+options (exclusive fullscreen, VSync, output size), the game's text language and subtitles saved between
+starts, an option to skip the boot intro, a notice on the title screen when a new version is out,
+full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts the game files.
+Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Easy setup: play online with a friend
 
@@ -60,6 +62,14 @@ If the friend's game shows its own code while connecting, the host can type it u
 ## Online play in more detail
 
 **How it works:** online play links the two games so they play as if both players sat at one console. The host is player 1 and the friend is player 2 of an ordinary offline game (pick **Versus**, characters and a stage as you would at home), and each player's controller input is sent to the other PC. The game's own online mode (its Xbox Live menus) does not work: there are no Xbox Live lobbies, matchmaking or avatars. Connect through the Esc menu's **Online** tab instead.
+
+**Language in a session:** both games use the host's text language and subtitles. Your own choice is not
+changed, and it is back when the session ends.
+
+**Slower PCs:** both games run at the speed of the slower PC. On a CPU with fewer cores (for example 4
+cores) the game can slow down a lot when playing online. Online, avoid the CPU-heavy stages, such as
+Savannah Safari and Experimental Playground, and avoid the DOAX2 swimsuits: they take more CPU than the
+original DOA4 costumes.
 
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
@@ -138,6 +148,10 @@ newest release, downloads its three files, checks each against its `SHA256SUMS.t
 asks you to restart. Press it again if it says to. It is off while you are online. Both players need the
 same release. You can also download the new zip and unzip it over the old folder.
 
+When a newer release is out, the title screen also says so ("Update available:" with its version number)
+until you press Start. It only tells you and downloads nothing; turn it off in the Online tab with **Tell me
+about new versions at start-up**.
+
 - **The launcher is retired for now.** The DOA4 launcher is not shipped with the releases any more, and its
   Update button should no longer be used: start `dead_or_alive_4.exe` and use **Check for Updates**. It may come
   back later.
@@ -149,21 +163,41 @@ same release. You can also download the new zip and unzip it over the old folder
 
 Press **Esc** at any time in the game to open the menu, and **Esc** again (or **Close (Esc)** at the
 bottom) to close it. Your choices are saved to `dead_or_alive_4.toml` next to the exe and come back on
-the next start. The menu has seven tabs:
+the next start. The menu has five tabs: **Game**, **Controls**, **Photo**, **Extras** and **Online**.
 
-**Video**
-- **Display mode:** Windowed or Borderless fullscreen.
+**Game**, from the top:
+- **Display mode:** Windowed, Borderless fullscreen, or Exclusive fullscreen (experimental). The note
+  under it: "Experimental: measured no lower input lag than borderless fullscreen."
+- **VSync** (off unless you turn it on): "Removes tearing on monitors without G-Sync/FreeSync; can add up
+  to one screen refresh of input lag."
+- **Output size:** the size of the window in Windowed, the monitor mode in Exclusive fullscreen, and
+  always the desktop size in Borderless fullscreen. "The size the picture is shown at. Render scale sets
+  how sharp the game draws."
+- **Show FPS over the game (F7).**
 - **Render scale:** x1 (1280x720), x2 (2560x1440), x3 (3840x2160) or x4 (5120x2880, supersampling).
-  It takes effect after a restart; **Restart now** restarts the game for you.
-- **Anti-aliasing:** Off, FXAA or FXAA Extreme. The game already uses 2x MSAA, and FXAA Extreme suits
-  it best (FXAA softens text a little).
-- **Texture filtering:** Off, 2x, 4x, 8x or 16x anisotropic filtering. You may see it after the next
-  screen loads.
+  It takes effect after a restart: until then the tab says "Applies after a restart (running at x1)."
+  (with the scale the game runs at), and **Restart now** restarts the game for you.
+- **Anti-aliasing:** Off, FXAA or FXAA Extreme. "The game uses 2x MSAA; FXAA Extreme suits it best. FXAA
+  also softens text a little."
+- **Texture filtering:** Off, 2x, 4x, 8x or 16x. "Applies to textures as the game draws them; you may
+  see it after the next screen loads."
+- **Speakers:** Automatic, Stereo or 5.1 surround. "Automatic follows Windows: 5.1 when the speakers are
+  set to 5.1 or more, stereo otherwise. 5.1 surround always sends six channels." It takes effect after a
+  restart: until then the tab says "Applies after a restart (running on Automatic)." (with the choice
+  the game runs on) and offers **Restart now**. **Output device** under it shows how many channels your
+  device has and what the game is sending.
+- **Language:** the game's text language: English, Japanese, French, German, Italian, Spanish,
+  Traditional Chinese or Korean. Your pick is applied to the running game and kept for the next start.
+  The text language and subtitles you choose on the game's own options screen are kept the same way.
+- **Start-up:** **Skip the intro at start-up** (off unless you turn it on): "Starts at the title screen.
+  Applies at the next start."
+- **Game files:** the folder the game runs from, with **Change...** to pick another and **Open
+  folder**. "A new location is used from the next start."
+- **Saves:** the folder that holds your saves and shader cache.
 
-**Audio**
-- **Speakers:** Automatic (follows Windows: 5.1 when your speakers are set to 5.1 or more, stereo
-  otherwise), Stereo, or 5.1 surround. It takes effect after a restart (**Restart now**).
-- **Output device:** shows how many channels your device has and what the game is sending.
+The top of the Game tab:
+
+![The top of the Esc menu's Game tab: display mode, VSync, output size, Show FPS, render scale, anti-aliasing, texture filtering and speakers](docs/images/game-tab.png)
 
 **Controls**
 - **Controller:** pick **Player 1** to **Player 4**, then click a button in the list and press the
@@ -188,6 +222,10 @@ the next start. The menu has seven tabs:
   stages, or Unlock everything. Load your profile first (reach the main menu). Before the first unlock
   the game backs up your save, and the tab shows where.
 - **Game tweaks:** "All stages in Tag battle" and "Hidden characters in multiplayer select".
+- **Extra costumes:** "Helena's opera dress", "Kokoro's pink and blue kimonos" and "Christie's cutscene
+  costume", added after each character's own costumes.
+- **Wipe unlocks...** locks everything again, as in a new save, after it asks; a backup of your save is
+  made first.
 - **DOAX2 swimsuits:** **Import DOAX2 swimsuits...** (or **Import again...**), then **Restart now** to
   use them; see [DOAX2 swimsuits](#doax2-swimsuits).
 
@@ -203,16 +241,13 @@ the next start. The menu has seven tabs:
 - **Show ping and input delay over the game (F9).**
 - **Check for Updates** downloads the newest release, and **Open session logs** opens the folder of
   online session logs. **About** shows which version you run.
-
-**Game**
-- **Game files:** the folder the game runs from, with **Change...** to pick another (used from the
-  next start) and **Open folder**.
-- **Saves:** the folder that holds your saves and shader cache.
-
-![The Esc menu's Game tab: the game files folder (with Change... and Open folder) and the saves folder](docs/images/game-tab.png)
+- **Tell me about new versions at start-up** (on unless you turn it off): when a newer release is out,
+  the title screen shows "Update available:" with its version number (for example "Update available:
+  0.3.2") until you press Start. It only tells you; **Check for Updates** does the download.
 
 During an online session some options are locked so both games stay identical: the Extras tab, options
-that need a restart, and changing the game folder.
+that need a restart, the language, and changing the game folder. Settings changed during a session are
+restored when it ends.
 
 **Hotkeys**
 
@@ -220,6 +255,7 @@ that need a restart, and changing the game folder.
 |---|---|
 | **Esc** | Opens and closes the menu |
 | **F12** | Saves a photo |
+| **F7** | Shows the frames per second |
 | **F9** | Shows the online ping and input delay |
 | **F6** | Shows the diagnostics overlay |
 | **F8** | Online: marks the moment of a sound or timing glitch in the session log (send the log with your report) |
@@ -235,6 +271,12 @@ that need a restart, and changing the game folder.
 - **Photos** go to `Pictures\DOA4` unless the Photo tab says otherwise (**Open folder** opens it).
 - **Logs:** `logs\dead_or_alive_4_NNN.log` next to the exe. Send the newest one with a bug report.
 - **Online session logs:** **Open session logs** in the Online tab ([Online play in more detail](#online-play-in-more-detail)).
+
+## Linux
+
+Linux is not officially supported yet. One player reports that under Proton and Wine (GE-Proton11-12) the game does not
+open as intended: it shows only a black screen. They could still join an online session with another player, and after
+that the game ran fine. Solo offline play does not seem to work under Linux for now.
 
 ## Troubleshooting
 
@@ -270,7 +312,9 @@ that need a restart, and changing the game folder.
 | The profile / storage device screen on the first start hides the mouse pointer, which makes it awkward to click through. | A fix is planned: the screen should work with a controller or keyboard, or show the pointer. |
 | The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
 | Online: if the joining player presses Start at the title screen, the session can freeze for both players. | Only the host should press Start; if it freezes, leave the session and start a new one. |
+| Online: on a CPU with fewer cores (for example 4 cores) the game can slow down a lot, because both games run at the speed of the slower PC. | Avoid the CPU-heavy stages, such as Savannah Safari and Experimental Playground, when playing online. Avoid the DOAX2 swimsuits online too: they take more CPU than the original DOA4 costumes. |
 | Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
+| Linux (Proton / Wine): the game starts to a black screen instead of opening as intended (reported by one player on GE-Proton11-12). | Joining an online session with another player is reported to still work, and the game runs fine after that. Solo offline play does not seem to work yet. |
 
 ## Roadmap
 
@@ -280,6 +324,8 @@ Planned, no dates:
 - Online lobbies with up to 4 players.
 - Costumes imported from other DOA titles, for example Dead or Alive 2 Ultimate (each from your own disc, as
   with DOAX2).
+- A free camera / noclip mode.
+- A toggle to show hitboxes and hurtboxes.
 
 ## Credits
 
@@ -310,6 +356,10 @@ Planned, no dates:
 
 The same names, and the licences of the code taken, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Contributing
+
+Pull requests are welcome. To build the game yourself, see [docs/BUILDING.md](docs/BUILDING.md).
+
 ## Reporting bugs
 
 Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-online/issues):
@@ -322,6 +372,11 @@ Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-online/issues)
 3. Attach the newest log, `logs\dead_or_alive_4_NNN.log` next to the exe. For a problem online, also
    attach the newest folder from **Open session logs** in the Online tab. Both players' logs help most.
 4. Do not attach game files, disc images or anything extracted from them.
+
+## License
+
+This project is under the [MIT License](LICENSE). Third-party code keeps its own licenses, listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No game data is included. You need your own copy of the game.
 
 ## AI disclosure
 

@@ -1,4 +1,4 @@
-// Host test for src/doa4_graphics.cpp (the Video tab's graphics choices).
+// Host test for src/doa4_graphics.cpp (the Game tab's graphics choices).
 // Built and run by run_graphics_test.bat.
 
 #include "../../src/doa4_graphics.h"

@@ -3,6 +3,7 @@
   py -3 -I tests/tools/test_np_tools.py
 """
 import contextlib
+import hashlib
 import importlib.util
 import io
 import os
@@ -2676,6 +2677,18 @@ def test_pair_hidden_launch(root):
           f"np_pair starts the third joiner hidden too: {got}")
 
 
+def test_pair_show_host(root):
+    # Task 7 (R46): --show-host starts the host with the window state it asks for (a measurement of presentation); the
+    # joiner stays minimized without activation. The default (test_pair_hidden_launch) hides both.
+    code, out, runs = np_pair(root, "sh", "--show-host", FAKE_STARTUP_NOTE="1")
+    check(code == 0, f"np_pair --show-host: exit {code}\n{out}")
+    host, joiner = startup_note(runs, "sh_host"), startup_note(runs, "sh_joiner")
+    check(host is not None and not host[1] & STARTF_USESHOWWINDOW and host[0] != SW_SHOWMINNOACTIVE,
+          f"np_pair --show-host: the host has no show-window flag and not 7: {host}")
+    check(joiner is not None and joiner[0] == SW_SHOWMINNOACTIVE and joiner[1] & STARTF_USESHOWWINDOW,
+          f"np_pair --show-host: the joiner still starts with wShowWindow 7 and STARTF_USESHOWWINDOW: {joiner}")
+
+
 def test_pair_joiner_game(root):
     # fix-filetimes: --joiner-game gives the joiner (and a third joiner) their own game folder, the host keeps --game (the
     # launch command is the first line of command.txt)
@@ -3640,6 +3653,703 @@ def test_pair_session_refused(root):
     code, out, runs = np_pair(root, "rso", "--expect", "refused-session", "--env-joiner", "DOA4_NP_TEST_NO_RESTART=1",
                               "--env-host", "FAKE_ONLINE_NO_OFFLINE=1")
     check(code == 1 and "offline relaunch" in out, f"np_pair, refused-session without the host's offline relaunch: exit {code}\n{out}")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Task 7 (DOA4 Online update): np_lag.py, the input-lag matrix's driver and analyser, on synthetic traces.
+# ---------------------------------------------------------------------------------------------------------------------
+LAG_COLUMNS_T7 = ("frame,t_input_us,t_frame_start_us,t_guest_swap_us,t_host_present_us,guest_swap_index,np_frame,t_np_done_us,"
+                  "t_frame_fn_done_us,t_swap_call_us,t_swap_return_us,t_present_call_us,pad_calls_main,pad_calls_other,"
+                  "swap_calls_main,swap_calls_other,present_flags,fight_state")
+# Task 8 (R56): the GPU thread's marks of the joined present's swap packet, after fight_state
+LAG_COLUMNS = LAG_COLUMNS_T7 + (",t_gpu_wait_enter_us,t_vblank_us,t_gpu_wait_wake_us,t_gpu_swap_us,gpu_wait_us,gpu_waits,"
+                                "gpu_wait_poll,gpu_wait_ref,gpu_wait_info,gpu_after_wait_packets,gpu_after_wait_sig,gpu_flags")
+
+
+def lag_trace(path, frames, first_np=3394, break_swap_at=None, negative_at=None, fight=lambda i: 2, gpu=True, early=False,
+              present_flags=1):
+    """A synthetic lagtrace CSV: `frames` 60 fps frames from np_frame first_np, each with all points (frame start, +0.1 session,
+    +0.3 frame fn, +0.5 pad, +9 swap call, +9.2 VdSwap, +9.4 swap return, +9.6 GPU wait entry, +10.5 guest vblank, +10.55 GPU
+    wait wake, +10.6 GPU swap packet, +11 Present call, +11.4 return; ms). break_swap_at: that row has no swap index and no
+    present (a join miss); negative_at: that row's Present return is before its call; fight(i): row i's fight_state (2, a
+    round, by default); gpu=False: Task 7's header, without the GPU-thread columns. early=True: every frame presented early
+    (present_before_vblank_wait: gpu_flags 1, the early IssueSwap stamped 0.02 ms after the wait entry, no vblank, no
+    wake, the wait's parameters known). present_flags: every presented row's present_flags (1: tearing allowed), an int or
+    a function of the row index."""
+    lines = [LAG_COLUMNS if gpu else LAG_COLUMNS_T7]
+    for i in range(frames):
+        t = 1_000_000 + i * 16_667
+        swap, call, ret = i + 1, t + 11_000, t + 11_400
+        if i == break_swap_at:
+            swap, call, ret = 0, None, None
+        if i == negative_at:
+            ret = call - 50
+        v = [i + 1, t + 500, t, t + 9_200, ret, swap, first_np + i, t + 100, t + 300, t + 9_000, t + 9_400, call, 4, 0, 1, 0,
+             (present_flags(i) if callable(present_flags) else present_flags) if call else None, fight(i)]
+        if gpu and early:
+            v += ([t + 9_600, None, None, t + 9_620, 0, 1, 123, 4, 19, 0, 0, 1] if call else [None] * 12)
+        elif gpu:
+            v += ([t + 9_600, t + 10_500, t + 10_550, t + 10_600, 900, 1, 123, 4, 19, 2, 25728, 0] if call else [None] * 12)
+        lines.append(",".join("" if x is None else str(x) for x in v))
+    with open(path, "w", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def test_lag_columns_match_source(root):
+    # the analyser's synthetic traces use the game's own header (src/doa4_lagtrace.cpp CsvHeader), read from the source
+    src = open(os.path.join(TOOLS, "..", "src", "doa4_lagtrace.cpp")).read()
+    m = re.search(r'std::string CsvHeader\(\) \{\s*return ((?:"[^"]*"\s*)+);', src)
+    header = "".join(re.findall(r'"([^"]*)"', m.group(1))) if m else None
+    check(header == LAG_COLUMNS, f"np_lag: the CSV header in doa4_lagtrace.cpp is LAG_COLUMNS: {header}")
+    lag = load("np_lag")
+    # every point column is a trace column, except the ones np_lag derives on reading (DERIVED_COLUMNS: the early IssueSwap)
+    check(set(lag.POINTS.values()) - set(lag.DERIVED_COLUMNS) <= set(LAG_COLUMNS.split(",")) and lag.DERIVED_COLUMNS == ("t_gpu_early_swap_us",),
+          "np_lag: every point column is a trace column (or derived)")
+
+
+def test_lag_percentile_and_spread(root):
+    lag = load("np_lag")
+    v = list(range(1, 11))  # 1..10, shuffled order must not matter
+    v = v[5:] + v[:5]
+    # linear interpolation between closest ranks (numpy's default): NOT nearest-rank (5, 10, 10)
+    check(lag.percentile(v, 50) == 5.5, f"np_lag percentile p50 of 1..10 = 5.5: {lag.percentile(v, 50)}")
+    check(abs(lag.percentile(v, 95) - 9.55) < 1e-9, f"np_lag percentile p95 of 1..10 = 9.55: {lag.percentile(v, 95)}")
+    check(abs(lag.percentile(v, 99) - 9.91) < 1e-9, f"np_lag percentile p99 of 1..10 = 9.91: {lag.percentile(v, 99)}")
+    check(lag.percentile([7.0], 99) == 7.0 and lag.percentile([], 50) is None, "np_lag percentile: one value, no value")
+    s = lag.summary([3.0, 1.0, 2.0])
+    check(s["n"] == 3 and s["median"] == 2.0 and abs(s["p95"] - 2.9) < 1e-9 and abs(s["p99"] - 2.98) < 1e-9, f"np_lag summary: {s}")
+    # spread: max - min of the runs' medians, NOT the pooled range or the stdev
+    check(lag.spread([10.0, 12.5, 11.0]) == 2.5 and lag.spread([4.0]) == 0 and lag.spread([]) is None and lag.spread([None, 3.0, 5.0]) == 2.0,
+          "np_lag spread: max - min of the medians, None ignored")
+
+
+def test_lag_check(root):
+    lag = load("np_lag")
+    good = lag_trace(os.path.join(root, "good.csv"), 3700, first_np=3300)
+    rows = lag.window_rows(lag.read_trace(good))
+    check(len(rows) == 3600 and rows[0]["np_frame"] == 3394 and rows[-1]["np_frame"] == 6993,
+          f"np_lag window: np_frame 3394..6993, 3600 rows: {len(rows)} {rows[0]['np_frame'] if rows else None}")
+    n, ws, joined, neg = lag.check_trace(rows)
+    check((n, ws, joined, neg) == (3600, 3600, 3600, []), f"np_lag check_trace on a whole trace: {(n, ws, joined, len(neg))}")
+    # the instrument's check end to end: ok on the good trace; FAILED on one with a removed swap index and a negative time
+    bad = lag_trace(os.path.join(root, "bad.csv"), 3700, first_np=3300, break_swap_at=200, negative_at=300)
+    runs = []
+    for path in (good, bad):
+        p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_lag.py"), "check", path], capture_output=True, text=True, timeout=60)
+        runs.append((p.returncode, p.stdout + p.stderr))
+    check(runs[0][0] == 0 and "check ok" in runs[0][1] and "3600 joined to a host present (100.00% of the frames)" in runs[0][1],
+          f"np_lag check, good trace: {runs[0]}")
+    check(runs[1][0] == 1 and "check FAILED" in runs[1][1] and "3599 joined" in runs[1][1] and "negative stage times 1" in runs[1][1]
+          and "host Present call -> host Present return = -0.050 ms" in runs[1][1], f"np_lag check, broken trace: {runs[1]}")
+    # coverage alone fails it: 99 % is the floor, met exactly by 36 misses in 3600 (35 = 99.03 % and 36 = 99.00 % pass,
+    # 37 = 98.97 % fails)
+    for misses, want in ((35, 0), (36, 0), (37, 1)):
+        path = os.path.join(root, f"miss{misses}.csv")
+        lag_trace(path, 3700, first_np=3300)
+        lines = open(path).read().splitlines()
+        for k in range(misses):  # rows 101.. of the window: no swap, no present
+            parts = lines[1 + 94 + 100 + k].split(",")
+            parts[3:6], parts[11], parts[16] = ["", "", "0"], "", ""
+            lines[1 + 94 + 100 + k] = ",".join(parts)
+        open(path, "w", newline="\n").write("\n".join(lines) + "\n")
+        p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_lag.py"), "check", path], capture_output=True, text=True, timeout=60)
+        check(p.returncode == want, f"np_lag check with {misses} join misses in 3600 frames: exit {p.returncode} (want {want})\n{p.stdout}")
+
+
+def test_lag_stages(root):
+    lag = load("np_lag")
+    rows = lag.window_rows(lag.read_trace(lag_trace(os.path.join(root, "t.csv"), 3600)))
+    order, offs = lag.measured_order(rows, list(lag.POINTS))
+    check(order == ["frame start", "session step done", "frame function done", "pad read", "swap call", "guest VdSwap",
+                    "swap return", "GPU wait entry", "guest vblank", "GPU wait wake", "GPU swap packet", "host Present call",
+                    "host Present return"], f"np_lag measured order: {order}")
+    # Task 8 (R56): the GPU thread's own work on a frame = the PREVIOUS frame's host Present return -> this frame's GPU wait
+    # entry (16.667 - 11.4 + 9.6 = 14.867 ms); NOT this frame's own Present return (-1.8) or the previous Present call (15.267)
+    gw = lag.gpu_work(rows)
+    check(len(gw) == 3599 and all(abs(x - 14.867) < 1e-9 for x in gw), f"np_lag gpu_work = 14.867 ms over 3599 pairs: {gw[:2]} {len(gw)}")
+    gw_gap = lag.gpu_work(rows[:100] + rows[101:])  # a missing frame: no pair across the gap (NOT 31.534 ms)
+    check(len(gw_gap) == 3597 and all(abs(x - 14.867) < 1e-9 for x in gw_gap), f"np_lag gpu_work over a gap: {len(gw_gap)} {max(gw_gap)}")
+    v = lag.stage_values(rows, "GPU wait wake", "GPU swap packet")
+    check(len(v) == 3600 and all(abs(x - 0.05) < 1e-9 for x in v), f"np_lag stage GPU wait wake -> GPU swap packet = 0.05 ms: {v[:2]}")
+    # a Task 7 trace (no GPU-thread columns) still analyses: the GPU points are left out, and there is no GPU work
+    t7 = lag.window_rows(lag.read_trace(lag_trace(os.path.join(root, "t7.csv"), 3600, gpu=False)))
+    order7, _ = lag.measured_order(t7, list(lag.POINTS))
+    check(order7 == ["frame start", "session step done", "frame function done", "pad read", "swap call", "guest VdSwap",
+                     "swap return", "host Present call", "host Present return"] and lag.gpu_work(t7) == [],
+          f"np_lag on a Task 7 trace: {order7} {lag.gpu_work(t7)[:2]}")
+    # the order follows the data, not the list: a trace whose pad read comes after the swap call puts it there
+    late = os.path.join(root, "late.csv")
+    lines = open(lag_trace(late, 3600)).read().splitlines()
+    out = [lines[0]]
+    for line in lines[1:]:
+        p = line.split(",")
+        p[1] = str(int(p[2]) + 9_100)  # pad read 9.1 ms after the frame start: between swap call (9.0) and VdSwap (9.2)
+        out.append(",".join(p))
+    open(late, "w", newline="\n").write("\n".join(out) + "\n")
+    order2, _ = lag.measured_order(lag.window_rows(lag.read_trace(late)), list(lag.POINTS))
+    check(order2.index("pad read") == order2.index("swap call") + 1, f"np_lag measured order follows the data: {order2}")
+    vals = lag.stage_values(rows, "pad read", "host Present return")
+    check(len(vals) == 3600 and all(abs(x - 10.9) < 1e-9 for x in vals), f"np_lag stage pad read -> Present return = 10.9 ms: {vals[:2]}")
+    tail = lag.loop_tail(rows)
+    check(len(tail) == 3599 and all(abs(x - 7.267) < 1e-9 for x in tail), f"np_lag loop tail = 16.667 - 9.4 ms: {tail[:2]}")
+    check(abs(lag.fps(rows) - 1e6 / 16_667) < 1e-6, f"np_lag fps: {lag.fps(rows)}")
+
+
+def test_lag_presentmon(root):
+    lag = load("np_lag")
+    freq = 10_000_000
+    pm = os.path.join(root, "pm.csv")
+    # PresentMon --v1_metrics --qpc_time columns (QPCTime in ticks); two processes; one row 0.3 ms off, one 2 ms off (no join),
+    # and a decoy row 0.6 ms after the first that is NOT the nearest
+    rows_pm = ["Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,AllowsTearing,PresentMode,Dropped,QPCTime,"
+               "msInPresentAPI,msBetweenPresents,msUntilRenderComplete,msUntilDisplayed,msBetweenDisplayChange"]
+
+    def pm_row(pid, t_us, until, between, mode="Hardware: Independent Flip", tear=1, dropped=0):
+        return f"dead_or_alive_4.exe,{pid},0x1,DXGI,0,576,{tear},{mode},{dropped},{int(t_us * freq // 1_000_000)},0.2,16.7,1.0,{until},{between}"
+    rows_pm.append(pm_row(4242, 1_011_300, 5.0, 16.7))   # 0.3 ms after the first frame's Present call (1_011_000)
+    rows_pm.append(pm_row(4242, 1_011_900, 9.0, 16.7))   # decoy, 0.9 ms after
+    rows_pm.append(pm_row(4242, 1_029_667, 4.0, 16.6))   # the second frame's call exactly (1_027_667) + 2 ms: no join
+    rows_pm.append(pm_row(999, 1_044_334, 3.0, 16.7, mode="Composed: Flip"))  # another process at the third call: ignored
+    rows_pm.append(pm_row(4242, 1_044_334, 0, 16.7, dropped=1))  # the third frame's call, not displayed
+    open(pm, "w", newline="\n").write("\n".join(rows_pm) + "\n")
+    got = lag.read_presentmon(pm, 4242, freq)
+    check(len(got) == 4 and all(g["mode"] == "Hardware: Independent Flip" for g in got), f"np_lag read_presentmon: pid filter: {got}")
+    check(abs(got[0]["t_us"] - 1_011_300) < 1e-6, f"np_lag read_presentmon: QPC ticks to us: {got[0]['t_us']}")
+    rows = lag.window_rows(lag.read_trace(lag_trace(os.path.join(root, "t.csv"), 3)))
+    joined, dts = lag.join_presentmon(rows, got)
+    check(joined == 2 and sorted(round(d) for d in dts) == [0, 300], f"np_lag join_presentmon: 2 joined (0.3 ms and 0): {joined} {dts}")
+    check(rows[0]["displayed_us"] == 1_011_000 + 5_000, f"np_lag join: the nearest row (5.0 ms), NOT the decoy (9.0): {rows[0]['displayed_us']}")
+    check(rows[1]["displayed_us"] is None, "np_lag join: a row 2 ms off is not joined")
+    check(rows[2]["displayed_us"] is None, "np_lag join: a joined row that was not displayed has no display time")
+    bad = os.path.join(root, "pm_bad.csv")
+    open(bad, "w").write("Application,ProcessID\nx,1\n")
+    try:
+        lag.read_presentmon(bad, 1, freq)
+        check(False, "np_lag read_presentmon: a capture without PresentMode raises")
+    except ValueError:
+        check(True, "np_lag read_presentmon: a capture without PresentMode raises")
+
+
+def test_lag_run_rules(root):
+    lag = load("np_lag")
+    # the run label: a foreign dead_or_alive_4.exe or any deadlock/RocketLeague process makes the run "shared"
+    samples = [(0, {"dead_or_alive_4.exe": {10, 11}, "deadlock.exe": set(), "rocketleague.exe": set()})]
+    check(lag.label_run(samples, {10, 11})[0] == "clean", "np_lag label: only the run's own games: clean")
+    check(lag.label_run(samples, {10})[0] == "shared", "np_lag label: a game the run did not start: shared")
+    samples2 = [(0, {"dead_or_alive_4.exe": {10}, "deadlock.exe": set(), "rocketleague.exe": {77}})]
+    lab, seen = lag.label_run(samples2, {10})
+    check(lab == "shared" and any("rocketleague.exe pid 77" in s for s in seen), f"np_lag label: RocketLeague seen: {lab} {seen}")
+    # refusals before anything starts
+    snap = os.path.join(root, "snap")
+    os.makedirs(snap)
+    for f in lag.SNAPSHOT_FILES:
+        open(os.path.join(snap, f), "w").write("x")
+    for extra, needle in ((["--mode", "borderless", "--kind", "pair", "--affinity", "0x3"], "only the joiner"),
+                          # Task 11: exclusive's own keys are mode keys too
+                          (["--mode", "exclusive", "--kind", "offline", "--set", "fullscreen_exclusive=false"], "already set"),
+                          # Task 9b --set: a mode key, a malformed item, a key twice
+                          (["--mode", "borderless", "--kind", "offline", "--set", "fullscreen=false"], "already set"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync"], "not KEY=VALUE"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "Present_Vsync=true"], "not KEY=VALUE"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "audio_mute=false"], "already set"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=true", "--set",
+                            "present_vsync=false"], "already set"),
+                          # Task 9b review M4: a value with a newline (a smuggled second toml line), a space, a wrong-case
+                          # boolean
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=true\nfullscreen=true"],
+                           "control"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "x_y=a b"], "a space"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=True"], "lower case"),
+                          (["--mode", "windowed", "--kind", "offline", "--set", "present_vsync=yes"], "lower case")):
+        p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_lag.py"), "run", "c", "--bin", snap, "--out",
+                            os.path.join(root, "out"), *extra], capture_output=True, text=True, timeout=60)
+        check(p.returncode != 0 and needle in p.stderr and not os.path.exists(os.path.join(root, "out", "lag")),
+              f"np_lag run refuses {extra}: exit {p.returncode} {p.stderr}")
+    # the settings file of a run: audio muted and the mode's key
+    text, sha = lag.make_bin(snap, os.path.join(root, "bin_b"), lag.MODE_KEYS["borderless"])
+    on_disk = open(os.path.join(root, "bin_b", "dead_or_alive_4.toml"), "rb").read()
+    check(on_disk == b"audio_mute = true\nfullscreen = true\n" and sha == hashlib.sha256(on_disk).hexdigest(),
+          f"np_lag make_bin: the toml {on_disk!r}")
+    check(lag.MODE_KEYS["windowed"] == {"fullscreen": "false"}, "np_lag: windowed is fullscreen = false")
+    # Task 11: exclusive writes fullscreen = true AND fullscreen_exclusive = true (exclusive is a sub-mode of fullscreen,
+    # sdk window.cpp: fullscreen_exclusive alone leaves the window windowed); windowed and borderless write neither
+    # fullscreen_exclusive nor present_vsync (the game's defaults: off)
+    text_x, sha_x = lag.make_bin(snap, os.path.join(root, "bin_x"), lag.MODE_KEYS["exclusive"] or {})
+    on_disk_x = open(os.path.join(root, "bin_x", "dead_or_alive_4.toml"), "rb").read()
+    check(on_disk_x == b"audio_mute = true\nfullscreen = true\nfullscreen_exclusive = true\n" and
+          sha_x == hashlib.sha256(on_disk_x).hexdigest(), f"np_lag make_bin exclusive: the toml {on_disk_x!r}")
+    for mode in ("windowed", "borderless"):
+        _, _ = lag.make_bin(snap, os.path.join(root, f"bin_d_{mode}"), lag.MODE_KEYS[mode])
+        d = open(os.path.join(root, f"bin_d_{mode}", "dead_or_alive_4.toml"), "rb").read()
+        check(b"fullscreen_exclusive" not in d and b"present_vsync" not in d and d.startswith(b"audio_mute = true\nfullscreen = "),
+              f"np_lag make_bin {mode}: neither fullscreen_exclusive nor present_vsync: {d!r}")
+    # Task 9b --set: the measured game's toml gets the mode's key, then each --set line as written, in order
+    keys = lag.run_keys(lag.MODE_KEYS["borderless"], ["present_vsync=true", "x_y=2"])
+    check(list(keys.items()) == [("fullscreen", "true"), ("present_vsync", "true"), ("x_y", "2")], f"np_lag run_keys: {keys}")
+    check(lag.MODE_KEYS["borderless"] == {"fullscreen": "true"}, "np_lag run_keys: the mode's keys are not changed")
+    text2, sha2 = lag.make_bin(snap, os.path.join(root, "bin_v"), keys)
+    on_disk2 = open(os.path.join(root, "bin_v", "dead_or_alive_4.toml"), "rb").read()
+    check(on_disk2 == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\nx_y = 2\n" and
+          sha2 == hashlib.sha256(on_disk2).hexdigest(), f"np_lag make_bin with --set: the toml {on_disk2!r}")
+    check(lag.run_keys(lag.MODE_KEYS["windowed"], []) == {"fullscreen": "false"}, "np_lag run_keys: no --set, the mode's keys")
+    # a session run's environment: the trace into its folder; --fix none adds DOA4_NP_FIX=none, nothing without it
+    check(lag.session_env("L") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L"], f"np_lag session_env: {lag.session_env('L')}")
+    check(lag.session_env("L", "none") == ["DOA4_LAG_TRACE=1", "DOA4_LAG_DIR=L", "DOA4_NP_FIX=none"],
+          f"np_lag session_env with --fix none: {lag.session_env('L', 'none')}")
+
+
+def test_lag_run_bin_dir(root):
+    # Task 11 (R94): --bin-dir DIR runs the measured game from one fixed exe folder (whose Windows Firewall prompt was
+    # answered once) instead of a fresh bin_<run> copy per run. DIR must hold the snapshot's own files, byte for byte
+    # (else refused: a different build); its toml is rewritten for each run; a pair is refused (two exe folders).
+    # Excluded wrong versions: no identity check (a stale exe in DIR runs), the toml left from the previous run, a
+    # bin_<run> copy made anyway.
+    lag = load("np_lag")
+    snap = os.path.join(root, "snap")
+    os.makedirs(snap)
+    for f in lag.SNAPSHOT_FILES:
+        open(os.path.join(snap, f), "w").write("x" + f)
+    fixed = os.path.join(root, "fixed")
+    os.makedirs(fixed)
+    for f in lag.SNAPSHOT_FILES:
+        open(os.path.join(fixed, f), "w").write("x" + f)
+    open(os.path.join(fixed, "dead_or_alive_4.toml"), "w", newline="\n").write("audio_mute = true\nfullscreen = false\n")
+    launched = []
+
+    class FakeSubprocess:
+        def __getattr__(self, name):
+            return getattr(subprocess, name)
+
+        def run(self, cmd, *args, **kwargs):
+            launched.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+    def code_of(argv):
+        try:
+            return lag.main(argv)
+        except SystemExit as e:
+            return f"exit {e.code}"
+        except Exception as e:  # a traceback is a result here (M3), returned so the later checks still run
+            return e
+
+    real = (lag.tasklist_pids, lag.udp7200_lines, lag.subprocess)
+    lag.tasklist_pids = lambda: {}
+    lag.udp7200_lines = lambda: []
+    lag.subprocess = FakeSubprocess()
+    out = os.path.join(root, "out")
+    try:
+        code = code_of(["run", "vb", "--mode", "borderless", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                        "--out", out, "--set", "present_vsync=true", "--bin-dir", fixed])
+        toml = open(os.path.join(fixed, "dead_or_alive_4.toml"), "rb").read()
+        exe_args = [c for cmd in launched for c in cmd if str(c).endswith("dead_or_alive_4.exe")]
+        # the identity check: a DIR whose exe differs from the snapshot's is refused before anything starts
+        open(os.path.join(fixed, "dead_or_alive_4.exe"), "w").write("other build")
+        n_before = len(launched)
+        code_diff = code_of(["run", "vc", "--mode", "borderless", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                             "--out", out, "--bin-dir", fixed])
+        n_after_diff = len(launched)
+        code_pair = code_of(["run", "vp", "--mode", "borderless", "--kind", "pair", "--repeats", "1", "--bin", snap,
+                             "--out", out, "--bin-dir", fixed])
+        # Task 11 review M3: a snapshot file missing from --bin is a clean refusal (exit with a message), not a traceback.
+        # DIR is put back to the snapshot's files first, so the missing file is the only difference
+        for f in lag.SNAPSHOT_FILES:
+            open(os.path.join(fixed, f), "w").write("x" + f)
+        snap2 = os.path.join(root, "snap2")
+        os.makedirs(snap2)
+        for f in lag.SNAPSHOT_FILES[:-1]:
+            open(os.path.join(snap2, f), "w").write("x" + f)
+        code_missing = code_of(["run", "vm", "--mode", "borderless", "--kind", "offline", "--repeats", "1", "--bin", snap2,
+                                "--out", out, "--bin-dir", fixed])
+        # ... and DIR changed in the middle of a batch: the second run is refused before its lag folder is made
+        for f in lag.SNAPSHOT_FILES:
+            open(os.path.join(fixed, f), "w").write("x" + f)
+        launched_before = len(launched)
+
+        class ChangingSubprocess(FakeSubprocess):
+            def run(self, cmd, *args, **kwargs):
+                launched.append(cmd)
+                open(os.path.join(fixed, "dead_or_alive_4.exe"), "w").write("rebuilt during the batch")
+                return subprocess.CompletedProcess(cmd, 0)
+        lag.subprocess = ChangingSubprocess()
+        code_mid = code_of(["run", "vq", "--mode", "borderless", "--kind", "offline", "--repeats", "2", "--bin", snap,
+                            "--out", out, "--bin-dir", fixed])
+    finally:
+        lag.tasklist_pids, lag.udp7200_lines, lag.subprocess = real
+    check(code == 0 and toml == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\n",
+          f"np_lag --bin-dir: the run's toml rewritten in DIR: {code} {toml!r}")
+    check(exe_args == [os.path.join(fixed, "dead_or_alive_4.exe")] and not os.path.exists(os.path.join(out, "bin_vb_r1")),
+          f"np_lag --bin-dir: the game runs from DIR, no bin_<run> copy: {exe_args}")
+    meta = open(os.path.join(out, "vb_r1_meta.txt")).read() if os.path.exists(os.path.join(out, "vb_r1_meta.txt")) else ""
+    check(f"bin_dir {fixed}" in meta, f"np_lag --bin-dir: the meta names DIR: {meta}")
+    check(isinstance(code_diff, str) and n_after_diff == n_before and not os.path.exists(os.path.join(out, "lag", "vc_r1")),
+          f"np_lag --bin-dir: a DIR with another build's exe is refused before anything starts: {code_diff}")
+    check(isinstance(code_pair, str) and "pair" in code_pair, f"np_lag --bin-dir: refused for a pair: {code_pair}")
+    check(isinstance(code_missing, str) and "missing from" in code_missing and not os.path.exists(os.path.join(out, "lag", "vm_r1")),
+          f"np_lag --bin-dir: a snapshot file missing from --bin is a clean refusal: {code_missing}")
+    check(isinstance(code_mid, str) and len(launched) == launched_before + 1 and os.path.isdir(os.path.join(out, "lag", "vq_r1"))
+          and not os.path.exists(os.path.join(out, "lag", "vq_r2")),
+          f"np_lag --bin-dir: DIR changed mid-batch, the next run refused before its lag folder: {code_mid} "
+          f"{os.listdir(os.path.join(out, 'lag')) if os.path.isdir(os.path.join(out, 'lag')) else []}")
+
+
+def test_lag_run_set_reaches_toml(root):
+    # Task 9b review I3: cmd_run itself, with the busy check, the process sampler and the launch stubbed: a --set line is
+    # in the measured game's toml (offline: the game; pair: the host) and NOT in a pair joiner's. Excluded wrong
+    # versions: run_keys' result discarded (the line validated, then dropped), the joiner given the --set keys.
+    lag = load("np_lag")
+    snap = os.path.join(root, "snap")
+    os.makedirs(snap)
+    for f in lag.SNAPSHOT_FILES:
+        open(os.path.join(snap, f), "w").write("x")
+    launched = []
+
+    class FakeSubprocess:
+        def __getattr__(self, name):
+            return getattr(subprocess, name)
+
+        def run(self, cmd, *args, **kwargs):  # the game launch (np_run / np_pair): nothing is started
+            launched.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+    real = (lag.tasklist_pids, lag.udp7200_lines, lag.subprocess)
+    lag.tasklist_pids = lambda: {}
+    lag.udp7200_lines = lambda: []
+    lag.subprocess = FakeSubprocess()
+    try:
+        out = os.path.join(root, "out")
+        code_off = lag.main(["run", "vs", "--mode", "borderless", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                             "--out", out, "--set", "present_vsync=true"])
+        code_pair = lag.main(["run", "pv", "--mode", "borderless", "--kind", "pair", "--repeats", "1", "--bin", snap,
+                              "--out", out, "--set", "present_vsync=true"])
+        # Task 11: --mode exclusive runs (no longer refused); a pair's host is exclusive, its joiner windowed. A refusal is
+        # sys.exit: caught here so it fails these checks instead of ending the suite (SystemExit is not an Exception)
+        def code_of(argv):
+            try:
+                return lag.main(argv)
+            except SystemExit as e:
+                return f"exit {e.code}"
+        code_xo = code_of(["run", "xo", "--mode", "exclusive", "--kind", "offline", "--repeats", "1", "--bin", snap,
+                           "--out", out])
+        code_xp = code_of(["run", "xp", "--mode", "exclusive", "--kind", "pair", "--repeats", "1", "--bin", snap,
+                           "--out", out])
+    finally:
+        lag.tasklist_pids, lag.udp7200_lines, lag.subprocess = real
+    check(code_off == 0 and code_pair == 0 and code_xo == 0 and code_xp == 0 and len(launched) == 4,
+          f"np_lag cmd_run (stubbed): {code_off} {code_pair} {code_xo} {code_xp} {launched}")
+    rd = lambda p: open(p, "rb").read() if os.path.exists(p) else b""
+    xo = rd(os.path.join(out, "bin_xo_r1", "dead_or_alive_4.toml"))
+    xh = rd(os.path.join(out, "bin_xp_r1_host", "dead_or_alive_4.toml"))
+    xj = rd(os.path.join(out, "bin_xp_r1_joiner", "dead_or_alive_4.toml"))
+    check(xo == b"audio_mute = true\nfullscreen = true\nfullscreen_exclusive = true\n", f"np_lag offline exclusive: the game's toml {xo!r}")
+    check(xh == b"audio_mute = true\nfullscreen = true\nfullscreen_exclusive = true\n", f"np_lag pair exclusive: the host's toml {xh!r}")
+    check(xj == b"audio_mute = true\nfullscreen = false\n", f"np_lag pair exclusive: the joiner stays windowed {xj!r}")
+    game = open(os.path.join(out, "bin_vs_r1", "dead_or_alive_4.toml"), "rb").read()
+    host = open(os.path.join(out, "bin_pv_r1_host", "dead_or_alive_4.toml"), "rb").read()
+    joiner = open(os.path.join(out, "bin_pv_r1_joiner", "dead_or_alive_4.toml"), "rb").read()
+    check(game == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\n", f"np_lag offline --set: the game's toml {game!r}")
+    check(host == b"audio_mute = true\nfullscreen = true\npresent_vsync = true\n", f"np_lag pair --set: the host's toml {host!r}")
+    check(joiner == b"audio_mute = true\nfullscreen = false\n", f"np_lag pair --set: NOT in the joiner's toml {joiner!r}")
+    meta = open(os.path.join(out, "vs_r1_meta.txt")).read()
+    check("present_vsync = true" in meta, f"np_lag offline --set: the meta's toml line names it: {meta}")
+
+
+def test_lag_present_call_note(root):
+    # Task 9b review M3: the Present stage's note says which sync interval the presents used, from present_flags bit 2
+    lag = load("np_lag")
+    off = lag.present_call_note([{"present_flags": 1}, {"present_flags": 1}, {"present_flags": None}])
+    on = lag.present_call_note([{"present_flags": 5}, {"present_flags": 5}])
+    mixed = lag.present_call_note([{"present_flags": 1}, {"present_flags": 5}, {"present_flags": 7}])
+    none = lag.present_call_note([{"present_flags": None}])
+    check("sync interval 0" in off and "sync interval 1" not in off, f"np_lag present note, vsync off: {off}")
+    check("sync interval 1 on every present" in on, f"np_lag present note, vsync on: {on}")
+    check("sync interval 1 on 2 of 3 presents" in mixed, f"np_lag present note, mixed: {mixed}")
+    check("unknown" in none, f"np_lag present note, no presents: {none}")
+    check(lag.PRESENT_FLAG_INTERVAL1 == 4, "np_lag: present_flags bit 2 is the interval-1 bit (sdk pace_stats.h)")
+
+
+def test_lag_exclusive_frames(root):
+    # Task 11 (R69, Task 9 review I1/M8): present_flags bit 1 = presented in DXGI exclusive fullscreen (sdk
+    # include/rex/pace_stats.h:61-63 LagPresentMark::flags; d3d12_presenter.cpp mark.flags ... (exclusive ? 2u : 0u)).
+    # Fixture flags 1, 3, 7, 2, 5, None: bit 1 is set in 3, 7 and 2 -> 3. Excluded wrong versions: flags == 2 (1), bit 2
+    # (7, 5 -> 2), bit 0 (1, 3, 7, 5 -> 4), counting the None row.
+    lag = load("np_lag")
+    rows = [{"present_flags": f} for f in (1, 3, 7, 2, 5, None)]
+    check(lag.exclusive_frames(rows) == 3, f"np_lag exclusive_frames: {lag.exclusive_frames(rows)}")
+    check(lag.PRESENT_FLAG_EXCLUSIVE == 2, "np_lag: present_flags bit 1 is the exclusive bit (sdk pace_stats.h)")
+    # analyse: the run line counts the exclusive frames; an exclusive-mode run with bit 1 unset on most of its frames is
+    # labelled as no exclusive measurement; a borderless run with 0 is not (it never asked for exclusive)
+    out = os.path.join(root, "out")
+    for name, pid, mode, flags in (("xa", 101, "exclusive", 3), ("xb", 202, "exclusive", 1), ("xc", 303, "borderless", 1),
+                                   ("xd", 304, "exclusive", lambda i: 3 if i < 1000 else 1)):
+        os.makedirs(os.path.join(out, "runs", name))
+        os.makedirs(os.path.join(out, "lag", name))
+        open(os.path.join(out, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out, "runs", name, "game.log"), "w").write("x\n")
+        lag_trace(os.path.join(out, "lag", name, f"lagtrace_{pid}.csv"), 3600, present_flags=flags)
+        open(os.path.join(out, f"{name}_meta.txt"), "w").write(f"config c{name}\nrun {name}\nmode {mode}\nkind offline\nlabel clean\nexit 0\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out, None, 3394, 3600)
+    text = open(os.path.join(out, "analysis.md")).read()
+    run_line = lambda name: next((l for l in text.splitlines() if l.startswith(f"- {name}:")), "")
+    check("presented exclusive 3600 of 3600 frames (present_flags bit 1)" in run_line("xa") and
+          "NOT an exclusive measurement" not in run_line("xa"), f"np_lag analyse exclusive run: {run_line('xa')}")
+    check("presented exclusive 0 of 3600 frames (present_flags bit 1)" in run_line("xb") and
+          "NOT an exclusive measurement" in run_line("xb"), f"np_lag analyse exclusive run without bit 1: {run_line('xb')}")
+    check("presented exclusive 0 of 3600 frames" in run_line("xc") and "NOT an exclusive measurement" not in run_line("xc"),
+          f"np_lag analyse borderless run: {run_line('xc')}")
+    # Task 11 review M2: "most frames" is a majority, not "any": 1000 of 3600 exclusive is still NOT an exclusive
+    # measurement (excluded wrong version: exclusive == 0)
+    check("presented exclusive 1000 of 3600 frames (present_flags bit 1)" in run_line("xd") and
+          "NOT an exclusive measurement" in run_line("xd"), f"np_lag analyse exclusive run with bit 1 on 1000 frames: {run_line('xd')}")
+    # Task 11 review I1: such a run is left out of the pooled rows of its configuration, with a line saying so. One
+    # configuration "cx" holds ya (bit 1 on every frame) and yb (on none): the pooled stages hold ya only (one per-run median,
+    # NOT "a / b"), and yb is named as left out
+    out2 = os.path.join(root, "out2")
+    for name, pid, flags in (("ya", 401, 3), ("yb", 402, 1)):
+        os.makedirs(os.path.join(out2, "runs", name))
+        os.makedirs(os.path.join(out2, "lag", name))
+        open(os.path.join(out2, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out2, "runs", name, "game.log"), "w").write("x\n")
+        lag_trace(os.path.join(out2, "lag", name, f"lagtrace_{pid}.csv"), 3600, present_flags=flags)
+        open(os.path.join(out2, f"{name}_meta.txt"), "w").write(f"config cx\nrun {name}\nmode exclusive\nkind offline\nlabel clean\nexit 0\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out2, None, 3394, 3600)
+    text2 = open(os.path.join(out2, "analysis.md")).read()
+    total = next((l for l in text2.splitlines() if l.startswith("| TOTAL pad read -> host Present return |")), "")
+    per_run = total.split("|")[5].strip() if total.count("|") > 6 else ""
+    check(per_run != "" and "/" not in per_run, f"np_lag analyse: the pooled row holds the exclusive run only: {total}")
+    check(any("yb" in l and "left out of the pooled rows" in l for l in text2.splitlines()),
+          f"np_lag analyse: the run without bit 1 is named as left out: {[l for l in text2.splitlines() if 'yb' in l]}")
+
+
+def test_lag_display_by_mode(root):
+    # Task 7 fix round 1 (R53, review I2): the display stage and the total to the screen are reported per PresentMode (each run
+    # by its majority mode), never pooled across modes. Run a: independent flip, 1.0 ms from the Present call to the screen;
+    # run b: composed, 11.0 ms. The trace's Present return is 0.4 ms after the call, so the display stage is 0.6 / 10.6 ms.
+    lag = load("np_lag")
+    out = os.path.join(root, "out")
+    freq = 10_000_000
+    pm_lines = ["Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,Dropped,TimeInSeconds,msInPresentAPI,"
+                "msBetweenPresents,AllowsTearing,PresentMode,msUntilRenderComplete,msUntilDisplayed,msBetweenDisplayChange,QPCTime"]
+    for name, pid, mode, tear, until in (("ra", 101, "Hardware Composed: Independent Flip", 1, 1.0), ("rb", 202, "Composed: Flip", 0, 11.0)):
+        os.makedirs(os.path.join(out, "runs", name))
+        os.makedirs(os.path.join(out, "lag", name))
+        open(os.path.join(out, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out, "runs", name, "game.log"), "w").write(f"[doa4][LAG] lagtrace on: x (QPC frequency {freq} Hz)\n")
+        lag_trace(os.path.join(out, "lag", name, f"lagtrace_{pid}.csv"), 3600)
+        open(os.path.join(out, f"{name}_meta.txt"), "w").write(f"config c\nrun {name}\nmode windowed\nkind offline\nlabel clean\nexit 0\n")
+        for i in range(3600):
+            call_us = 1_000_000 + i * 16_667 + 11_000
+            pm_lines.append(f"dead_or_alive_4.exe,{pid},0x1,DXGI,0,512,0,0,0.1,16.7,{tear},{mode},0.5,{until},16.67,{call_us * 10}")
+    pm = os.path.join(root, "pm.csv")
+    open(pm, "w").write("\n".join(pm_lines) + "\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out, pm, 3394, 3600)
+    text = open(os.path.join(out, "analysis.md")).read()
+    rows = {l.split("|")[1].strip(): l.split("|")[2].strip() for l in text.splitlines() if l.startswith("| ") and "->" in l}
+    check(rows.get("host Present return -> displayed [Hardware Composed: Independent Flip]") == "0.60" and
+          rows.get("host Present return -> displayed [Composed: Flip]") == "10.60",
+          f"np_lag analyse: a display row per PresentMode (0.60 and 10.60): {rows}")
+    check(rows.get("TOTAL pad read -> displayed [Hardware Composed: Independent Flip]") == "11.50" and
+          rows.get("TOTAL pad read -> displayed [Composed: Flip]") == "21.50",
+          f"np_lag analyse: the total to the screen per PresentMode (11.50 and 21.50): {rows}")
+    check(not any(k.startswith(("host Present return -> displayed", "TOTAL pad read -> displayed")) and "[" not in k for k in rows),
+          f"np_lag analyse: NO display row pooled across modes: {[k for k in rows if 'displayed' in k]}")
+    check(rows.get("pad read -> swap call") == "8.50", f"np_lag analyse: the game-side stages stay pooled: {rows.get('pad read -> swap call')}")
+    check(rows.get("host Present return (previous frame) -> GPU wait entry") == "14.87",
+          f"np_lag analyse: the GPU thread's own work row (Task 8): {rows.get('host Present return (previous frame) -> GPU wait entry')}")
+
+
+def test_lag_call_agreement(root):
+    # Task 11 review I2 (R99): per joined present, the trace's record of the call (present_flags bit 2: sync interval 1;
+    # bits 0-2: the tearing flag passed only when the swap chain allows tearing, not exclusive, not vsync; sdk
+    # present_choice.h) against PresentMon's SyncInterval and PresentFlags & 0x200 (DXGI_PRESENT_ALLOW_TEARING).
+    # Rows: (trace flags, PresentMon SyncInterval, PresentFlags) -> sync agrees?, tearing agrees?
+    #   (5, 1, 4) yes, yes;  (5, 0, 4) NO, yes;  (1, 0, 516) yes, yes;  (1, 0, 4) yes, NO;  (3, 0, 4) yes, yes;
+    #   (5, no PresentMon row) not counted. -> sync 4 of 5, tearing 4 of 5.
+    # Excluded wrong versions: bit 1 for the interval (sync 3 of 5: rows 1, 2 and 5 flip), bit 0 alone for the tearing
+    # flag (tearing 1 of 5), counting the unjoined row (n 6).
+    lag = load("np_lag")
+    rows = [{"present_flags": 5, "pm": {"sync": 1, "present_flags": 4}},
+            {"present_flags": 5, "pm": {"sync": 0, "present_flags": 4}},
+            {"present_flags": 1, "pm": {"sync": 0, "present_flags": 516}},
+            {"present_flags": 1, "pm": {"sync": 0, "present_flags": 4}},
+            {"present_flags": 3, "pm": {"sync": 0, "present_flags": 4}},
+            {"present_flags": 5, "pm": None}]
+    got = lag.call_agreement(rows)
+    check(got == (4, 4, 5), f"np_lag call_agreement (sync agree, tearing agree, n): {got}")
+    # analyse: run "va" (present_vsync on: trace flags 5) whose PresentMon rows say SyncInterval 1 agrees; run "vd" with
+    # the same trace whose PresentMon rows say 0 (the platform's flip) is worded as the platform's, not as a defect
+    out = os.path.join(root, "out")
+    freq = 10_000_000
+    pm_lines = ["Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,Dropped,TimeInSeconds,msInPresentAPI,"
+                "msBetweenPresents,AllowsTearing,PresentMode,msUntilRenderComplete,msUntilDisplayed,msBetweenDisplayChange,QPCTime"]
+    for name, pid, sync in (("va", 501, 1), ("vd", 502, 0)):
+        os.makedirs(os.path.join(out, "runs", name))
+        os.makedirs(os.path.join(out, "lag", name))
+        open(os.path.join(out, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out, "runs", name, "game.log"), "w").write(f"[doa4][LAG] lagtrace on: x (QPC frequency {freq} Hz)\n")
+        lag_trace(os.path.join(out, "lag", name, f"lagtrace_{pid}.csv"), 3600, present_flags=5)
+        open(os.path.join(out, f"{name}_meta.txt"), "w").write(f"config c{name}\nrun {name}\nmode borderless\nkind offline\nlabel clean\nexit 0\n")
+        for i in range(3600):
+            call_us = 1_000_000 + i * 16_667 + 11_000
+            pm_lines.append(f"dead_or_alive_4.exe,{pid},0x1,DXGI,{sync},4,0,0,0.1,16.7,0,Hardware Composed: Independent Flip,"
+                            f"0.5,1.0,16.67,{call_us * 10}")
+    pm = os.path.join(root, "pm.csv")
+    open(pm, "w").write("\n".join(pm_lines) + "\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out, pm, 3394, 3600)
+    text = open(os.path.join(out, "analysis.md")).read()
+    pm_line = lambda pid: next((l for l in text.splitlines() if l.startswith("  - PresentMon:") and f"pid {pid}" in l), "")
+    check("SyncInterval agree 3600 of 3600" in pm_line(501) and "tearing flag agree 3600 of 3600" in pm_line(501) and
+          "the platform presented differently" not in pm_line(501), f"np_lag analyse: the agreeing run: {pm_line(501)}")
+    check("SyncInterval agree 0 of 3600" in pm_line(502) and "the platform presented differently (PresentMon's SyncInterval "
+          "is the kernel flip interval; e.g. VRR)" in pm_line(502), f"np_lag analyse: the disagreeing run: {pm_line(502)}")
+
+
+def test_lag_early_frames(root):
+    # Task 8 fix round 1 (review M4): a cut build's trace (present_before_vblank_wait). For an early frame the swap record's
+    # time is the early IssueSwap at the wait's entry, not the swap packet: it is read as its own point, "GPU early
+    # IssueSwap", so the order is wait entry -> early IssueSwap -> Present call (NOT "GPU swap packet" before the wait).
+    lag = load("np_lag")
+    rows = lag.window_rows(lag.read_trace(lag_trace(os.path.join(root, "e.csv"), 3600, early=True)))
+    order, _ = lag.measured_order(rows, list(lag.POINTS))
+    check(order == ["frame start", "session step done", "frame function done", "pad read", "swap call", "guest VdSwap",
+                    "swap return", "GPU wait entry", "GPU early IssueSwap", "host Present call", "host Present return"],
+          f"np_lag measured order of an early trace: {order}")
+    v = lag.stage_values(rows, "GPU wait entry", "GPU early IssueSwap")
+    check(len(v) == 3600 and all(abs(x - 0.02) < 1e-9 for x in v), f"np_lag early: wait entry -> early IssueSwap 0.02 ms: {v[:2]}")
+    # the GPU thread's own work is not "previous Present return -> wait entry" when the previous present was early (that
+    # span holds the previous swap's vblank sleep): no value, NOT 14.867 ms
+    check(lag.gpu_work(rows) == [], f"np_lag gpu_work over early frames: {lag.gpu_work(rows)[:2]}")
+    n, ws, joined, neg = lag.check_trace(rows)
+    check(neg == [], f"np_lag check_trace on an early trace: {neg[:2]}")
+    # analyse: the run line counts the early frames; the stage notes are the cut build's
+    out = os.path.join(root, "out")
+    for name, pid, early in (("ea", 101, True), ("na", 202, False)):
+        os.makedirs(os.path.join(out, "runs", name))
+        os.makedirs(os.path.join(out, "lag", name))
+        open(os.path.join(out, "runs", name, "pid.txt"), "w").write(str(pid))
+        open(os.path.join(out, "runs", name, "game.log"), "w").write("x\n")
+        lag_trace(os.path.join(out, "lag", name, f"lagtrace_{pid}.csv"), 3600, early=early)
+        open(os.path.join(out, f"{name}_meta.txt"), "w").write(f"config c{name}\nrun {name}\nmode windowed\nkind offline\nlabel clean\nexit 0\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        lag.analyse(out, None, 3394, 3600)
+    text = open(os.path.join(out, "analysis.md")).read()
+    early_part, plain_part = text.split("## cna")[0], text.split("## cna")[1]
+    check("early-presented 3600 of 3600 frames" in early_part and "early-presented 0 of 3600 frames" in plain_part,
+          "np_lag analyse: the run line counts the early frames")
+    note = lambda part: next((l for l in part.splitlines() if l.startswith("| guest VdSwap -> swap return |")), "")
+    check("PREVIOUS swap's packet" in note(early_part) and "6 us after host Present(N-1)" not in note(early_part),
+          f"np_lag analyse: the back-pressure note of a cut run: {note(early_part)}")
+    check("6 us after host Present(N-1)" in note(plain_part), f"np_lag analyse: the back-pressure note of a run without the cut: {note(plain_part)}")
+    # Task 9b review M3: the Present stage's note comes from the trace's present_flags (1 here: bit 2 clear), not a static text
+    present_row = next((l for l in plain_part.splitlines() if l.startswith("| host Present call -> host Present return |")), "")
+    check("sync interval 0 (present_flags bit 2 clear on every present)" in present_row,
+          f"np_lag analyse: the Present note from present_flags: {present_row}")
+    check("host Present return (previous frame) -> GPU wait entry" not in early_part and
+          "host Present return (previous frame) -> GPU wait entry" in plain_part,
+          "np_lag analyse: the GPU-work row only where the previous present was not early")
+
+
+def test_lag_affinity_readback(root):
+    # Task 8 fix round 1 (review M5, R42 / #351 #352): with --affinity, the run folder gets the LIVE process's mask read
+    # back after start-up, not the mask that was asked for. The child is limited the way np_run limits the game (a job
+    # object, np_run.limit_cpus), to one CPU: its mask (0x1) differs from this process's and the system's, so a reader that
+    # returns the request or the system mask is told apart only by the request it is given (0x3 below, NOT 0x1).
+    lag = load("np_lag")
+    np_run = load("np_run")
+    p = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(60)"], creationflags=0x08000000)
+    try:
+        job = np_run.limit_cpus(int(p._handle), 0x1)  # noqa: F841 (the job lives while this test runs)
+        got = lag.process_affinity(p.pid)
+        check(got == 0x1, f"np_lag process_affinity of a job-limited child: {got!r} (want 0x1)")
+        run = os.path.join(root, "runs", "c_r1")
+        os.makedirs(run)
+        out = os.path.join(root, "c_r1_affinity.txt")
+        rb = lag.AffinityReadback(run, out, requested="0x3", delay=0.5)
+        rb.start()
+        time.sleep(0.3)  # the game's pid appears only after the runner started it
+        open(os.path.join(run, "pid.txt"), "w").write(str(p.pid))
+        rb.join(15)
+        text = open(out).read() if os.path.exists(out) else ""
+        check(not rb.is_alive() and f"pid {p.pid}" in text and "process affinity mask 0x1 " in text and "requested 0x3" in text
+              and "match no" in text, f"np_lag affinity read-back file: {text!r}")
+        m = re.search(r"read ([0-9.]+) s after the pid appeared", text)
+        check(m is not None and float(m.group(1)) >= 0.5, f"np_lag affinity read-back waits its delay after start-up: {text!r}")
+    finally:
+        p.kill()
+        p.wait()
+    # no pid.txt before the run ended: the file says so (an absence is written, never a guessed mask)
+    out2 = os.path.join(root, "c_r2_affinity.txt")
+    rb2 = lag.AffinityReadback(os.path.join(root, "runs", "none"), out2, requested="0x1", delay=0.5)
+    rb2.start()
+    rb2.stop.set()
+    rb2.join(5)
+    text2 = open(out2).read() if os.path.exists(out2) else ""
+    check("no read-back" in text2 and "pid.txt" in text2 and "mask 0x" not in text2, f"np_lag affinity read-back with no pid: {text2!r}")
+
+
+def test_lag_plain(root):
+    # Task 7 Resume 1 (R47): a plain launch has no session (np_frame -1); its window is the frames of a round (fight_state 2)
+    lag = load("np_lag")
+    # 100 frames: 0-19 title (0), 20-49 a round (2), 50-59 round over (3), 60-89 a round again (2), 90-99 the result (5)
+    states = [0] * 20 + [2] * 30 + [3] * 10 + [2] * 30 + [5] * 10
+    rows = lag.read_trace(lag_trace(os.path.join(root, "p.csv"), 100, first_np=-1, fight=lambda i: states[i]))
+    for r in rows:
+        r["np_frame"] = -1
+    win = lag.window_rows(rows, 0, 45, fight=True)
+    check(len(win) == 45 and [r["frame"] for r in win[:2]] == [21, 22] and win[30]["frame"] == 61 and
+          all(r["fight_state"] == 2 for r in win), f"np_lag fight window: the first 45 round frames: {[r['frame'] for r in win][:3]} .. {len(win)}")
+    check(lag.window_rows(rows, 0, 3600, fight=True) == [r for r in rows if r["fight_state"] == 2],
+          "np_lag fight window: fewer round frames than asked: all of them")
+    check(lag.window_rows(rows) == [], "np_lag: the np_frame window of a plain trace is empty (NOT the fight frames)")
+    # fps over a window of two rounds counts only consecutive frames: the 10-frame gap is not a long frame
+    check(abs(lag.fps(win) - 1e6 / 16_667) < 1e-6, f"np_lag fps over two rounds: {lag.fps(win)}")
+    check(lag.loop_tail(win) and len(lag.loop_tail(win)) == 43, f"np_lag loop tail over two rounds: {len(lag.loop_tail(win))} intervals")
+    # check --fight end to end
+    path = os.path.join(root, "p2.csv")
+    lag_trace(path, 100, first_np=-1, fight=lambda i: states[i])
+    p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_lag.py"), "check", path, "--fight", "--window-frames", "60"],
+                       capture_output=True, text=True, timeout=60)
+    check(p.returncode == 0 and "the first 60 frames with fight_state 2: 60 frames" in p.stdout and "check ok" in p.stdout,
+          f"np_lag check --fight: {p.returncode} {p.stdout}")
+    # launch_plain: no DOA4_NP (no session), the trace switch passed, no real controller, shown; the stand-in exits at once
+    run = os.path.join(root, "plain_r1")
+    os.environ["FAKE_GAME_PYTHON"] = sys.executable  # the stand-in's .cmd runs this interpreter (launch_plain passes os.environ on)
+    try:
+        code, how = lag.launch_plain(os.path.join(HERE, "fake_offline_game.cmd"), run,
+                                     {"DOA4_LAG_TRACE": "1", "DOA4_LAG_DIR": root}, 30, make_userdata(root), None, show=True)
+    finally:
+        del os.environ["FAKE_GAME_PYTHON"]
+    log = open(os.path.join(run, "game.log")).read()
+    cmd = open(os.path.join(run, "command.txt")).read()
+    check(code == 0 and "exited by itself" in how, f"np_lag launch_plain: the stand-in ran and exited: {code} {how}")
+    check("DOA4_NP=(unset)" in log and "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0000/0x0000" in log,
+          f"np_lag launch_plain: no session switch, no real controller: {log}")
+    check("DOA4_LAG_TRACE=1" in cmd and "DOA4_NP=" not in cmd and os.path.isdir(os.path.join(run, "ud")) and
+          open(os.path.join(run, "pid.txt")).read().strip().isdigit(), f"np_lag launch_plain: command.txt, ud, pid.txt: {cmd}")
+    # analyse with a PresentMon capture: a plain run that never reached a round (no window frames) is reported, not a crash
+    out = os.path.join(root, "out")
+    os.makedirs(os.path.join(out, "runs", "pw_r1"))
+    os.makedirs(os.path.join(out, "lag", "pw_r1"))
+    open(os.path.join(out, "runs", "pw_r1", "pid.txt"), "w").write("4242")
+    open(os.path.join(out, "runs", "pw_r1", "game.log"), "w").write("[doa4][LAG] lagtrace on: x (QPC frequency 10000000 Hz)\n")
+    lag_trace(os.path.join(out, "lag", "pw_r1", "lagtrace_4242.csv"), 50, first_np=-1, fight=lambda i: 0)
+    open(os.path.join(out, "pw_r1_meta.txt"), "w").write("config pw\nrun pw_r1\nmode windowed\nkind plain\nlabel clean\nexit 1\n")
+    pm = os.path.join(root, "pm.csv")
+    open(pm, "w").write("Application,ProcessID,AllowsTearing,PresentMode,Dropped,QPCTime,msUntilDisplayed,msBetweenDisplayChange\n"
+                        "dead_or_alive_4.exe,4242,1,Hardware: Independent Flip,0,10000000,1.0,16.7\n")
+    with contextlib.redirect_stdout(io.StringIO()) as buf:
+        code = lag.analyse(out, pm, 0, 3600)
+    check(code == 0 and "pw_r1: windowed plain" in buf.getvalue() and "0 frames" in buf.getvalue(),
+          f"np_lag analyse: a plain run with no round frames and a PresentMon capture: {code}\n{buf.getvalue()[:400]}")
+    try:
+        lag.launch_plain(os.path.join(HERE, "fake_offline_game.cmd"), run, {}, 30, make_userdata(os.path.join(root, "u2")), None)
+        check(False, "np_lag launch_plain refuses an existing run folder")
+    except SystemExit as e:
+        check("run folder exists" in str(e), f"np_lag launch_plain refuses an existing run folder: {e}")
 
 
 def main():

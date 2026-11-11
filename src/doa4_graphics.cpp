@@ -1,4 +1,4 @@
-// The Video tab's graphics choices. See doa4_graphics.h.
+// The Game tab's graphics choices. See doa4_graphics.h.
 
 #include "doa4_graphics.h"
 

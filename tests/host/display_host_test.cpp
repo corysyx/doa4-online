@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -85,7 +86,196 @@ static void TestCursor() {
 // The name the user chose for the window (rebrand 2026-11-05); the exe keeps its name.
 static void TestWindowTitle() { CHECK(std::string(kWindowTitle) == "Dead or Alive 4 Online"); }
 
+// The Output size row's lists (Game tab).
+static std::vector<std::string> Labels(const OutputSizeList& l) {
+  std::vector<std::string> out;
+  for (const auto& e : l.entries) out.push_back(e.label);
+  return out;
+}
+
+static void TestRefreshText() {
+  CHECK(RefreshText(60.0) == "60");
+  CHECK(RefreshText(59.94) == "59.94");
+  CHECK(RefreshText(59.940059) == "59.94");
+  CHECK(RefreshText(164.834) == "164.83");
+  CHECK(RefreshText(59.9) == "59.90");  // fractional: two decimals
+  CHECK(RefreshText(59.999) == "60");   // rounds to a whole rate
+  CHECK(RefreshText(144.0) == "144");
+}
+
+static void TestWindowedSizeList() {
+  // A work area that fits only 1280x720 and 1600x900 (the SDK gives them largest first); the current size is one of them.
+  OutputSizeList l = WindowedSizeList({{1600, 900}, {1280, 720}}, 1600, 900);
+  CHECK((Labels(l) == std::vector<std::string>{"1280 x 720", "1600 x 900"}));
+  CHECK(l.selected == 1);
+  CHECK(l.entries[0].value == "1280x720" && l.entries[0].width == 1280 && l.entries[0].height == 720);
+  CHECK(l.entries[1].value == "1600x900");
+
+  // A current size that is not in the list is shown, selected, at its place by size.
+  l = WindowedSizeList({{1920, 1080}, {1600, 900}, {1280, 720}}, 1700, 950);
+  CHECK((Labels(l) == std::vector<std::string>{"1280 x 720", "1600 x 900", "1700 x 950", "1920 x 1080"}));
+  CHECK(l.selected == 2);
+  CHECK(l.entries[2].value == "1700x950");
+  // ...also below and above every entry.
+  l = WindowedSizeList({{1600, 900}, {1280, 720}}, 800, 600);
+  CHECK(l.selected == 0 && l.entries.size() == 3 && l.entries[0].label == "800 x 600");
+  l = WindowedSizeList({{1600, 900}, {1280, 720}}, 3000, 2000);
+  CHECK(l.selected == 2 && l.entries.size() == 3 && l.entries[2].label == "3000 x 2000");
+
+  // An empty SDK list (no window yet) still shows the current size; an unknown current size selects nothing.
+  l = WindowedSizeList({}, 1280, 720);
+  CHECK((Labels(l) == std::vector<std::string>{"1280 x 720"}) && l.selected == 0);
+  l = WindowedSizeList({{1280, 720}}, 0, 0);
+  CHECK(l.entries.size() == 1 && l.selected == -1);
+  // A duplicate in the SDK list is one entry.
+  l = WindowedSizeList({{1280, 720}, {1280, 720}}, 1280, 720);
+  CHECK(l.entries.size() == 1);
+}
+
+static void TestExclusiveSizeList() {
+  const std::vector<ExclusiveMode> modes = {{2560, 1440, 164.834, "2560x1440@164.834"},
+                                            {1920, 1080, 59.94, "1920x1080@59.94"},
+                                            {1920, 1080, 60.0, "1920x1080@60"}};
+  // Saved "": the desktop entry first and selected; a fractional rate shows two decimals, a whole one none.
+  OutputSizeList l = ExclusiveSizeList(modes, "");
+  CHECK((Labels(l) == std::vector<std::string>{"Desktop (current mode)", "2560 x 1440 @ 164.83 Hz",
+                                                "1920 x 1080 @ 59.94 Hz", "1920 x 1080 @ 60 Hz"}));
+  CHECK(l.selected == 0);
+  CHECK(l.entries[0].value.empty());
+  CHECK(l.entries[2].value == "1920x1080@59.94");  // the saved text is the SDK's, not the label's
+  CHECK(l.entries[2].width == 1920 && l.entries[2].height == 1080);
+  // A saved mode is selected by its text.
+  l = ExclusiveSizeList(modes, "1920x1080@60");
+  CHECK(l.selected == 3);
+  l = ExclusiveSizeList(modes, "1920x1080@59.94");
+  CHECK(l.selected == 2);
+  // A saved mode the monitor does not offer falls back to the desktop entry, as the SDK does.
+  l = ExclusiveSizeList(modes, "800x600@60");
+  CHECK(l.selected == 0);
+  // No modes at all: the desktop entry alone.
+  l = ExclusiveSizeList({}, "1920x1080@60");
+  CHECK(l.entries.size() == 1 && l.selected == 0 && l.entries[0].label == "Desktop (current mode)");
+}
+
+// Task 10 fix round 1 (review I1): when the menu builds the exclusive mode list. The full table, then the cases by name.
+static void TestExclusiveModesStep() {
+  // arguments: (first_frame, attempted this opening, built, from_active, exclusive_active)
+  int builds = 0, builds_after_attempt = 0;
+  for (int first = 0; first < 2; ++first) {
+    for (int attempted = 0; attempted < 2; ++attempted) {
+      for (int built = 0; built < 2; ++built) {
+        for (int from_active = 0; from_active < 2; ++from_active) {
+          for (int active = 0; active < 2; ++active) {
+            const bool build = ExclusiveModesStep(first, attempted, built, from_active, active) == ModesStep::kBuild;
+            const bool want = !attempted && (active ? !built : (first || !built || from_active));
+            CHECK(build == want);
+            builds += build ? 1 : 0;
+            builds_after_attempt += (build && attempted) ? 1 : 0;
+          }
+        }
+      }
+    }
+  }
+  // not yet attempted: exclusive off 7 of 8 (all but a later frame with a list made while off), exclusive on the 4
+  // without a list; once attempted in this opening: never
+  CHECK(builds == 7 + 4 && builds_after_attempt == 0);
+  // exclusive off, the opening's first frame: a fresh list, even with one kept
+  CHECK(ExclusiveModesStep(true, false, true, false, false) == ModesStep::kBuild);
+  // exclusive off, later frames: use the list this opening made
+  CHECK(ExclusiveModesStep(false, true, true, false, false) == ModesStep::kUse);
+  // exclusive off with only a list made during exclusive, not yet attempted this opening: replace it
+  CHECK(ExclusiveModesStep(false, false, true, true, false) == ModesStep::kBuild);
+  // the I1 case: an opening while exclusive at a non-desktop mode, a list from before the entry kept: use it, NEVER list
+  // during exclusive (its desktop entry would be the scaled 2560x1440 @ 59 Hz)
+  CHECK(ExclusiveModesStep(true, false, true, false, true) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(false, false, true, false, true) == ModesStep::kUse);
+  // the game started in exclusive: no list yet, build one during exclusive (the desktop entry dropped), then use it
+  CHECK(ExclusiveModesStep(true, false, false, false, true) == ModesStep::kBuild);
+  CHECK(ExclusiveModesStep(false, true, true, true, true) == ModesStep::kUse);
+  // re-review 2: a listing that failed (attempted, still nothing built) is NOT tried again on the next frames of the
+  // opening, exclusive off or on; the next opening (attempted false again) tries once more
+  CHECK(ExclusiveModesStep(false, true, false, false, false) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(false, true, false, false, true) == ModesStep::kUse);
+  CHECK(ExclusiveModesStep(true, false, false, false, false) == ModesStep::kBuild);
+}
+
+static void TestDropModeText() {
+  std::vector<ExclusiveMode> modes = {{2560, 1440, 164.834, "2560x1440@164.834"},
+                                      {2560, 1440, 59.951, "2560x1440@59.951"},
+                                      {1920, 1080, 60.0, "1920x1080@60"}};
+  DropModeText(modes, "2560x1440@59.951");
+  CHECK(modes.size() == 2 && modes[0].text == "2560x1440@164.834" && modes[1].text == "1920x1080@60");
+  DropModeText(modes, "1280x720@60");  // not listed: nothing changes
+  CHECK(modes.size() == 2);
+  // the dropped entry is no longer offered by the row; "Desktop (current mode)" still leads it
+  const OutputSizeList l = ExclusiveSizeList(modes, "");
+  CHECK(l.entries.size() == 3 && l.entries[0].value.empty());
+  for (const OutputSizeEntry& e : l.entries) CHECK(e.value != "2560x1440@59.951");
+}
+
+// The title's update notice (Task 12 fix round 2): 1.3x Task 15's box, inside the band between PRESS START and the
+// copyright line with its margins, shrunk only when it would not fit. Task 15's box at 720 (ProggyTiny 10 px, padding
+// 8 x 8): 10 * 1.35 + 2 * 8 = 29.5 high.
+static bool Near(float a, float b) { return a > b - 0.001f && a < b + 0.001f; }
+static void TestNoticeLayout() {
+  CHECK(Near(kNoticeBandTop * 720.0f, 556.5f) && Near(kNoticeBandBottom * 720.0f, 604.0f));
+  CHECK(Near(kNoticeMargin * 720.0f, 2.0f) && Near(kNoticeBaseFontScale, 1.35f) && Near(kNoticeScale, 1.3f));
+  const auto height = [](const NoticeLayout& l) { return 10.0f * l.font_scale + 2.0f * l.pad_y; };
+  const auto inside = [&](const NoticeLayout& l, float h) {  // the box, margins included, within the band
+    const float top = l.center_y - height(l) / 2, bottom = l.center_y + height(l) / 2;
+    return top >= (kNoticeBandTop + kNoticeMargin) * h - 0.001f && bottom <= (kNoticeBandBottom - kNoticeMargin) * h + 0.001f;
+  };
+  // 1280x720 at 100 %: 1.3x everything (38.35 high, NOT 29.5), centred at 580.25 (NOT Task 15's 584: its bottom would be
+  // 603.2, inside the copyright's margin), 4.6 clear of each band edge
+  const NoticeLayout a = NoticeLayoutFor(720.0f, 10.0f, 8.0f, 8.0f);
+  CHECK(Near(a.font_scale, 1.35f * 1.3f) && Near(a.pad_x, 10.4f) && Near(a.pad_y, 10.4f));
+  CHECK(Near(height(a), 29.5f * 1.3f));
+  CHECK(Near(a.center_y, 580.25f));
+  CHECK(inside(a, 720.0f));
+  // 2560x1440 at 100 %: the same box (ImGui units are not scaled with the window), centred at 1160.5
+  const NoticeLayout b = NoticeLayoutFor(1440.0f, 10.0f, 8.0f, 8.0f);
+  CHECK(Near(b.font_scale, 1.755f) && Near(b.pad_y, 10.4f) && Near(b.center_y, 1160.5f) && inside(b, 1440.0f));
+  // 1280x720 at 150 % (480 high): the band less margins is 29 high: text and padding shrink together to exactly that
+  const NoticeLayout c = NoticeLayoutFor(480.0f, 10.0f, 8.0f, 8.0f);
+  CHECK(Near(height(c), (47.5f - 4.0f) * 480.0f / 720.0f));
+  CHECK(c.font_scale < 1.755f && Near(c.pad_y / c.font_scale, 10.4f / 1.755f) && Near(c.pad_x, c.pad_y));
+  CHECK(inside(c, 480.0f));
+  // the edge: the display height at which 1.3x just fits (38.35 = 43.5 * h / 720 -> h = 634.76) is not shrunk, a little
+  // below it is
+  const float edge = 38.35f * 720.0f / 43.5f;
+  CHECK(Near(NoticeLayoutFor(edge + 0.5f, 10.0f, 8.0f, 8.0f).font_scale, 1.755f));
+  CHECK(NoticeLayoutFor(edge - 0.5f, 10.0f, 8.0f, 8.0f).font_scale < 1.755f);
+}
+
+// The Esc menu's width (Task 12 fix round 2).
+static void TestMenuWidth() {
+  // ImGui's radio button / checkbox: square + inner spacing + label; no label, the square alone (NOT square + spacing)
+  CHECK(Near(ToggleWidth(19.0f, 4.0f, 100.0f), 123.0f));
+  CHECK(Near(ToggleWidth(19.0f, 4.0f, 0.0f), 19.0f));
+  // one spacing between each two items (NOT one per item)
+  CHECK(Near(RowWidth({50.0f, 60.0f, 70.0f}, 8.0f), 196.0f));
+  CHECK(Near(RowWidth({50.0f}, 8.0f), 50.0f));
+  CHECK(Near(RowWidth({}, 8.0f), 0.0f));
+  // the window: widest row + 2 x padding + scrollbar (600 + 16 + 14 = 630)
+  CHECK(Near(kMenuMinWidth, 560.0f));
+  CHECK(Near(MenuWindowWidth(600.0f, 8.0f, 14.0f, 1280.0f), 630.0f));
+  // never narrower than before: a narrow content keeps 560; one that needs 561 gets 561
+  CHECK(Near(MenuWindowWidth(300.0f, 8.0f, 14.0f, 1280.0f), 560.0f));
+  CHECK(Near(MenuWindowWidth(531.0f, 8.0f, 14.0f, 1280.0f), 561.0f));
+  // clamped to the display: wider content than the display, and a display narrower than 560
+  CHECK(Near(MenuWindowWidth(2000.0f, 8.0f, 14.0f, 1280.0f), 1280.0f));
+  CHECK(Near(MenuWindowWidth(600.0f, 8.0f, 14.0f, 500.0f), 500.0f));
+  CHECK(Near(MenuWindowWidth(600.0f, 8.0f, 14.0f, 2560.0f), 630.0f));  // a wide display changes nothing
+}
+
 int main() {
+  TestMenuWidth();
+  TestNoticeLayout();
+  TestRefreshText();
+  TestWindowedSizeList();
+  TestExclusiveSizeList();
+  TestExclusiveModesStep();
+  TestDropModeText();
   TestWindowTitle();
   TestFpsMeter();
   TestCursor();

@@ -266,6 +266,11 @@ and a zip with `tools/release_stage.py`, and publishes a pre-release. It stops w
 release of that version exists: raise `DOA4_NETPLAY_VERSION` first. The launcher is not part of the
 release for now.
 
+Each version needs its section in `CHANGELOG.md` (newest first, `## <x.y.z> (<date>)` with `### New`,
+`### Fixed`, `### Notes`): the release notes and the zip's `README-netplay.txt` carry it
+(`tools/changelog_section.py <x.y.z>` prints it), and a version without a section is not staged or
+published.
+
 ## 11. Troubleshooting
 
 | Symptom | Cause and fix |

@@ -46,9 +46,13 @@
 #include "generated/default/dead_or_alive_4_init.h"
 
 #include "../doa4_gamefiles.h"
+#include "../doa4_intro_skip.h"
+#include "../doa4_lagtrace.h"
+#include "../doa4_language_hooks.h"
 #include "../doa4_photo_win.h"
 #include "../doa4_tweaks.h"
 #include "../doa4_unlocks.h"
+#include "../doa4_update_notice.h"
 #include "np_core.h"
 #include "np_det.h"
 #include "np_det_internal.h"
@@ -1696,6 +1700,20 @@ void PrepareReplayRules() {
   if (guest != "(none)") {
     std::string text = guest;
     std::replace(text.begin(), text.end(), ';', '\n');
+    // R13: a recording made before one of the port's own carried settings existed applies it at its cvar default (a
+    // hand-off is never completed this way). The meta compared below stays the recording's own text.
+    std::vector<std::pair<std::string, std::string>> filled;
+    text = handoff::CompleteGuestText(
+        text, handoff::TextSource::kReplay,
+        [](const std::string& name) {
+          const rex::cvar::FlagEntry* flag = rex::cvar::GetFlagInfo(name);
+          return flag ? flag->default_value : std::string();
+        },
+        &filled);
+    for (const auto& [name, value] : filled) {
+      EarlyLog("replay: the recording has no " + name + "; using its default " + value +
+               " (recorded before this setting existed)");
+    }
     std::string why;
     if (ApplyGuestText(text, &why, nullptr)) {
       EarlyLog("replay: the recording's guest settings applied (R21)");
@@ -1713,6 +1731,15 @@ void PrepareReplayRules() {
 
 bool Online() { return S().mode == Mode::kOnline; }
 
+bool Replaying() { return S().mode == Mode::kReplay; }
+
+std::optional<std::string> SessionGuestValue(std::string_view name) {
+  const State& s = S();
+  if (s.mode == Mode::kOnline) return handoff::GuestSettingValue(s.ho.guest_settings, name);
+  if (s.mode == Mode::kReplay) return handoff::GuestMetaValue(s.guest_meta, name);
+  return std::nullopt;
+}
+
 bool SessionSuitsMixed() {
   static const bool off = MixedOff("slot");
   return Online() && S().ho.suit_state == rules::SuitSession::kMixed && !off;
@@ -1720,7 +1747,7 @@ bool SessionSuitsMixed() {
 
 std::optional<bool> SessionFullBust() {
   if (!Online()) return std::nullopt;
-  const std::optional<std::string> value = handoff::GuestSettingValue(S().ho.guest_settings, "doa4_suits_full_bust");
+  const std::optional<std::string> value = SessionGuestValue("doa4_suits_full_bust");
   return value ? std::optional<bool>(*value == "true") : std::nullopt;
 }
 
@@ -1954,9 +1981,20 @@ void Shutdown() {
 // ---- Hooks ----
 
 REX_HOOK_RAW(sub_824F4498) {
+  if (doa4::lagtrace::On()) {  // the latency trace (doa4_lagtrace.h): the frame's start
+    doa4::lagtrace::OnFrameStart(base[doa4::np::kFightState], doa4::np::Active(),
+                                 doa4::np::det::On(doa4::np::det::kAudio));
+  }
+  doa4::intro_skip::CountFrame();  // the movie log's frame clock (doa4_intro_skip.h), host-only
+  // The language code's frame step (doa4_language_hooks.h): every frame, in a session or not, before the frame's hash.
+  doa4::language::OnFrame(base);
   if (doa4::np::Active()) doa4::np::OnFrame(ctx, base);
-  else if (doa4::rb::WmapOn()) doa4::rb::WmapFrame(base);  // rollback milestone 1: offline write measurement
+  if (doa4::lagtrace::On()) {
+    doa4::lagtrace::OnFrameNpDone(doa4::np::Active() ? int64_t(doa4::np::CurrentFrame()) : -1);
+  }
+  if (!doa4::np::Active() && doa4::rb::WmapOn()) doa4::rb::WmapFrame(base);  // rollback milestone 1: offline write measurement
   __imp__sub_824F4498(ctx, base);
+  if (doa4::lagtrace::On()) doa4::lagtrace::OnFrameFnDone();
   // The frame function stores the host-timed GPU frame time into 0x831008E8 / 0x831008E4, which the
   // game reads (HoldFrameTiming): in a session they hold a 60 fps frame's values.
   if (doa4::np::Active() && doa4::np::det::On(doa4::np::det::kClock)) doa4::np::HoldFrameTiming(base);
@@ -1964,14 +2002,30 @@ REX_HOOK_RAW(sub_824F4498) {
 
 // r3 = user (0-3), r4 = X_INPUT_STATE* (be32 packet number, then the 12-byte
 // XINPUT_GAMEPAD). Returns r3 = 0 (connected) or ERROR_DEVICE_NOT_CONNECTED.
-REX_HOOK_RAW(sub_82792040) {
-  const doa4::np::FrameInput* in = doa4::np::StagedInput();
-  if (!in) {
-    __imp__sub_82792040(ctx, base);
-    return;
+// The start-up update notice (Task 15, R103; doa4_update_notice.h): the buttons this read hands the game, for the
+// title's Start press. A read that failed hands nothing.
+static void NoteTitlePad(uint32_t user, uint32_t state, uint8_t* base) {
+  if (!state) return;
+  const uint16_t buttons = rex::memory::load_and_swap<uint16_t>(base + state + 4);  // XINPUT_GAMEPAD.wButtons
+  const uint32_t swap = doa4::intro_skip::Swaps();
+  if (doa4::update_notice::Title().NotePad(user, buttons, swap)) {
+    static std::atomic<int> s_logged{0};
+    if (s_logged.fetch_add(1) < 16)
+      REXLOG_INFO("[doa4][UPDATE] title: START/A read by the game for user {} at swap {} while PRESS START is drawn",
+                  user, swap);
   }
+}
+
+REX_HOOK_RAW(sub_82792040) {
+  if (doa4::lagtrace::On()) doa4::lagtrace::OnPad();  // the latency trace: the pad read
+  const doa4::np::FrameInput* in = doa4::np::StagedInput();
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r4.u32;
+  if (!in) {
+    __imp__sub_82792040(ctx, base);
+    if (ctx.r3.u32 == 0) NoteTitlePad(user, state, base);  // ERROR_SUCCESS
+    return;
+  }
   if (user >= uint32_t(doa4::np::kUsers) || !(in->connected & (1u << user))) {
     ctx.r3.u64 = doa4::np::kNotConnected;
     return;
@@ -1981,6 +2035,7 @@ REX_HOOK_RAW(sub_82792040) {
     doa4::np::PadToGuest(in->pad[user], base + state + 4);
   }
   ctx.r3.u64 = 0;
+  NoteTitlePad(user, state, base);
 }
 
 // r3 = user, r4 = flags, r5 = X_INPUT_CAPABILITIES*: a standard wired gamepad
