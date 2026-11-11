@@ -11,7 +11,7 @@ the game, and the swimsuits need your own DOAX2 disc.
 
 It is a fork of [parkerallan/doa4-recomp](https://github.com/parkerallan/doa4-recomp), published at
 [Dwreckgg/doa4-online](https://github.com/Dwreckgg/doa4-online). On top of it: two-player **online
-play**, frame pacing, an Esc menu (Video / Audio / Controls / Photo / Extras / Online / Game tabs),
+play**, frame pacing, an Esc menu (Game / Controls / Photo / Extras / Online tabs),
 graphics options, full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts
 the game files. Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
 
@@ -149,21 +149,38 @@ same release. You can also download the new zip and unzip it over the old folder
 
 Press **Esc** at any time in the game to open the menu, and **Esc** again (or **Close (Esc)** at the
 bottom) to close it. Your choices are saved to `dead_or_alive_4.toml` next to the exe and come back on
-the next start. The menu has seven tabs:
+the next start. The menu has five tabs: **Game**, **Controls**, **Photo**, **Extras** and **Online**.
 
-**Video**
-- **Display mode:** Windowed or Borderless fullscreen.
+**Game**, from the top:
+- **Display mode:** Windowed, Borderless fullscreen, or Exclusive fullscreen (experimental). The note
+  under it: "Experimental: measured no lower input lag than borderless fullscreen."
+- **VSync:** "Removes tearing on monitors without G-Sync/FreeSync; can add up to one screen refresh of
+  input lag."
+- **Output size:** the size of the window in Windowed, the monitor mode in Exclusive fullscreen, and
+  always the desktop size in Borderless fullscreen. "The size the picture is shown at. Render scale sets
+  how sharp the game draws."
+- **Show FPS over the game (F7).**
 - **Render scale:** x1 (1280x720), x2 (2560x1440), x3 (3840x2160) or x4 (5120x2880, supersampling).
-  It takes effect after a restart; **Restart now** restarts the game for you.
-- **Anti-aliasing:** Off, FXAA or FXAA Extreme. The game already uses 2x MSAA, and FXAA Extreme suits
-  it best (FXAA softens text a little).
-- **Texture filtering:** Off, 2x, 4x, 8x or 16x anisotropic filtering. You may see it after the next
-  screen loads.
+  It takes effect after a restart: until then the tab says "Applies after a restart (running at x1)."
+  (with the scale the game runs at), and **Restart now** restarts the game for you.
+- **Anti-aliasing:** Off, FXAA or FXAA Extreme. "The game uses 2x MSAA; FXAA Extreme suits it best. FXAA
+  also softens text a little."
+- **Texture filtering:** Off, 2x, 4x, 8x or 16x. "Applies to textures as the game draws them; you may
+  see it after the next screen loads."
+- **Speakers:** Automatic, Stereo or 5.1 surround. "Automatic follows Windows: 5.1 when the speakers are
+  set to 5.1 or more, stereo otherwise. 5.1 surround always sends six channels." It takes effect after a
+  restart: until then the tab says "Applies after a restart (running on Automatic)." (with the choice
+  the game runs on) and offers **Restart now**. **Output device** under it shows how many channels your
+  device has and what the game is sending.
+- **Language:** the game's text language: English, Japanese, French, German, Italian, Spanish,
+  Traditional Chinese or Korean. Your pick is applied to the running game and kept for the next start.
+  The text language and subtitles you choose on the game's own options screen are kept the same way.
+- **Start-up:** **Skip the intro at start-up**: "Starts at the title screen. Applies at the next start."
+- **Game files:** the folder the game runs from, with **Change...** to pick another and **Open
+  folder**. "A new location is used from the next start."
+- **Saves:** the folder that holds your saves and shader cache.
 
-**Audio**
-- **Speakers:** Automatic (follows Windows: 5.1 when your speakers are set to 5.1 or more, stereo
-  otherwise), Stereo, or 5.1 surround. It takes effect after a restart (**Restart now**).
-- **Output device:** shows how many channels your device has and what the game is sending.
+![The Esc menu's Game tab: display mode, VSync, output size, Show FPS, render scale, anti-aliasing, texture filtering, speakers, language, skip the intro, game files and saves](docs/images/game-tab.png)
 
 **Controls**
 - **Controller:** pick **Player 1** to **Player 4**, then click a button in the list and press the
@@ -203,16 +220,12 @@ the next start. The menu has seven tabs:
 - **Show ping and input delay over the game (F9).**
 - **Check for Updates** downloads the newest release, and **Open session logs** opens the folder of
   online session logs. **About** shows which version you run.
-
-**Game**
-- **Game files:** the folder the game runs from, with **Change...** to pick another (used from the
-  next start) and **Open folder**.
-- **Saves:** the folder that holds your saves and shader cache.
-
-![The Esc menu's Game tab: the game files folder (with Change... and Open folder) and the saves folder](docs/images/game-tab.png)
+- **Tell me about new versions at start-up** (on unless you turn it off): when a newer release is out,
+  the title screen shows "Update available:" with its version number (for example "Update available:
+  0.3.2") until you press Start. It only tells you; **Check for Updates** does the download.
 
 During an online session some options are locked so both games stay identical: the Extras tab, options
-that need a restart, and changing the game folder.
+that need a restart, the language, and changing the game folder.
 
 **Hotkeys**
 
@@ -220,6 +233,7 @@ that need a restart, and changing the game folder.
 |---|---|
 | **Esc** | Opens and closes the menu |
 | **F12** | Saves a photo |
+| **F7** | Shows the frames per second |
 | **F9** | Shows the online ping and input delay |
 | **F6** | Shows the diagnostics overlay |
 | **F8** | Online: marks the moment of a sound or timing glitch in the session log (send the log with your report) |
