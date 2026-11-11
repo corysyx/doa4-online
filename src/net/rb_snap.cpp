@@ -125,12 +125,50 @@ std::string EqualText(const std::vector<bool>& equal) {
 
 #ifndef DOA4_RB_HOST_TEST
 
+extern "C" size_t doa4_fiber_table(uint32_t* out, size_t max);  // doa4_app_hooks.cpp
+
 namespace {
 
 constexpr uint32_t kPage = 1u << kPageShift;
 constexpr int kSettleMs = 20;  // how long a save / load watches the stopped game for memory that changes by itself
 
 std::atomic<uint32_t> g_device{0};
+
+// The fibers' parked positions (doa4_app_hooks.cpp): 4 words each - buffer, lr, r1, host fiber generation.
+struct FiberPos {
+  uint32_t buf = 0, lr = 0, r1 = 0, gen = 0;
+};
+std::vector<FiberPos> Fibers() {
+  std::vector<uint32_t> w(4 * 256);
+  const size_t n = std::min<size_t>(doa4_fiber_table(w.data(), 256), 256);
+  std::vector<FiberPos> out;
+  for (size_t k = 0; k < n; ++k) out.push_back(FiberPos{w[k * 4], w[k * 4 + 1], w[k * 4 + 2], w[k * 4 + 3]});
+  std::sort(out.begin(), out.end(), [](const FiberPos& a, const FiberPos& b) { return a.buf < b.buf; });
+  return out;
+}
+// "N fibers, M moved: buf lr r1 gen -> lr r1 gen, ..." between two tables.
+std::string FiberText(const std::vector<FiberPos>& was, const std::vector<FiberPos>& now, uint32_t* moved_out) {
+  std::string moved;
+  uint32_t n = 0, added = 0, gone = 0;
+  for (const FiberPos& f : now) {
+    auto it = std::find_if(was.begin(), was.end(), [&](const FiberPos& x) { return x.buf == f.buf; });
+    if (it == was.end()) {
+      ++added;
+      continue;
+    }
+    if (it->lr == f.lr && it->r1 == f.r1 && it->gen == f.gen) continue;
+    if (++n <= 12) {
+      moved += fmt::format("{}{:08X} lr {:08X} r1 {:08X} #{} -> lr {:08X} r1 {:08X} #{}", moved.empty() ? "" : "; ",
+                           f.buf, it->lr, it->r1, it->gen, f.lr, f.r1, f.gen);
+    }
+  }
+  for (const FiberPos& f : was) {
+    if (std::none_of(now.begin(), now.end(), [&](const FiberPos& x) { return x.buf == f.buf; })) ++gone;
+  }
+  if (moved_out) *moved_out = n + added + gone;
+  return fmt::format("{} fibers, {} parked elsewhere, {} new, {} gone{}{}", now.size(), n, added, gone,
+                     moved.empty() ? "" : ": ", moved);
+}
 
 struct Chunk {
   uint32_t addr = 0;  // guest address (page aligned)
@@ -164,6 +202,8 @@ struct Snap {
   std::vector<uint64_t> h1, h2;    // per boundary: hash of the snapshot's pages (kept bytes left out)
   std::vector<np::FrameInput> inputs;
   uint32_t outside = 0;            // pages written in the first pass that the snapshot does not hold
+  bool full = false;               // DOA4_NP_SNAPTEST_MODE=full: every committed page of the areas, written or not
+  std::vector<FiberPos> fib_save, fib_end1;
   uint32_t equal_tests = 0;
 };
 
@@ -351,9 +391,27 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   s.live_new.clear();
   BuildKeeps(s);
   uint32_t pages = 0;
-  for (uint32_t p = 0; p < kPages; ++p) {
-    s.saved[p] = s.seen[p] && SnapPage(p, 0, 0);
-    pages += s.saved[p];
+  if (s.full) {
+    // every committed, writable page of the areas (at most 768 MB), whether the game's code wrote it or not
+    std::memset(s.saved, 0, sizeof s.saved);
+    uint64_t total = 0;
+    for (const auto& [lo, hi] : {std::pair<uint32_t, uint32_t>{0x00010000u, 0x70000000u},
+                                 std::pair<uint32_t, uint32_t>{0x80000000u, 0xA0000000u}}) {
+      ForCommitted(base, lo, hi - lo, [&](uint32_t a, uint32_t n) {
+        for (uint32_t p = a >> kPageShift; p < (a + n) >> kPageShift; ++p) {
+          if (!SnapPage(p, 0, 0) || total >= (768ull << 20)) continue;
+          s.saved[p] = 1;
+          total += kPage;
+          ++pages;
+        }
+      });
+    }
+    if (total >= (768ull << 20)) Out("the full snapshot reached 768 MB: the rest of the committed memory is left out");
+  } else {
+    for (uint32_t p = 0; p < kPages; ++p) {
+      s.saved[p] = s.seen[p] && SnapPage(p, 0, 0);
+      pages += s.saved[p];
+    }
   }
   const size_t bytes = Capture(base, s.saved, &s.chunks, &s.buf);
   const double copy_ms = MsSince(t0);
@@ -367,6 +425,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                     kSettleMs, PagesText(moved, 12)));
   }
   std::memset(s.test, 0, sizeof s.test);
+  s.fib_save = Fibers();
   s.h1.assign(1, Hash(s, base));
   s.h2.clear();
   s.inputs.clear();
@@ -404,6 +463,21 @@ void EndFirstPass(Snap& s, uint8_t* base) {
 }
 
 void Load(Snap& s, uint8_t* base) {
+  // the fibers: a fiber parked somewhere else than at the save resumes its host stack where it is now, with the
+  // guest state of the save (rb_snap.h)
+  s.fib_end1 = Fibers();
+  uint32_t moved_fibers = 0;
+  Out("fibers at the load against the save: " + FiberText(s.fib_save, s.fib_end1, &moved_fibers));
+  if (s.full) {
+    // pages that changed since the save although the game's code did not write them (file reads, sound, the GPU)
+    const std::vector<uint32_t> words = ChangedWords(s, base, s.chunks, s.buf, true);
+    std::vector<uint32_t> unmarked;
+    for (uint32_t w : words) {
+      if (!s.test[w >> kPageShift]) unmarked.push_back(w);
+    }
+    Out(fmt::format("{} words in pages the game's code did not write changed since the save{}{}", unmarked.size(),
+                    unmarked.empty() ? "" : ": ", PagesText(unmarked, 16)));
+  }
   const auto t0 = std::chrono::steady_clock::now();
   // the kept bytes as they are now
   std::vector<uint8_t> kept;
@@ -444,6 +518,7 @@ void Report(Snap& s, uint8_t* base) {
     all = all && equal.back();
   }
   const std::vector<uint32_t> words = ChangedWords(s, base, s.end_chunks, s.end_buf, true);
+  Out("fibers at the end of the second pass against the first: " + FiberText(s.fib_end1, Fibers(), nullptr));
   const bool pass = all && words.empty();
   s.equal_tests += pass;
   std::vector<unsigned char> differs(kPages, 0);
@@ -526,10 +601,13 @@ bool SnapActive() {
     Snap& s = G();
     s.cfg = c;
     s.next_at = c.at;
+    const char* mode = std::getenv("DOA4_NP_SNAPTEST_MODE");
+    s.full = mode && std::string(mode) == "full";
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page
     np::LogLine(fmt::format("[doa4][RB] snaptest: on - {} tests of {} frames, the first entering frame {}, then every {} "
-                            "frames",
-                            c.count, c.frames, c.at, c.every));
+                            "frames; snapshot of {}",
+                            c.count, c.frames, c.at, c.every,
+                            s.full ? "every committed page (DOA4_NP_SNAPTEST_MODE=full)" : "the pages the game's code wrote"));
     return true;
   }();
   return on;

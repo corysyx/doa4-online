@@ -237,6 +237,9 @@ struct GuestFiber {
   bool is_initial = false;     // true if this represents the host thread's
                                // original stack (no GuestFiberProc — we just
                                // SwitchToFiber back to its handle on resume).
+  uint32_t parked_lr = 0;      // rollback test (net/rb_snap.cpp): where the fiber last swapped out (lr, r1) and
+  uint32_t parked_r1 = 0;      // how many host fibers it has had (FIX 7 makes a new one)
+  uint32_t generation = 0;
   bool dispatched = false;     // true once GuestFiberProc has dispatched the
                                // entry on this host fiber. Used to detect the
                                // guest reusing a save-buffer for a *fresh*
@@ -305,6 +308,7 @@ void RecreateHostFiber(GuestFiber* fs) {
   }
   fs->host_fiber = fresh;
   fs->dispatched = false;
+  ++fs->generation;
   if (old) DeleteFiber(old);  // old is parked (not current/running) -> safe
   static std::atomic<uint64_t> s_n{0};
   uint64_t n = s_n.fetch_add(1, std::memory_order_relaxed);
@@ -363,6 +367,11 @@ void DoFiberSwap(PPCContext& ctx, uint8_t* base) {
   uint32_t host_tid = Tid();
   if (out_buf) {
     doa4_record_fiber_swap_out(out_buf, (uint32_t)ctx.lr, ctx.r1.u32, ctx.r3.u32, host_tid);
+    std::lock_guard<std::mutex> lk(g_fiber_mu);
+    if (auto it = g_fibers.find(out_buf); it != g_fibers.end()) {
+      it->second->parked_lr = (uint32_t)ctx.lr;
+      it->second->parked_r1 = ctx.r1.u32;
+    }
   }
 
   // Let the original swap do all the bookkeeping: save outgoing NV regs to
@@ -444,6 +453,23 @@ static void WINAPI GuestFiberProc(void* param) {
 }  // namespace
 
 REX_HOOK_RAW(sub_82793F80) { DoFiberSwap(ctx, base); }
+
+// For the rollback test (net/rb_snap.cpp): every known fiber as 4 words (buffer, parked lr, parked r1, host fiber
+// generation), at most max fibers; returns how many there are.
+extern "C" size_t doa4_fiber_table(uint32_t* out, size_t max) {
+  std::lock_guard<std::mutex> lk(g_fiber_mu);
+  size_t n = 0;
+  for (const auto& [buf, f] : g_fibers) {
+    if (n < max && out) {
+      out[n * 4 + 0] = buf;
+      out[n * 4 + 1] = f->parked_lr;
+      out[n * 4 + 2] = f->parked_r1;
+      out[n * 4 + 3] = f->generation;
+    }
+    ++n;
+  }
+  return n;
+}
 
 // ===========================================================================
 // FIX 4 — Secondary KiSwapContext entry point `sub_827925E8`.
