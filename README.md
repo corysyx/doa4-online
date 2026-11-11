@@ -66,6 +66,11 @@ If the friend's game shows its own code while connecting, the host can type it u
 **Language in a session:** both games use the host's text language and subtitles. Your own choice is not
 changed, and it is back when the session ends.
 
+**Slower PCs:** both games run at the speed of the slower PC. On a CPU with fewer cores (for example 4
+cores) the game can slow down a lot when playing online. Online, avoid the CPU-heavy stages, such as
+Savannah Safari and Experimental Playground, and avoid the DOAX2 swimsuits: they take more CPU than the
+original DOA4 costumes.
+
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
 pre-releases named `alpha-v<x.y.z>` on
@@ -307,6 +312,7 @@ that the game ran fine. Solo offline play does not seem to work under Linux for 
 | The profile / storage device screen on the first start hides the mouse pointer, which makes it awkward to click through. | A fix is planned: the screen should work with a controller or keyboard, or show the pointer. |
 | The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
 | Online: if the joining player presses Start at the title screen, the session can freeze for both players. | Only the host should press Start; if it freezes, leave the session and start a new one. |
+| Online: on a CPU with fewer cores (for example 4 cores) the game can slow down a lot, because both games run at the speed of the slower PC. | Avoid the CPU-heavy stages, such as Savannah Safari and Experimental Playground, when playing online. Avoid the DOAX2 swimsuits online too: they take more CPU than the original DOA4 costumes. |
 | Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
 | Linux (Proton / Wine): the game starts to a black screen instead of opening as intended (reported by one player on GE-Proton11-12). | Joining an online session with another player is reported to still work, and the game runs fine after that. Solo offline play does not seem to work yet. |
 
