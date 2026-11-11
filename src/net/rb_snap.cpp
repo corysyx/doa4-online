@@ -281,10 +281,7 @@ bool Kept(const Snap& s, uint32_t addr) {
 
 void BuildKeeps(Snap& s) {
   s.keeps.clear();
-  if (s.dev_end > s.dev && !s.dev_restore) s.keeps.push_back(Keep{s.dev, s.dev_end});
-  if (s.dev_end > s.dev && s.dev_restore) {
-    for (uint32_t o : s.dev_live) s.keeps.push_back(Keep{s.dev + o, s.dev + o + 4});
-  }
+  if (s.dev_end > s.dev) s.keeps.push_back(Keep{s.dev, s.dev_end});  // restore mode writes it back after the load
   for (uint32_t w : s.live) s.keeps.push_back(Keep{w, w + 4});
   std::sort(s.keeps.begin(), s.keeps.end(), [](const Keep& a, const Keep& b) { return a.lo < b.lo; });
   std::vector<Keep> merged;
@@ -397,22 +394,21 @@ void FindDevice(Snap& s, uint8_t* base) {
                                  : ""));
 }
 
-// Restore mode: the device words that must stay as they are at a load: the ring pointers (+0 write, +4 limit,
-// +8 guarantee: the GPU reads the ring on from where it is, so the device must not move its write pointer back) and
-// any other word holding an address near the ring (the same physical 64 MB), plus DOA4_NP_SNAPTEST_DEVLIVE.
+// Restore mode, at a load: the device words that must stay as they are: the ring pointers (+0 write, +4 limit,
+// +8 guarantee: the GPU reads the ring on from where it is) and every word that moved with the ring since the save
+// (the same distance as +0, within 1 MB: copies of ring addresses in their 0xA/0xB/0xC/0xD forms), plus
+// DOA4_NP_SNAPTEST_DEVLIVE. A ring address looks like a small negative float (0xBE...), so the value alone cannot tell.
 void ClassifyDeviceLive(Snap& s, uint8_t* base) {
   s.dev_live.clear();
-  if (!s.dev || !s.dev_restore) return;
-  const uint32_t ring = Be32(base + s.dev) & 0x1FFFFFFFu;
+  if (!s.dev || !s.dev_restore || s.dev_save.size() != kDeviceSize) return;
+  const uint32_t delta = Be32(base + s.dev) - Be32(s.dev_save.data());
   for (uint32_t o = 0; o + 4 <= kDeviceSize; o += 4) {
-    const uint32_t v = Be32(base + s.dev + o);
-    bool live = o <= 8;
-    if (!live && o != kFenceWriteback && ring) {
-      const bool physical = (v >= 0xA0000000u && v < 0xC0000000u) || (v >= 0x10000000u && v < 0x20000000u);
-      const uint32_t pv = v & 0x1FFFFFFFu;
-      live = physical && (pv > ring ? pv - ring : ring - pv) < (64u << 20);
+    const uint32_t was = Be32(s.dev_save.data() + o), now = Be32(base + s.dev + o);
+    const int32_t off = int32_t(now - was - delta);
+    const bool moved = was != now && delta != 0 && off > -(1 << 20) && off < (1 << 20);
+    if (o <= 8 || moved || std::find(s.dev_extra.begin(), s.dev_extra.end(), o) != s.dev_extra.end()) {
+      s.dev_live.push_back(o);
     }
-    if (live || std::find(s.dev_extra.begin(), s.dev_extra.end(), o) != s.dev_extra.end()) s.dev_live.push_back(o);
   }
 }
 
@@ -494,10 +490,6 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
   const auto t0 = std::chrono::steady_clock::now();
-  ClassifyDeviceLive(s, base);
-  if (s.dev_restore && s.tests_done == 0) {
-    Out(fmt::format("device words kept live in restore mode ({}):{}", s.dev_live.size(), DevLiveText(s, base)));
-  }
   AddLive(&s.live, s.live_new);
   s.live_new.clear();
   BuildKeeps(s);
@@ -602,6 +594,11 @@ void Load(Snap& s, uint8_t* base) {
     Out(fmt::format("{} device words changed since the save (highest at +{}){}{}", n, top, n ? ": " : "", t));
   }
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
+  ClassifyDeviceLive(s, base);
+  if (s.dev_restore) {
+    Out(fmt::format("device words left as they are (they moved with the ring, or DOA4_NP_SNAPTEST_DEVLIVE): {}:{}",
+                    s.dev_live.size(), DevLiveText(s, base)));
+  }
   const auto t0 = std::chrono::steady_clock::now();
   const Fence fence_before = ReadFence(s, base);  // the device's counter before the restore (restore mode puts it back)
   // the kept bytes as they are now
@@ -621,6 +618,13 @@ void Load(Snap& s, uint8_t* base) {
   for (const Keep& k : s.keeps) {
     std::memcpy(base + k.lo, kept.data() + off, k.hi - k.lo);
     off += k.hi - k.lo;
+  }
+  if (s.dev_restore && s.dev_save.size() == kDeviceSize) {
+    // the device goes back to the save, except the words that follow the ring
+    std::vector<uint32_t> live_now;
+    for (uint32_t o : s.dev_live) live_now.push_back(Be32(base + s.dev + o));
+    std::memcpy(base + s.dev, s.dev_save.data(), kDeviceSize);
+    for (size_t k = 0; k < s.dev_live.size(); ++k) Put32(base + s.dev + s.dev_live[k], live_now[k]);
   }
   std::string fence_text;
   if (s.fence_rewind && s.dev) {
