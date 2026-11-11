@@ -367,6 +367,11 @@ Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-online/issues)
    attach the newest folder from **Open session logs** in the Online tab. Both players' logs help most.
 4. Do not attach game files, disc images or anything extracted from them.
 
+## License
+
+This project is under the [MIT License](LICENSE). Third-party code keeps its own licenses, listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No game data is included. You need your own copy of the game.
+
 ## AI disclosure
 
 AI tools were used to help write and test the code and documentation of this branch, changes were tested before they were published.
