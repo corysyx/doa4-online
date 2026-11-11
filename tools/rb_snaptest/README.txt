@@ -11,5 +11,5 @@ during the fight, plays 8 frames, restores the state, plays the same 8 frames ag
 Each test logs PASS or FAIL in np_log.txt ("[doa4][RB] snaptest"), with the memory that differed after the first
 replayed frame and at the end when it fails. Both runs put the D3D device's render state back
 (DOA4_NP_SNAPTEST_DEVICE=state) and the fence counter; the first starts testing at frame 3600, the second at 4096
-(DOA4_NP_SNAPTEST=4096,8,240,12). A crash writes out\\crash.txt in the run's folder.
+(DOA4_NP_SNAPTEST=4096,8,240,12). A crash writes out\crash.txt in the run's folder.
 DOA4_NP_SNAPTEST=<at>,<frames>[,<every>[,<count>]] set before starting the .bat changes the schedule.
