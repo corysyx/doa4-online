@@ -197,7 +197,7 @@ the next start. The menu has five tabs: **Game**, **Controls**, **Photo**, **Ext
 
 The top of the Game tab:
 
-![The top of the Esc menu's Game tab: display mode, VSync, output size, Show FPS, render scale, anti-aliasing, texture filtering and speakers](docs/images/game-tab.png)
+![The top of the Esc menu's Game tab: the Quit Game button, the tabs, display mode, VSync, output size, Show FPS and render scale](docs/images/game-tab.png)
 
 **Controls**
 - **Controller:** pick **Player 1** to **Player 4**, then click a button in the list and press the
