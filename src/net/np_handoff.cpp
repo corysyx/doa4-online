@@ -16,11 +16,12 @@
 namespace doa4::np::handoff {
 namespace {
 
-constexpr uint16_t kVersion = 2;
+constexpr uint16_t kVersion = 3;
 constexpr char kMagic[4] = {'D', '4', 'H', 'O'};
 // Everything but the release text, the guest settings text and the files: magic 4, version 2, build 8, release
-// length 2, role 1, delay 1, local port 2, peer ip 4, peer port 2, token 4, seed 8, suit state 1, guest length 4, file count 4.
-constexpr size_t kFixedBytes = 47;
+// length 2, role 1, delay 1, local port 2, peer ip 4, peer port 2, token 4, seed 8, suit state 1, suit holders 1, guest
+// length 4, file count 4.
+constexpr size_t kFixedBytes = 48;
 constexpr uint8_t kMinDelay = 1;
 constexpr uint8_t kMaxDelay = 8;
 
@@ -216,6 +217,15 @@ const char* FileCollision(const std::vector<File>& files) {
 bool RoleOk(uint8_t role) { return role == uint8_t(Role::kHost) || role == uint8_t(Role::kJoiner); }
 bool DelayOk(uint8_t delay) { return delay >= kMinDelay && delay <= kMaxDelay; }
 bool SuitStateOk(uint8_t state) { return state <= uint8_t(rules::SuitSession::kMixed); }
+// suit_holders against suit_state: none 0, same 3 (both), mixed 1, 2 or 3 (one side, or two different imports).
+bool SuitHoldersOk(uint8_t state, uint8_t holders) {
+  switch (rules::SuitSession(state)) {
+    case rules::SuitSession::kNone: return holders == 0;
+    case rules::SuitSession::kSame: return holders == 3;
+    case rules::SuitSession::kMixed: return holders >= 1 && holders <= 3;
+  }
+  return false;
+}
 
 size_t PackedSize(const Handoff& h) {
   size_t n = kFixedBytes + h.release.size() + h.guest_settings.size();
@@ -303,7 +313,10 @@ std::string ParseSettings(std::string_view text, std::vector<std::optional<std::
 
 // True if Pack may write `h`: every limit and range Unpack enforces.
 bool Packable(const Handoff& h) {
-  if (!RoleOk(uint8_t(h.role)) || !DelayOk(h.delay) || !SuitStateOk(uint8_t(h.suit_state)) || h.session_token == 0) return false;
+  if (!RoleOk(uint8_t(h.role)) || !DelayOk(h.delay) || !SuitStateOk(uint8_t(h.suit_state)) ||
+      !SuitHoldersOk(uint8_t(h.suit_state), h.suit_holders) || h.session_token == 0) {
+    return false;
+  }
   if (h.local_port == 0 || h.peer.port == 0 || !PeerAddressOk(h.peer.ip)) return false;
   if (h.release.size() > kMaxReleaseBytes || h.guest_settings.size() > kMaxGuestBytes) return false;
   if (!PrintableAscii(h.release)) return false;
@@ -357,6 +370,7 @@ std::vector<uint8_t> Pack(const Handoff& h) {
   w.U32(h.session_token);
   w.U64(h.seed);
   w.U8(uint8_t(h.suit_state));
+  w.U8(h.suit_holders);
   w.U32(uint32_t(h.guest_settings.size()));
   w.Text(h.guest_settings);
   w.U32(uint32_t(h.files.size()));
@@ -413,6 +427,8 @@ std::string Unpack(std::span<const uint8_t> bytes, Handoff* out) {
   if (!r.U8(&suit_state)) return kCut;
   if (!SuitStateOk(suit_state)) return "an unknown swimsuit state";
   h.suit_state = rules::SuitSession(suit_state);
+  if (!r.U8(&h.suit_holders)) return kCut;
+  if (!SuitHoldersOk(suit_state, h.suit_holders)) return "swimsuit holders that do not match the swimsuit state";
 
   uint32_t guest_len = 0;
   if (!r.U32(&guest_len)) return kCut;

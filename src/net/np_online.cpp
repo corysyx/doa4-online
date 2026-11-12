@@ -1126,6 +1126,7 @@ void Lobby::Impl::StartSessionNow(uint32_t now) {
   uint64_t seed = 0;
   h.seed = ParseU64(Test("DOA4_NP_SEED"), &seed) ? seed : Random64();
   h.suit_state = rules::SuitSessionOf(p.suits, peer_suits);
+  h.suit_holders = uint8_t((p.suits.empty() ? 0 : 1) | (peer_suits.empty() ? 0 : 2));  // the host is player 0
   h.guest_settings = guest;
   h.files = std::move(files);
   const std::vector<uint8_t> bytes = handoff::Pack(h);

@@ -1550,7 +1550,7 @@ void StartOnline(Host host) {
   std::snprintf(tok, sizeof tok, "%08X", unsigned(s.ho.session_token));
   Log(std::string("session: ") + (s.slot == 0 ? "host" : "joiner") + ", delay " + std::to_string(s.ho.delay) +
       ", token " + tok + ", peer " + rules::EndpointText(s.ho.peer) + ", seed " + std::to_string(s.seed) + ", swimsuits " +
-      rules::SuitSessionName(s.ho.suit_state));
+      rules::SuitSessionName(s.ho.suit_state) + ", holders " + std::to_string(unsigned(s.ho.suit_holders)));
   s.events = _wfopen((s.dir / "events.txt").wstring().c_str(), L"a");
   ReadSweepSetting(s, TestDirEnv("DOA4_NP_SWEEP"));
   if (!SweepOn(s.ho.suit_state)) s.sweep_per_frame = 0;  // whatever a test switch asked: both peers fold the same empty row
@@ -1729,6 +1729,11 @@ std::optional<std::string> SessionGuestValue(std::string_view name) {
 bool SessionSuitsMixed() {
   static const bool off = MixedOff("slot");
   return Online() && S().ho.suit_state == rules::SuitSession::kMixed && !off;
+}
+
+std::optional<uint8_t> SessionMixedSuitHolders() {
+  if (!Online() || S().ho.suit_state != rules::SuitSession::kMixed) return std::nullopt;
+  return S().ho.suit_holders;
 }
 
 std::optional<bool> SessionFullBust() {

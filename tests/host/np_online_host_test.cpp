@@ -1055,7 +1055,7 @@ static void TestStartSession() {
 // Task 5: the two players' import checksums meet in the lobby. A difference never refuses; each side's status says which case
 // it is, and the hand-off carries the state to both, whoever holds the import. Real lobbies over the real transport.
 static void OneSuitCase(const char* name, const std::string& host_suits, const std::string& joiner_suits, rules::SuitSession want,
-                        const std::string& host_text, const std::string& joiner_text) {
+                        uint8_t want_holders, const std::string& host_text, const std::string& joiner_text) {
   Side hs((std::string("suits_h_") + name).c_str()), js((std::string("suits_j_") + name).c_str());
   hs.suits = host_suits;
   js.suits = joiner_suits;
@@ -1075,6 +1075,8 @@ static void OneSuitCase(const char* name, const std::string& host_suits, const s
   CHECK(handoff::Unpack(hb, &h).empty() && handoff::Unpack(jb, &j).empty());
   CHECKF(h.suit_state == want && j.suit_state == want, "%s: hand-offs say %d and %d, want %d", name, int(h.suit_state),
          int(j.suit_state), int(want));
+  CHECKF(h.suit_holders == want_holders && j.suit_holders == want_holders, "%s: hand-offs say holders %d and %d, want %d", name,
+         int(h.suit_holders), int(j.suit_holders), int(want_holders));
   host.Stop();
   joiner.Stop();
 }
@@ -1083,11 +1085,11 @@ static void TestSuitStates() {
   if (!Group("swimsuits: both sides' checksums make the state, in the status line and in both hand-offs; none of it refuses")) return;
   using rules::SuitSession;
   const std::string sha_a = "0123456789abcdef0123456789abcdef01234567", sha_b = "0123456789abcdef0123456789abcdef01234568";
-  OneSuitCase("none", "", "", SuitSession::kNone, "Swimsuits: neither player", "Swimsuits: neither player");
-  OneSuitCase("same", sha_a, sha_a, SuitSession::kSame, "Swimsuits: both", "Swimsuits: both");
-  OneSuitCase("joiner", "", sha_a, SuitSession::kMixed, "Swimsuits: only the other player", "Swimsuits: only you");
-  OneSuitCase("host", sha_a, "", SuitSession::kMixed, "Swimsuits: only you", "Swimsuits: only the other player");
-  OneSuitCase("differ", sha_a, sha_b, SuitSession::kMixed, "Swimsuits: both, from different imports",
+  OneSuitCase("none", "", "", SuitSession::kNone, 0, "Swimsuits: neither player", "Swimsuits: neither player");
+  OneSuitCase("same", sha_a, sha_a, SuitSession::kSame, 3, "Swimsuits: both", "Swimsuits: both");
+  OneSuitCase("joiner", "", sha_a, SuitSession::kMixed, 2, "Swimsuits: only the other player", "Swimsuits: only you");
+  OneSuitCase("host", sha_a, "", SuitSession::kMixed, 1, "Swimsuits: only you", "Swimsuits: only the other player");
+  OneSuitCase("differ", sha_a, sha_b, SuitSession::kMixed, 3, "Swimsuits: both, from different imports",
               "Swimsuits: both, from different imports");
 }
 
@@ -1109,6 +1111,7 @@ static void TestSuitsInSession() {
   h.seed = 1;
   h.guest_settings = GuestText();
   h.suit_state = rules::SuitSession::kMixed;
+  h.suit_holders = 2;  // only the joiner (this side) has an import
   std::string error;
   CHECKF(lobby.StartInSession(s.P(), LoopCfg(), h, [](int32_t, wire::LeaveReason) {}, &error), "StartInSession: %s", error.c_str());
   Rx hello;

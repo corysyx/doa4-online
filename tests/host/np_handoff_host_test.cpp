@@ -409,7 +409,7 @@ struct RawFile {
 };
 struct Raw {
   std::string magic = "D4HO";
-  uint16_t version = 2;
+  uint16_t version = 3;
   uint64_t build = 0x1122334455667788ull;
   std::string release = "netplay-v1.0.3";
   std::optional<uint16_t> release_len;
@@ -421,6 +421,7 @@ struct Raw {
   uint32_t token = 0xCAFEF00Du;
   uint64_t seed = 0x0102030405060708ull;
   uint8_t suit_state = 2;
+  uint8_t suit_holders = 1;  // kMixed, only the host
   std::string guest = GoodText();
   std::optional<uint32_t> guest_len;
   std::optional<uint32_t> count;
@@ -445,6 +446,7 @@ static Bytes Encode(const Raw& r) {
   PutLe(&b, r.token, 4);
   PutLe(&b, r.seed, 8);
   PutLe(&b, r.suit_state, 1);
+  PutLe(&b, r.suit_holders, 1);
   PutLe(&b, r.guest_len ? *r.guest_len : r.guest.size(), 4);
   PutText(&b, r.guest);
   PutLe(&b, r.count ? *r.count : r.files.size(), 4);
@@ -462,9 +464,9 @@ static Raw RawOf(std::vector<RawFile> files) {
   return r;
 }
 
-// The packed size by the documented layout: 47 fixed bytes + release + guest + per file (2 + name + 4 + data).
+// The packed size by the documented layout: 48 fixed bytes + release + guest + per file (2 + name + 4 + data).
 static size_t ExpectedSize(const ho::Handoff& h) {
-  size_t n = 47 + h.release.size() + h.guest_settings.size();
+  size_t n = 48 + h.release.size() + h.guest_settings.size();
   for (const ho::File& f : h.files) n += 2 + f.name.size() + 4 + f.data.size();
   return n;
 }
@@ -495,6 +497,8 @@ static void CheckSame(const ho::Handoff& a, const ho::Handoff& b) {
   CHECK(a.peer == b.peer);
   CHECK(a.session_token == b.session_token);
   CHECK(a.seed == b.seed);
+  CHECK(a.suit_state == b.suit_state);
+  CHECK(a.suit_holders == b.suit_holders);
   CHECK(a.guest_settings == b.guest_settings);
   CHECK(a.files.size() == b.files.size());
   for (size_t i = 0; i < a.files.size() && i < b.files.size(); ++i) {
@@ -530,14 +534,14 @@ static std::string UnpackRefusal(const Bytes& b) {
 // The layout, round trips, truncation
 // =====================================================================================================
 
-// Hand-derived from the documented layout (np_handoff.h), not by running Pack: "D4HO", u16 version 2, u64 build,
+// Hand-derived from the documented layout (np_handoff.h), not by running Pack: "D4HO", u16 version 3, u64 build,
 // text release "v1", u8 role 1, u8 delay 3, u16 local port 7201 (0x1C21), peer 203.0.113.7, u16 peer port 7200
-// (0x1C20), u32 token 0xCAFEF00D, u64 seed, u8 suit_state 2 (kMixed), u32 guest length + the settings text (GoodText: every carried name once,
+// (0x1C20), u32 token 0xCAFEF00D, u64 seed, u8 suit_state 2 (kMixed), u8 suit_holders 1 (the host), u32 guest length + the settings text (GoodText: every carried name once,
 // built from the pinned list), u32 file count 1, then the file: u16 name length 27 (26-byte prefix + "x"), the name,
-// u32 data length 3, 09 08 07. 85 bytes plus the text.
+// u32 data length 3, 09 08 07. 86 bytes plus the text.
 static Bytes Golden() {
   Bytes g = {0x44, 0x34, 0x48, 0x4F,                                                  // "D4HO"
-             0x02, 0x00,                                                              // version 2
+             0x03, 0x00,                                                              // version 3
              0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,                          // build
              0x02, 0x00, 0x76, 0x31,                                                  // "v1"
              0x01, 0x03,                                                              // role joiner, delay 3
@@ -547,6 +551,7 @@ static Bytes Golden() {
              0x0D, 0xF0, 0xFE, 0xCA,                                                  // token
              0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,                          // seed
              0x02,                                                                    // suit_state kMixed
+             0x01,                                                                    // suit_holders: the host
              };
   const std::string text = GoodText();  // u32 length, then the text
   for (int k = 0; k < 4; ++k) g.push_back(uint8_t(text.size() >> (8 * k)));
@@ -571,6 +576,7 @@ static ho::Handoff GoldenHandoff() {
   h.session_token = 0xCAFEF00Du;
   h.seed = 0x0102030405060708ull;
   h.suit_state = rules::SuitSession::kMixed;
+  h.suit_holders = 1;
   h.guest_settings = GoodText();
   h.files.push_back({kPre + "x", {9, 8, 7}});
   return h;
@@ -581,21 +587,53 @@ static ho::Handoff GoldenHandoff() {
 static void TestSuitState() {
   Group("suit state: every value round-trips, at its place");
   for (const rules::SuitSession v : {rules::SuitSession::kNone, rules::SuitSession::kSame, rules::SuitSession::kMixed}) {
+    const uint8_t holders = v == rules::SuitSession::kNone ? 0 : v == rules::SuitSession::kSame ? 3 : 2;
     ho::Handoff h = GoldenHandoff();
     h.suit_state = v;
+    h.suit_holders = holders;
     const Bytes packed = ho::Pack(h);
     CHECK(!packed.empty());
     CHECK(packed.size() == ExpectedSize(h));
     ho::Handoff out;
     CHECK(ho::Unpack(packed, &out).empty());
     CHECK(out.suit_state == v);
+    CHECK(out.suit_holders == holders);
     Raw r = RawOf({{kPre + "x", {9, 8, 7}}});
     r.release = "v1";
     r.suit_state = uint8_t(v);
+    r.suit_holders = holders;
     CHECK(Encode(r) == packed);  // the byte sits where the layout says, by hand
     CHECK(ho::Pack(out) == packed);
   }
   CHECK(ho::Handoff{}.suit_state == rules::SuitSession::kNone);  // a hand-off nobody set a state on is today's session
+  CHECK(ho::Handoff{}.suit_holders == 0);
+
+  Group("suit holders: every value that matches its state round-trips; one that contradicts it is refused both ways");
+  {
+    using SS = rules::SuitSession;
+    const struct { SS state; uint8_t holders; bool ok; } cases[] = {
+        {SS::kNone, 0, true},  {SS::kNone, 1, false}, {SS::kNone, 3, false},
+        {SS::kSame, 3, true},  {SS::kSame, 1, false}, {SS::kSame, 0, false},
+        {SS::kMixed, 1, true}, {SS::kMixed, 2, true}, {SS::kMixed, 3, true}, {SS::kMixed, 0, false}, {SS::kMixed, 4, false},
+        {SS::kMixed, 255, false}};
+    for (const auto& c : cases) {
+      g_ctx = "state " + std::to_string(int(c.state)) + " holders " + std::to_string(c.holders);
+      ho::Handoff h = GoldenHandoff();
+      h.suit_state = c.state;
+      h.suit_holders = c.holders;
+      CHECK(ho::Pack(h).empty() == !c.ok);
+      Raw r = RawOf({{kPre + "x", {9, 8, 7}}});
+      r.suit_state = uint8_t(c.state);
+      r.suit_holders = c.holders;
+      const std::string why = UnpackRefusal(Encode(r));
+      if (c.ok) {
+        CHECK(why.empty());
+      } else {
+        CHECK(why == "swimsuit holders that do not match the swimsuit state");
+      }
+    }
+    g_ctx.clear();
+  }
 
   Group("suit state: a value outside the three is refused both ways");
   for (const unsigned bad : {3u, 4u, 255u}) {
@@ -609,10 +647,10 @@ static void TestSuitState() {
   }
   g_ctx.clear();
 
-  Group("suit state: an old hand-off (version 1, no such byte) is refused, not misread");
-  {
+  Group("suit state: an old hand-off (version 1 without the state, version 2 without the holders) is refused, not misread");
+  for (const uint16_t old : {uint16_t(1), uint16_t(2)}) {
     Raw r = RawOf({{kPre + "x", {9, 8, 7}}});
-    r.version = 1;
+    r.version = old;
     CHECK(UnpackRefusal(Encode(r)) == "a different hand-off version");
   }
   Group("suit state: a packet cut at the state byte is refused");
@@ -628,7 +666,7 @@ static void TestSuitState() {
 static void TestLayout() {
   Group("layout: Pack writes the documented bytes (little-endian, in the documented order)");
   const Bytes golden = Golden();
-  CHECK(golden.size() == 85 + GoodText().size());
+  CHECK(golden.size() == 86 + GoodText().size());
   CHECK(ho::Pack(GoldenHandoff()) == golden);
   CHECK(Encode([] {
           Raw r;
@@ -1032,7 +1070,7 @@ static void TestHeaderRefusals() {
       b[size_t(pos)] ^= 0xFF;
       CHECK(UnpackRefusal(b) == "not a session hand-off");
     }
-    for (unsigned v : {0u, 1u, 3u, 0x0100u, 0xFFFFu}) {
+    for (unsigned v : {0u, 1u, 2u, 4u, 0x0100u, 0xFFFFu}) {
       Raw m;
       m.version = uint16_t(v);
       g_ctx = "version " + std::to_string(v);

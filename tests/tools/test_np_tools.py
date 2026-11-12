@@ -3129,6 +3129,46 @@ def test_sweep_masks_match_source(root):
     check(overlap == [], f"MIXED_MASKS reach nothing a mixed session lists: {overlap}")
 
 
+def test_pair_session_holders(root):
+    # the session line's swimsuit holders (hand-off v3): read from both shapes, compared between the copies, written by np_session.cpp
+    mod = load("np_pair")
+    old = mod.SESSION_SUITS.match("session: host, delay 2, token 0000ABCD, peer 127.0.0.1:7201, seed 5, swimsuits mixed")
+    new = mod.SESSION_SUITS.match("session: joiner, delay 2, token 0000ABCD, peer 127.0.0.1:7200, seed 5, swimsuits mixed, holders 2")
+    two = lambda m: (m.groups() + (None, None))[:2] if m else None  # never raises on a pattern with fewer groups
+    check(two(old) == ("mixed", None), f"np_pair: the line before holders: {two(old)}")
+    check(two(new) == ("mixed", "2"), f"np_pair: the line with holders: {two(new)}")
+
+    class Copy:
+        def __init__(self, name, line):
+            self.name, self.line = name, line
+
+        def np_log(self):
+            return [self.line]
+
+        def session_dir(self):
+            return os.path.join(root, "no_session_" + self.name)
+
+    def judge(h, j):
+        pair = mod.Pair.__new__(mod.Pair)
+        pair.problems = []
+        lines = []
+        try:
+            pair.suit_state(lines, Copy("host", h), Copy("joiner", j))
+        except Exception as e:  # a check per call, never a raise that hides the later ones
+            pair.problems.append(f"suit_state raised {e!r}")
+        return lines, pair.problems
+
+    line = "session: {}, delay 2, token 0000ABCD, peer 127.0.0.1:7200, seed 5, swimsuits mixed{}"
+    lines, problems = judge(line.format("host", ", holders 2"), line.format("joiner", ", holders 2"))
+    check("session swimsuit holders: host 2, joiner 2" in lines and problems == [], f"np_pair: equal holders: {lines} {problems}")
+    lines, problems = judge(line.format("host", ", holders 2"), line.format("joiner", ", holders 1"))
+    check(any("disagree about the swimsuit holders: host 2, joiner 1" in p for p in problems), f"np_pair: different holders: {problems}")
+    lines, problems = judge(line.format("host", ""), line.format("joiner", ""))
+    check(not any("holders" in l for l in lines) and problems == [], f"np_pair: lines without holders: {lines} {problems}")
+    src = open(os.path.join(HERE, "..", "..", "src", "net", "np_session.cpp"), encoding="utf-8").read()
+    check('", holders " + std::to_string(unsigned(s.ho.suit_holders))' in src, "np_session.cpp's session line writes the holders")
+
+
 def test_digest_regions_match_source(root):
     # np_pair's region lists against np_digest.h DigestRegions, by reading its two branches in order
     mod = load("np_pair")
