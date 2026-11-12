@@ -23,6 +23,7 @@
 #include <rex/system/xthread.h>
 
 #include "doa4_intro_skip.h"
+#include "doa4_online_item_block.h"
 #include "doa4_title_word.h"
 #include "doa4_update_notice.h"
 #include "generated/default/dead_or_alive_4_init.h"
@@ -81,6 +82,9 @@ void doa4::title_word::EnableWordDraw() { g_title_word.store(true, std::memory_o
 REX_HOOK_RAW(sub_823BB470) {
   const uint32_t draw = ctx.r3.u32;
   const uint32_t sprite = rex::memory::load_and_swap<uint32_t>(base + draw + 4);
+  // MODE SELECT's DOA ONLINE caption on screen: the pad read drops A and START (doa4_online_item_block.h).
+  doa4::online_item_block::Get().NoteDraw(sprite, (rex::memory::load<uint8_t>(base + draw + 23) & 0x08) != 0,
+                                          doa4::intro_skip::Frames());
   // The first title logo draw of the run (doa4_intro_skip.h): the intro skip's latch, set once, never reset.
   if (doa4::intro_skip::NoteSpriteDraw(sprite)) {
     auto* thread = rex::system::XThread::IsInThread() ? rex::system::XThread::GetCurrentThread() : nullptr;

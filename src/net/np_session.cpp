@@ -47,6 +47,7 @@
 #include "../doa4_intro_skip.h"
 #include "../doa4_lagtrace.h"
 #include "../doa4_language_hooks.h"
+#include "../doa4_online_item_block.h"
 #include "../doa4_photo_win.h"
 #include "../doa4_tweaks.h"
 #include "../doa4_unlocks.h"
@@ -1984,6 +1985,22 @@ REX_HOOK_RAW(sub_824F4498) {
   if (doa4::np::Active() && doa4::np::det::On(doa4::np::det::kClock)) doa4::np::HoldFrameTiming(base);
 }
 
+// MODE SELECT's DOA ONLINE item (the game's Xbox Live mode, which soft-locks on PC): while its caption is on screen the
+// read loses A and START (doa4_online_item_block.h). Every process, sessions included: the rule's clock is the game's frame
+// count, so both players of a session decide alike.
+static void BlockOnlineItem(uint32_t user, uint32_t state, uint8_t* base) {
+  if (!state) return;
+  const uint16_t buttons = rex::memory::load_and_swap<uint16_t>(base + state + 4);  // XINPUT_GAMEPAD.wButtons
+  const uint32_t frame = doa4::intro_skip::Frames();
+  const uint16_t kept = doa4::online_item_block::Get().Filter(buttons, frame);
+  if (kept == buttons) return;
+  rex::memory::store_and_swap<uint16_t>(base + state + 4, kept);
+  static std::atomic<int> s_logged{0};
+  if (s_logged.fetch_add(1) < 8)
+    REXLOG_INFO("[doa4][MENU] DOA ONLINE item: A/START dropped for user {} at frame {} (the game's online mode is blocked)",
+                user, frame);
+}
+
 // r3 = user (0-3), r4 = X_INPUT_STATE* (be32 packet number, then the 12-byte
 // XINPUT_GAMEPAD). Returns r3 = 0 (connected) or ERROR_DEVICE_NOT_CONNECTED.
 // The start-up update notice (Task 15, R103; doa4_update_notice.h): the buttons this read hands the game, for the
@@ -2007,7 +2024,10 @@ REX_HOOK_RAW(sub_82792040) {
   const uint32_t state = ctx.r4.u32;
   if (!in) {
     __imp__sub_82792040(ctx, base);
-    if (ctx.r3.u32 == 0) NoteTitlePad(user, state, base);  // ERROR_SUCCESS
+    if (ctx.r3.u32 == 0) {  // ERROR_SUCCESS
+      BlockOnlineItem(user, state, base);
+      NoteTitlePad(user, state, base);
+    }
     return;
   }
   if (user >= uint32_t(doa4::np::kUsers) || !(in->connected & (1u << user))) {
@@ -2019,6 +2039,7 @@ REX_HOOK_RAW(sub_82792040) {
     doa4::np::PadToGuest(in->pad[user], base + state + 4);
   }
   ctx.r3.u64 = 0;
+  BlockOnlineItem(user, state, base);
   NoteTitlePad(user, state, base);
 }
 
