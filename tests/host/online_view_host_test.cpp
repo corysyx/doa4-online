@@ -685,7 +685,26 @@ static void TestDefaultsUnchanged() {
   CHECK(cases == 2 * 7 * 2 * 2 * 2 * 2);
 }
 
+// A code that arrives by the Paste buttons or Ctrl+V loses its whitespace (the user, 2026-11-11): spaces, tabs, line
+// breaks, other control characters, no-break space U+00A0, zero-width space U+200B, BOM U+FEFF; nothing else.
+static void TestCodeSpaces() {
+  for (uint32_t c : {0x20u, 0x09u, 0x0Au, 0x0Du, 0x0Bu, 0x0Cu, 0x00A0u, 0x200Bu, 0xFEFFu, 0x01u, 0x7Fu}) CHECK(IsCodeSpace(c));
+  for (uint32_t c : {uint32_t('A'), uint32_t('z'), uint32_t('7'), uint32_t('.'), uint32_t(':'), uint32_t('-'), 0x00E9u, 0x3042u})
+    CHECK(!IsCodeSpace(c));
+  CHECK_EQ(StripCodeSpaces(" ABC DEF\t7\r\n"), "ABCDEF7");
+  CHECK_EQ(StripCodeSpaces("\xC2\xA0" "AB\xE2\x80\x8B" "CD\xEF\xBB\xBF"), "ABCD");   // no-break, zero-width, BOM
+  CHECK_EQ(StripCodeSpaces("1.2.3.4 : 7201"), "1.2.3.4:7201");
+  CHECK_EQ(StripCodeSpaces("caf\xC3\xA9"), "caf\xC3\xA9");                        // other UTF-8 kept whole
+  CHECK_EQ(StripCodeSpaces(""), "");
+  CHECK_EQ(PastedCode(" AB CD ", 64), "ABCD");
+  CHECK_EQ(PastedCode("ABCDEFGH", 5), "ABCD");                                    // 4 bytes + the terminating 0
+  CHECK_EQ(PastedCode("AB\xC3\xA9", 4), "AB");                                    // never cut inside a character
+  CHECK_EQ(PastedCode("ABC", 0), "");
+  CHECK_EQ(PastedCode("  AB", 3), "AB");                                          // stripped before the cut (not "")
+}
+
 int main() {
+  TestCodeSpaces();
   TestOffline();
   TestHosting();
   TestConnectedHost();

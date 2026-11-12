@@ -97,4 +97,14 @@ std::vector<std::string> StatsLines(bool connected, float ping_ms, int delay_fra
 // empty, " note=<join_host_note>".
 std::string TabLogLine(const In& in, const View& view);
 
+// Codes in the join and Reach out fields (the user, 2026-11-11): whitespace never belongs in one, so a code that arrives
+// by the Paste buttons or Ctrl+V loses it. IsCodeSpace: ASCII whitespace and control characters (< 0x20, 0x7F), no-break
+// space U+00A0, zero-width space U+200B, BOM U+FEFF (the field's character filter drops them as they are typed or pasted).
+bool IsCodeSpace(uint32_t c);
+// `text` (UTF-8) without those characters; everything else kept byte for byte.
+std::string StripCodeSpaces(std::string_view text);
+// The Paste buttons: the clipboard text stripped, then cut to fit a field buffer of `capacity` bytes (its terminating 0
+// included), never inside a UTF-8 character.
+std::string PastedCode(std::string_view clipboard, size_t capacity);
+
 }  // namespace doa4::online_view
