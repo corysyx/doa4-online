@@ -48,6 +48,7 @@
 #include "../doa4_lagtrace.h"
 #include "../doa4_language_hooks.h"
 #include "../doa4_online_item_block.h"
+#include "../doa4_pause_reset.h"
 #include "../doa4_photo_win.h"
 #include "../doa4_tweaks.h"
 #include "../doa4_unlocks.h"
@@ -2008,6 +2009,41 @@ static void BlockOnlineItem(uint32_t user, uint32_t state, uint8_t* base) {
                 user, frame);
 }
 
+// START pressed together with BACK (doa4_pause_reset.h, issue #4's pause streaks): on the frame both go down the read
+// hands the game BACK only, and START on the pad's next frame. Every process, sessions included: the clock is the game's
+// frame count and the memory is what the game was given, so both players of a session decide alike. Before the DOA ONLINE
+// block, which may still drop the delayed START. DOA4_PAUSE_RESET=off (a test switch) leaves the pads as they are, so one
+// build shows the streaks beside the fix.
+static void DelayStartWithBack(uint32_t user, uint32_t state, uint8_t* base) {
+  if (!state) return;
+  static const bool on = [] {
+    const char* v = doa4::np::TestSwitch("DOA4_PAUSE_RESET");
+    const bool off = v && std::string_view(v) == "off";
+    if (off) REXLOG_WARN("[doa4][PAD] DOA4_PAUSE_RESET=off: START with BACK is not delayed (test switch)");
+    return !off;
+  }();
+  if (!on) return;
+  static std::mutex mu;
+  static doa4::pause_reset::Pads pads;
+  const uint16_t buttons = rex::memory::load_and_swap<uint16_t>(base + state + 4);  // XINPUT_GAMEPAD.wButtons
+  uint16_t kept = 0;
+  uint32_t delayed = 0, frame = 0;
+  {
+    std::lock_guard lk(mu);
+    frame = doa4::intro_skip::Frames();  // read under the lock: the rule gets its frames in order
+    kept = pads.Filter(user, buttons, frame);
+    delayed = pads.Delayed();
+  }
+  if (kept == buttons) return;
+  rex::memory::store_and_swap<uint16_t>(base + state + 4, kept);
+  static std::atomic<int> s_logged{0};
+  if (s_logged.fetch_add(1) < 16) {
+    REXLOG_INFO("[doa4][PAD] START with BACK on one frame: user {} at frame {} gets {:#06x} for {:#06x} ({} so far; the pause opens "
+                "one frame after the reset)",
+                user, frame, kept, buttons, delayed);
+  }
+}
+
 // r3 = user (0-3), r4 = X_INPUT_STATE* (be32 packet number, then the 12-byte
 // XINPUT_GAMEPAD). Returns r3 = 0 (connected) or ERROR_DEVICE_NOT_CONNECTED.
 // The start-up update notice (Task 15, R103; doa4_update_notice.h): the buttons this read hands the game, for the
@@ -2032,6 +2068,7 @@ REX_HOOK_RAW(sub_82792040) {
   if (!in) {
     __imp__sub_82792040(ctx, base);
     if (ctx.r3.u32 == 0) {  // ERROR_SUCCESS
+      DelayStartWithBack(user, state, base);
       BlockOnlineItem(user, state, base);
       NoteTitlePad(user, state, base);
     }
@@ -2046,6 +2083,7 @@ REX_HOOK_RAW(sub_82792040) {
     doa4::np::PadToGuest(in->pad[user], base + state + 4);
   }
   ctx.r3.u64 = 0;
+  DelayStartWithBack(user, state, base);
   BlockOnlineItem(user, state, base);
   NoteTitlePad(user, state, base);
 }
