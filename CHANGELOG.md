@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.3 (2026-11-12)
+
+### New
+- A red **Quit Game** button at the top right of the Esc menu closes the game, offline or online.
+- **Paste** buttons beside the join-code field and the Reach out field in the Online tab put a copied code in.
+- Discord shows **"Playing Dead or Alive 4 Online"** (with the time played) while the game runs and the Discord app is
+  open. Turn it off in the Esc menu's Game tab.
+- The Esc menu's text is larger in fullscreen (borderless and exclusive). In a window it keeps the old size.
+
+### Fixed
+- The game's own DOA ONLINE (Xbox Live) item on MODE SELECT can no longer be entered: it froze the game. Everything else
+  on that screen works as before.
+- Ctrl+V, Ctrl+C, Ctrl+X and Ctrl+A now work in the Esc menu's text fields, so a join code can be pasted.
+- Spaces and line breaks copied along with a code are removed, whether it is pasted with Ctrl+V or the Paste button.
+- RANDOM on character select now gives every costume the same chance. Before, COS. 1 came up far more often than the rest.
+
+### Notes
+- RANDOM includes the DOAX2 swimsuits when you imported them. In an online match where only one player has the
+  swimsuits (or the two imports differ), RANDOM gives both players only the normal costumes, because a randomly picked
+  swimsuit there could make the match go out of sync. Picking a swimsuit by hand works as before.
+
 ## 0.3.2 (2026-11-11)
 
 ### Fixed
