@@ -10,6 +10,6 @@ What it does (src/net/rb_snap.h): a record run (DOA4_NP=record) with DOA4_NP_SNA
 during the fight, plays 8 frames, restores the state, plays the same 8 frames again with the same input and compares.
 Each test logs PASS or FAIL in np_log.txt ("[doa4][RB] snaptest"), with the memory that differed after the first
 replayed frame and at the end when it fails. All runs put the D3D device's render state back
-(DOA4_NP_SNAPTEST_DEVICE=state) and the fence counter; the first starts testing at frame 3600, the second at 4096
-(DOA4_NP_SNAPTEST=4096,8,240,12), the third at 3600 with the sound clock not rewound (DOA4_NP_SNAPTEST_AUDIO=leave). A crash writes out\crash.txt in the run's folder.
+(DOA4_NP_SNAPTEST_DEVICE=state) and the fence counter; all three test from frame 3600: the first puts graphics
+memory back too (DOA4_NP_SNAPTEST_PHYS=restore), the second snapshots every page (DOA4_NP_SNAPTEST_MODE=full), the third both. A crash writes out\crash.txt in the run's folder.
 DOA4_NP_SNAPTEST=<at>,<frames>[,<every>[,<count>]] set before starting the .bat changes the schedule.

@@ -2,8 +2,8 @@
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
 rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.117 or later) and double-click it. The game plays a scripted
 rem Versus fight by itself three times (about 2 minutes each), rewinds it 12 times each time and checks that every replay
-rem comes out the same (the D3D device's render state goes back with the snapshot): from frame 3600, from frame 4096
-rem (where it has crashed so far), and from frame 3600 again with the sound clock left as before (for comparison).
+rem comes out the same (the D3D device's render state goes back with the snapshot), each time from frame 3600: with
+rem graphics memory put back, with every page of game memory in the snapshot, and with both.
 rem Your own save is not used or changed: each run gets a fresh, empty user data folder. A run that has not ended
 rem after 4 minutes, or that froze, is closed.
 setlocal
@@ -29,9 +29,9 @@ set "CACHEARG="
 if exist "%CACHE%" set "CACHEARG=--cache_path=%CACHE%"
 echo The game now plays a fight by itself, three times, and rewinds it a few times (about 6 minutes in all).
 echo Do not touch it: it closes by itself each time.
-for %%M in (a3600 b4096 c3600old) do call :run %%M
+for %%M in (a3600phys b3600full c3600both) do call :run %%M
 if exist "%HERE%snaptest_results.zip" del "%HERE%snaptest_results.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a3600','%HERE%snaptest_run_b4096','%HERE%snaptest_run_c3600old' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a3600phys','%HERE%snaptest_run_b3600full','%HERE%snaptest_run_c3600both' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
 echo.
 if exist "%HERE%snaptest_results.zip" (
   echo DONE. Send snaptest_results.zip from the game folder.
@@ -49,15 +49,14 @@ mkdir "%RUN%\out"
 set "DOA4_NP_DIR=%RUN%\out"
 set "DOA4_NP_SNAPTEST_FENCE=rewind"
 set "DOA4_NP_SNAPTEST_DEVICE=state"
-set "DOA4_NP_SNAPTEST=4096,8,240,12"
-if "%1"=="a3600" set "DOA4_NP_SNAPTEST=1"
-if "%1"=="c3600old" set "DOA4_NP_SNAPTEST=1"
+set "DOA4_NP_SNAPTEST=1"
 set "DOA4_NP_SNAPTEST_MODE=marked"
-if "%1"=="c4096full" set "DOA4_NP_SNAPTEST_MODE=full"
+if "%1"=="b3600full" set "DOA4_NP_SNAPTEST_MODE=full"
+if "%1"=="c3600both" set "DOA4_NP_SNAPTEST_MODE=full"
 set "DOA4_NP_SNAPTEST_PHYS="
-if "%1"=="d4096phys" set "DOA4_NP_SNAPTEST_PHYS=restore"
+if "%1"=="a3600phys" set "DOA4_NP_SNAPTEST_PHYS=restore"
+if "%1"=="c3600both" set "DOA4_NP_SNAPTEST_PHYS=restore"
 set "DOA4_NP_SNAPTEST_AUDIO="
-if "%1"=="c3600old" set "DOA4_NP_SNAPTEST_AUDIO=leave"
 set "DOA4_NP_SNAPTEST_DEVLIVE="
 set "REX_LOG_LAZY_OBJECTS=1"
 echo.
