@@ -1491,6 +1491,8 @@ class DeadOrAlive4App : public rex::ReXApp {
   // presenter paints from the UI thread (every guest frame waits for a UI
   // repaint, and the UI repaints continuously), instead of presenting each
   // frame straight from the GPU thread.
+  // The Esc menu's 13 px font (doa4_menu.h AddMenuFont), added after the SDK's own fonts (its default stays the first).
+  void OnConfigureFonts(ImFontAtlas* atlas) override { doa4::AddMenuFont(atlas); }
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     if (!drawer) return;
     rex::ui::RegisterBind("bind_doa4_diag", "F6", "Toggle DOA4 diagnostics overlay",

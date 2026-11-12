@@ -64,8 +64,8 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
 
   if (view.show_join || view.show_host) {
     ImGui::SeparatorText("Play with a friend");
-    ImGui::SetNextItemWidth(kCodeFieldWidth);
     ImGui::InputText("##join_code", join_, sizeof join_);
+    ImGui::SetNextItemWidth(display::MenuPx(kCodeFieldWidth, ImGui::GetFontSize()));
     ImGui::SameLine();
     np::rules::Endpoint ep;
     const bool code_ok = join_[0] != '\0' && np::rules::ParseJoinCode(join_, &ep);
@@ -92,8 +92,8 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
   if (view.show_reach_out) {
     ImGui::SeparatorText("Strict router?");
     ImGui::TextWrapped("If the other player cannot connect, type the code they show and press Reach out.");
-    ImGui::SetNextItemWidth(kCodeFieldWidth);
     ImGui::InputText("##reach_code", reach_, sizeof reach_);
+    ImGui::SetNextItemWidth(display::MenuPx(kCodeFieldWidth, ImGui::GetFontSize()));
     ImGui::SameLine();
     np::rules::Endpoint ep;
     const bool reach_ok = reach_[0] != '\0' && np::rules::ParseJoinCode(reach_, &ep);
@@ -134,7 +134,7 @@ void OnlineTab::Draw(const OnlineHost& host, const online_view::In& in, const on
     if (save_then_set("netplay_delay_auto", "false", false)) changed = true;
   }
   ImGui::BeginDisabled(automatic);
-  ImGui::SetNextItemWidth(kCodeFieldWidth);
+  ImGui::SetNextItemWidth(display::MenuPx(kCodeFieldWidth, ImGui::GetFontSize()));
   if (ImGui::SliderInt("frames", &frames, 1, 8)) {
     if (save_then_set("netplay_delay", std::to_string(frames), false)) changed = true;
   }
@@ -198,13 +198,13 @@ float OnlineTab::WidestRow(const online_view::In& in, const online_view::View& v
   std::vector<float> w = {
       text(kNotAvailable),
       row({text(in.lobby.my_code), button("Copy")}),
-      row({kCodeFieldWidth, button("Join"), button("Host")}),
+      row({display::MenuPx(kCodeFieldWidth, ImGui::GetFontSize()), button("Join"), button("Host")}),
       button("Last code"),
       text(np::rules::kBadCodeText),
-      row({kCodeFieldWidth, button("Reach out")}),
+      row({display::MenuPx(kCodeFieldWidth, ImGui::GetFontSize()), button("Reach out")}),
       row({button("Start online session"), button("Leave online session"), button("Disconnect")}),
       row({toggle("Auto"), toggle("Manual")}),
-      kCodeFieldWidth + st.ItemInnerSpacing.x + text("frames"),
+      display::MenuPx(kCodeFieldWidth, ImGui::GetFontSize()) + st.ItemInnerSpacing.x + text("frames"),
       text(kDelayNote),
       toggle(kStatsLabel),
       row({button("Check for Updates"), button("Restart game"), text(view.update_note.empty() ? updater::kOnlineText : view.update_note)}),

@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <optional>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -38,8 +39,15 @@ namespace rex::ui {
 class ImGuiDrawer;
 class Window;
 }  // namespace rex::ui
+struct ImFontAtlas;
 
 namespace doa4 {
+
+// The Esc menu's font (the user, 2026-11-11: text "a few sizes larger"): ImGui's built-in ProggyClean at 13 px, made for that
+// size, with the SDK's Japanese merge, added to the atlas from the app's OnConfigureFonts. The SDK's own font is ProggyTiny
+// at 10 px, and its renderer bakes each font at one size only (no ImGuiBackendFlags_RendererHasTextures), so scaling it
+// would draw soft glyphs (review 1, I2). Without this font the menu falls back to the scaled default.
+void AddMenuFont(ImFontAtlas* atlas);
 
 struct MenuHost {
   rex::ui::Window* window = nullptr;
@@ -217,6 +225,7 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   OnlineTab online_tab_;
   std::string logged_tab_line_;  // the last "[doa4][NET] tab: ..." line written
   bool logged_locks_ = false;    // the "menu: locked in session" line was written
+  std::optional<bool> drawn_large_;  // the font of the last frame drawn (true: the fullscreen one); none before the first
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // GuardedDefer's token; cleared by ~MenuDialog
 };
 
