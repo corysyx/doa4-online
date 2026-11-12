@@ -53,6 +53,7 @@
 #include "doa4_lagtrace.h"
 #include "doa4_language.h"
 #include "doa4_lowmem.h"
+#include "doa4_move_guard.h"
 #include "doa4_net_overlay.h"
 #include "doa4_online_view.h"
 #include "doa4_photo_hook.h"
@@ -2230,6 +2231,11 @@ class DeadOrAlive4App : public rex::ReXApp {
       return heap && heap->Protect(address, size, access);
     };
     patcher_.CaptureOriginals(guest_, [memory](uint32_t size) { return memory->SystemHeapAlloc(size); });
+    {  // The move-record lookup guard's empty record (doa4_move_guard.h, issue #9).
+      const uint32_t block = memory->SystemHeapAlloc(doa4::move_guard::kEmptyBlockSize);
+      if (block) doa4::move_guard::FillEmptyRecord(block, [this](uint32_t a, uint8_t v) { guest_.Write(a, v); });
+      doa4::move_guard::Install(block);
+    }
     guest_ready_ = true;
     const auto& tweaks = doa4::tweaks::AllTweaks();
     for (size_t i = 0; i < tweaks.size(); ++i) {

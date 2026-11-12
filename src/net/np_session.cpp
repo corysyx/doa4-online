@@ -435,7 +435,8 @@ void Enqueue(Job job) {
 // so one build shows the failure beside its fix.
 bool MixedOff(const char* what) { return TestDirEnv("DOA4_NP_TEST_MIXED_OFF").find(what) != std::string::npos; }
 
-// DOA4_NP_POKE=<frame>:<addr>:set:<hex bytes>|add:<n>[;...] (a debug test switch, online, test dir only): at the
+// DOA4_NP_POKE=<frame>:<addr>:set:<hex bytes>|add:<n>[;...] (a debug test switch: a record or replay run, or an
+// online session with a test dir; never a session without one): at the
 // frame boundary of <frame>, after hashing, write the bytes at the guest address, or add n to the big-endian u32 there.
 // A perturbation probe: one side's guest memory is changed where the peers are known to differ; if guest code that
 // feeds game state reads it, the digests or sweeps part later in the session.
@@ -448,7 +449,7 @@ void PokeAt(uint8_t* base, uint32_t f) {
   };
   static const std::vector<Poke> pokes = [] {
     std::vector<Poke> out;
-    std::stringstream ss(TestDirEnv("DOA4_NP_POKE"));
+    std::stringstream ss(Switch("DOA4_NP_POKE"));
     std::string item;
     while (std::getline(ss, item, ';')) {
       std::stringstream is(item);
@@ -1396,6 +1397,7 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
     Enqueue(std::move(job));
     if (s.heap_dump) EnqueueHeapDump(f);
   }
+  PokeAt(base, f);  // DOA4_NP_POKE: a scripted run sets up a state its input cannot reach
 
   // 2. Requests; the unlock of a replay of a session (R21: the frame hook's step 3, before det); the input of frame f.
   if ((f % 15) == 0) PollRequests(s, f);
