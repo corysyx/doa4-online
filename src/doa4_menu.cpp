@@ -314,6 +314,20 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowSize(ImVec2(width, 0.0f), font_changed ? ImGuiCond_Always : ImGuiCond_Appearing);
   ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
   if (ImGui::Begin("DOA4###doa4_menu", nullptr, ImGuiWindowFlags_NoCollapse)) {
+    // Quit Game (the user, 2026-11-11): a red button at the top right that closes the game, the same way as closing its
+    // window (the Restart buttons' path), in or out of an online session.
+    const float quit_w = ImGui::CalcTextSize("Quit Game").x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - quit_w));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.08f, 0.08f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.15f, 0.15f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.55f, 0.05f, 0.05f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 1.00f, 1.00f, 1.00f));
+    if (ImGui::Button("Quit Game")) {
+      REXLOG_INFO("[doa4][menu] Quit Game pressed: closing the game");
+      rex::ui::Window* window = host_.window;
+      host_.defer([window] { window->RequestClose(); });
+    }
+    ImGui::PopStyleColor(4);
     if (ImGui::BeginTabBar("tabs")) {
       if (ImGui::BeginTabItem("Game")) {
         DrawGameTab();
