@@ -20,6 +20,7 @@
 #include <rex/system/xthread.h>
 
 #include <map>
+#include <mutex>
 
 #include "np_det.h"
 #include "np_session.h"
@@ -439,6 +440,142 @@ void AddLive(std::vector<uint32_t>* live, const std::vector<uint32_t>& words) {
 }
 
 uint32_t Be16(const uint8_t* p) { return (uint32_t(p[0]) << 8) | p[1]; }
+
+// The store watch (round 16): the generated code's stores call doa4_wwatch_hit for a page marked in doa4_wwatch
+// (REX_WHIT in dead_or_alive_4_init.h, after the store; for the vector stores and dcbz before it, n 0). Armed in the
+// first test only: from the save to the first pass's first boundary, and from the start of the load to the replay's
+// first boundary. Each hit on a watched range is logged with the guest thread, the generated function, its lr and
+// the return addresses up the back chain, so the two passes' writers of a word that differs can be compared.
+struct WatchRange {
+  uint32_t lo, hi;
+};
+struct WatchHit {
+  uint32_t addr, n, value, lr, tid, chain[5];
+  int chain_n;
+  const char* fn;
+};
+std::vector<WatchRange> g_watch;     // set once (main thread) before any arming
+std::atomic<int> g_watch_armed{0};
+std::atomic<uint8_t*> g_watch_base{nullptr};   // 0 off, 1 the first pass's first frame, 2 the replay's (and the load before it)
+std::mutex g_watch_mu;
+std::vector<WatchHit> g_watch_hits;  // under g_watch_mu
+uint32_t g_watch_dropped = 0;        // under g_watch_mu
+constexpr size_t kWatchMaxHits = 160;
+
+bool WatchStackReadable(const uint8_t* p, size_t n) {
+  MEMORY_BASIC_INFORMATION mbi = {};
+  if (VirtualQuery(p, &mbi, sizeof mbi) != sizeof mbi) return false;
+  if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
+  return p + n <= static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+}
+
+}  // namespace
+}  // namespace doa4::rb
+
+extern "C" unsigned char doa4_wwatch[1u << 20];
+
+extern "C" void doa4_wwatch_hit(unsigned int addr, unsigned int n, void* vctx, const char* fn) {
+  using namespace doa4::rb;
+  if (!g_watch_armed.load(std::memory_order_acquire)) return;
+  const uint32_t end = addr + (n ? n : 128);  // a vector store or dcbz: up to a cache line
+  bool in = false;
+  for (const WatchRange& r : g_watch) in = in || (addr < r.hi && end > r.lo);
+  if (!in) return;
+  auto* ctx = static_cast<::PPCContext*>(vctx);
+  uint8_t* base = g_watch_base.load(std::memory_order_acquire);
+  if (!base) return;
+  WatchHit h = {};
+  h.addr = addr;
+  h.n = n;
+  h.fn = fn;
+  h.lr = uint32_t(ctx->lr);
+  auto* t = rex::system::XThread::GetCurrentThread();
+  h.tid = t ? t->thread_id() : 0;
+  if (n == 4) h.value = Be32(base + addr);
+  else if (n == 2) h.value = Be16(base + addr);
+  else if (n == 1) h.value = base[addr];
+  else if (n == 8) h.value = Be32(base + addr + 4);
+  uint32_t sp = ctx->r1.u32;
+  while (h.chain_n < 5 && sp >= 0x70000000u && sp < 0x7F000000u && WatchStackReadable(base + sp, 4)) {
+    const uint32_t up = Be32(base + sp);
+    if (up <= sp || up >= 0x7F000000u || up - sp > 0x100000u || !WatchStackReadable(base + up - 8, 4)) break;
+    h.chain[h.chain_n++] = Be32(base + up - 8);
+    sp = up;
+  }
+  std::lock_guard<std::mutex> lock(g_watch_mu);
+  if (g_watch_hits.size() < kWatchMaxHits) g_watch_hits.push_back(h);
+  else ++g_watch_dropped;
+}
+
+namespace doa4::rb {
+namespace {
+
+void WatchSetup() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  const char* env = std::getenv("DOA4_NP_SNAPTEST_WATCH");
+  std::string spec = env && *env ? env : "400D72F0-400D7380,400E8098-400E80A0,400E67C8-400E67D0";
+  if (spec == "off") return;
+  size_t i = 0;
+  while (i < spec.size()) {
+    size_t j = spec.find(',', i);
+    if (j == std::string::npos) j = spec.size();
+    const std::string item = spec.substr(i, j - i);
+    const size_t dash = item.find('-');
+    if (dash != std::string::npos) {
+      const uint32_t lo = uint32_t(std::strtoul(item.substr(0, dash).c_str(), nullptr, 16));
+      const uint32_t hi = uint32_t(std::strtoul(item.substr(dash + 1).c_str(), nullptr, 16));
+      if (hi > lo) g_watch.push_back({lo, hi});
+    }
+    i = j + 1;
+  }
+  std::string t;
+  for (const WatchRange& r : g_watch) {
+    t += fmt::format(" {:08X}-{:08X}", r.lo, r.hi);
+    for (uint32_t p = r.lo >> 12; p <= (r.hi - 1) >> 12; ++p) doa4_wwatch[p] = 1;
+  }
+  Out("store watch on (test 1's first frame in both passes):" + (t.empty() ? std::string(" nothing") : t));
+}
+
+void WatchArm(int pass, uint8_t* base) {
+  if (g_watch.empty()) return;
+  g_watch_base.store(base, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(g_watch_mu);
+    g_watch_hits.clear();
+    g_watch_dropped = 0;
+  }
+  g_watch_armed.store(pass, std::memory_order_release);
+}
+
+void WatchReport(uint8_t* base, const char* what) {
+  if (!g_watch_armed.load(std::memory_order_acquire)) return;
+  g_watch_armed.store(0, std::memory_order_release);
+  std::vector<WatchHit> hits;
+  uint32_t dropped;
+  {
+    std::lock_guard<std::mutex> lock(g_watch_mu);
+    hits.swap(g_watch_hits);
+    dropped = g_watch_dropped;
+  }
+  Out(fmt::format("store watch, {}: {} stores{}", what, hits.size() + dropped,
+                  dropped ? fmt::format(" ({} not listed)", dropped) : std::string()));
+  for (const WatchHit& h : hits) {
+    std::string chain;
+    for (int k = 0; k < h.chain_n; ++k) chain += fmt::format(" {:08X}", h.chain[k]);
+    Out(fmt::format("  {:08X} {} {} tid {} {} lr {:08X} chain{}", h.addr,
+                    h.n ? fmt::format("n{}", h.n) : std::string("vec"),
+                    h.n ? fmt::format("={:08X}", h.value) : std::string("-"), h.tid, h.fn ? h.fn : "?", h.lr, chain));
+  }
+  std::string now;
+  for (const WatchRange& r : g_watch) {
+    now += fmt::format(" {:08X}:", r.lo);
+    for (uint32_t a = r.lo; a + 4 <= r.hi && a < r.lo + 64; a += 4) now += fmt::format(" {:08X}", Be32(base + a));
+  }
+  Out(fmt::format("store watch, {}: the words now:{}", what, now));
+}
+
 
 // The device's bytes: [device, device + kDeviceSize) (the size its allocation asks for).
 void FindDevice(Snap& s, uint8_t* base) {
@@ -931,6 +1068,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                   : gpu_ms < 0     ? std::string("; the GPU was still busy after 100 ms")
                                    : fmt::format("; waited {:.1f} ms for the GPU", gpu_ms)));
   ReleaseOthers(s);
+  if (s.tests_done == 0) WatchArm(1, base);
 }
 
 void EndFirstPass(Snap& s, uint8_t* base) {
@@ -947,6 +1085,7 @@ void EndFirstPass(Snap& s, uint8_t* base) {
 }
 
 void Load(Snap& s, uint8_t* base) {
+  if (s.tests_done == 0) WatchArm(2, base);
   HoldOthers(s, "load");
   // the fibers: a fiber parked somewhere else than at the save resumes its host stack where it is now, with the
   // guest state of the save (rb_snap.h)
@@ -1160,6 +1299,7 @@ bool SnapActive() {
     const char* stk = std::getenv("DOA4_NP_SNAPTEST_STACKS");
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page
+    WatchSetup();
     np::LogLine(fmt::format("[doa4][RB] snaptest: on - {} tests of {} frames, the first entering frame {}, then every {} "
                             "frames; snapshot of {}",
                             c.count, c.frames, c.at, c.every,
@@ -1183,6 +1323,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
   }
   if (s.phase == 1) {
     s.h1.push_back(Hash(s, base));
+    if (s.i == 1) WatchReport(base, fmt::format("first pass, frame {}", s.at).c_str());
     if (s.i == 1 && s.cfg.frames > 1) CaptureTestPages(s, base, &s.b1_chunks, &s.b1_buf, nullptr);
     if (s.i < s.cfg.frames) {
       ++s.i;
@@ -1203,6 +1344,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
   }
   if (s.phase == 2) {
     s.h2.push_back(Hash(s, base));
+    if (s.i == 1) WatchReport(base, fmt::format("replay (and the load), frame {}", s.at).c_str());
     if (s.i == 1 && s.cfg.frames > 1) {
       Differences(s, base, s.b1_chunks, s.b1_buf,
                   fmt::format("test {}, after the first replayed frame (frame {})", s.tests_done + 1, s.at));

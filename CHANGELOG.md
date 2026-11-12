@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.118 (2026-11-12)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Changed
+- SnapTest store watch: every store of the generated code to a watched page calls `doa4_wwatch_hit` (`REX_WHIT` in
+  the store macros, also in `tools/np_wmap_patch.py`). In the first test, from the save to the first pass's first
+  boundary and from the load to the replay's first boundary, each store to a watched range is logged with the guest
+  thread, the generated function, its lr and the back chain. Default ranges: 400D72F0-400D7380, 400E8098-400E80A0,
+  400E67C8-400E67D0; `DOA4_NP_SNAPTEST_WATCH=<lo>-<hi>,...` or `off`. Rounds 14-15: with the audio counters rewound,
+  with physical memory put back and with every committed page in the snapshot, the first replayed frame at 3600 still
+  differs in the same words: 400D72F0.. take in the replay the values the device's shader constants had at the load
+  (8 frames later), not at the save.
+- SnapTest round 16 runner: one run from frame 3600 with the store watch.
+
 ## 0.3.117 (2026-11-12)
 
 corysyx rollback research build (otherwise the same as 0.3.110).

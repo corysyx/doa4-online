@@ -13,6 +13,8 @@
 
 extern "C" {
 alignas(64) unsigned char doa4_wmap[1u << 20] = {};
+// The store watch's pages (rb_snap.cpp, SnapTest only): a store to a marked page calls doa4_wwatch_hit.
+alignas(64) unsigned char doa4_wwatch[1u << 20] = {};
 }
 
 namespace doa4::rb {

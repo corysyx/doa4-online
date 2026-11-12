@@ -1,9 +1,9 @@
 @echo off
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
-rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.117 or later) and double-click it. The game plays a scripted
-rem Versus fight by itself three times (about 2 minutes each), rewinds it 12 times each time and checks that every replay
-rem comes out the same (the D3D device's render state goes back with the snapshot), each time from frame 3600: with
-rem graphics memory put back, with every page of game memory in the snapshot, and with both.
+rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.118 or later) and double-click it. The game plays a scripted
+rem Versus fight by itself once (about 2 minutes), rewinds it 12 times and checks that every replay
+rem comes out the same (the D3D device's render state goes back with the snapshot), from frame 3600. The first test
+rem also logs which game code writes the words that differ in the first replayed frame.
 rem Your own save is not used or changed: each run gets a fresh, empty user data folder. A run that has not ended
 rem after 4 minutes, or that froze, is closed.
 setlocal
@@ -27,16 +27,16 @@ set "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0000/0x0000"
 set "CACHE=%USERPROFILE%\Documents\dead_or_alive_4\cache"
 set "CACHEARG="
 if exist "%CACHE%" set "CACHEARG=--cache_path=%CACHE%"
-echo The game now plays a fight by itself, three times, and rewinds it a few times (about 6 minutes in all).
+echo The game now plays a fight by itself and rewinds it a few times (about 2 minutes).
 echo Do not touch it: it closes by itself each time.
-for %%M in (a3600phys b3600full c3600both) do call :run %%M
+for %%M in (a3600watch) do call :run %%M
 if exist "%HERE%snaptest_results.zip" del "%HERE%snaptest_results.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a3600phys','%HERE%snaptest_run_b3600full','%HERE%snaptest_run_c3600both' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a3600watch' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
 echo.
 if exist "%HERE%snaptest_results.zip" (
   echo DONE. Send snaptest_results.zip from the game folder.
 ) else (
-  echo DONE, but the results could not be zipped: send the three snaptest_run_ folders.
+  echo DONE, but the results could not be zipped: send the snaptest_run_a3600watch folder.
 )
 pause
 exit /b 0

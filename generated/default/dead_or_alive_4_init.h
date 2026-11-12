@@ -106,7 +106,13 @@ extern PPCFuncMapping PPCFuncMappings[];
 extern "C" unsigned char doa4_wmap[1u << 20];
 #define REX_WMARK1(x) (doa4_wmap[(u32)(x) >> 12] = 1)
 #define REX_WMARK(x, n) (doa4_wmap[(u32)(x) >> 12] = 1, doa4_wmap[((u32)(x) + ((n) - 1)) >> 12] = 1)
-#define REX_RAW_ADDR_W(x) (REX_WMARK1(x), REX_RAW_ADDR(x))
+// The store watch (src/net/rb_snap.cpp): a store to a page marked in doa4_wwatch calls doa4_wwatch_hit (after the
+// store; n 0 for the raw stores, before them).
+extern "C" unsigned char doa4_wwatch[1u << 20];
+extern "C" void doa4_wwatch_hit(unsigned int addr, unsigned int n, void* ctx, const char* fn);
+#define REX_WHIT(x, n) \
+  (__builtin_expect(doa4_wwatch[(u32)(x) >> 12], 0) ? doa4_wwatch_hit((u32)(x), (n), (void*)&ctx, __func__) : (void)0)
+#define REX_RAW_ADDR_W(x) (REX_WMARK1(x), REX_WHIT(x, 0), REX_RAW_ADDR(x))
 
 #define REX_LOAD_U8(x) (*(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
 #define REX_LOAD_U16(x) __builtin_bswap16(*(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
@@ -115,10 +121,10 @@ extern "C" unsigned char doa4_wmap[1u << 20];
 #define REX_LOAD_STRING(x, len) \
   std::string_view(reinterpret_cast<const char*>(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)), (len))
 
-#define REX_STORE_U8(x, y)  (REX_WMARK1(x), *(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = (y))
-#define REX_STORE_U16(x, y) (REX_WMARK(x, 2), *(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap16(y))
-#define REX_STORE_U32(x, y) (REX_WMARK(x, 4), *(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y))
-#define REX_STORE_U64(x, y) (REX_WMARK(x, 8), *(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y))
+#define REX_STORE_U8(x, y)  (REX_WMARK1(x), *(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = (y), REX_WHIT(x, 1))
+#define REX_STORE_U16(x, y) (REX_WMARK(x, 2), *(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap16(y), REX_WHIT(x, 2))
+#define REX_STORE_U32(x, y) (REX_WMARK(x, 4), *(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y), REX_WHIT(x, 4))
+#define REX_STORE_U64(x, y) (REX_WMARK(x, 8), *(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y), REX_WHIT(x, 8))
 
 #define REX_MEMORY_SIZE 0x100000000ull
 
