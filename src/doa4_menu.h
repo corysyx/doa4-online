@@ -166,6 +166,7 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   void DrawLanguageSettings();
   // The Game tab's "Skip the intro at start-up" box (doa4_skip_intro, read at the next start; doa4_intro_skip.h).
   void DrawIntroSettings();
+  void DrawDiscordSettings();
   // The box's change (and the test action "skip_intro B"): saved, then set; near a session only set, as Show FPS does.
   void SetSkipIntro(bool on);
   // The dropdown's pick (and the test action "language <id>"): refused when locked, else saved, then applied live.

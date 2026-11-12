@@ -23,6 +23,10 @@ REXCVAR_DEFINE_BOOL(doa4_idle_waits, true, "DOA4", "Let the game's loader and GP
 // carried to the other player (a session skips every movie on both PCs anyway).
 REXCVAR_DEFINE_BOOL(doa4_skip_intro, false, "DOA4", "Skip the intro at start-up: start at the title screen");
 
+// Game tab: the Discord status "Playing Dead or Alive 4 Online" (doa4_discord.h). Host-only: not carried to the other player
+// (it talks to the Discord app on this PC and touches no guest memory).
+REXCVAR_DEFINE_BOOL(doa4_discord_status, true, "DOA4", "Show 'Playing Dead or Alive 4 Online' as my Discord status");
+
 // Online tab: the start-up update notice (doa4_update_notice.h), read once at start-up. Host-only: not carried to the other
 // player (a session relaunch never checks and never shows it).
 REXCVAR_DEFINE_BOOL(doa4_update_notice, true, "DOA4", "Tell me about new versions at start-up");

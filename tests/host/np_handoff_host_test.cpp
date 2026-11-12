@@ -300,12 +300,14 @@ static const NotCarried kSdkNotCarried[] = {
 // doa4_suits_import_pending: a player's own start-up state; never carried into a session.
 // doa4_skip_intro (update G6, Task 14, ruling R50): not carried; a session skips every movie on both PCs (kMovie), and the
 // intro rule never applies in a session (doa4_intro_skip.h), so both sides are equal by construction.
+// doa4_discord_status (2026-11-11): not carried, host-only; the Discord status talks to the Discord app on this PC and
+// touches no guest memory.
 // doa4_update_notice (update G7, Task 15): not carried, host-only; a session relaunch never checks or shows the notice
 // (doa4_update_notice.h), and nothing it does touches guest memory.
 // doa4_idle_waits (issue #4, CPU heat): not carried, host-only; it changes only the host time between the guest's own checks
 // (the loader and fence waits sleep instead of spinning), never a guest-visible value: a fight recorded with it off and with
 // it on is equal on every digest frame, sweep block and progress counter (ou_runs/cpu det_off / det_on, 2026-11-11).
-static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_skip_intro", "doa4_update_notice", "doa4_idle_waits", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
+static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_skip_intro", "doa4_discord_status", "doa4_update_notice", "doa4_idle_waits", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
                                               "netplay_port", "netplay_delay_auto", "netplay_delay", "netplay_last_join",
                                               "netplay_show_stats", "netplay_upnp"};
 // the trust class: carried settings whose non-default value weakens a boundary of the PC that applies it

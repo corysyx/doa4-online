@@ -38,6 +38,7 @@
 #include <windows.h>
 
 #include "doa4_config.h"
+#include "doa4_discord.h"
 #include "doa4_display.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
@@ -169,6 +170,10 @@ constexpr std::array<const char*, 2> kSpeakersNote = {
 constexpr float kLanguageComboWidth = 220.0f;
 constexpr const char* kSkipIntroLabel = "Skip the intro at start-up";
 constexpr const char* kSkipIntroNote = "Starts at the title screen. Applies at the next start.";
+constexpr const char* kDiscordLabel = "Show \"Playing Dead or Alive 4 Online\" on Discord";
+constexpr const char* kDiscordNote = "Needs the Discord app running on this PC. Applies at once.";
+constexpr const char* kDiscordNoteUnavailable = "Not available in this build yet.";
+const char* DiscordNote() { return discord::Available() ? kDiscordNote : kDiscordNoteUnavailable; }
 constexpr const char* kGameFilesNote = "A new location is used from the next start.";
 constexpr const char* kButtonNotesNote = "The game's Type A layout. Its Button Config (Options) can change these.";
 constexpr const char* kNoControllerNote = "No controller in this slot.";
@@ -420,6 +425,8 @@ float MenuDialog::WidestRow() {
   }
   w.push_back(row({display::MenuPx(kLanguageComboWidth, ImGui::GetFontSize()), text(online_view::kLockedText)}));
   w.push_back(toggle(kSkipIntroLabel));
+  w.push_back(toggle(kDiscordLabel));
+  w.push_back(text(DiscordNote()));
   w.push_back(row({button("Change..."), text(online_view::kLockedText), button("Open folder")}));
   // Controls
   w.push_back(toggles(std::array<std::string, 4>{"Player 1", "Player 2", "Player 3", "Player 4"}));
@@ -981,6 +988,18 @@ void MenuDialog::DrawIntroSettings() {
   ImGui::TextDisabled("%s", kSkipIntroNote);
 }
 
+// The Discord status (doa4_discord.h): host-only, so not locked in a session; near one it is set in memory only, as the
+// other presentation settings are (SetPresentationSetting).
+void MenuDialog::DrawDiscordSettings() {
+  bool on = rex::cvar::Query<bool>("doa4_discord_status");
+  ImGui::BeginDisabled(!discord::Available());  // review2 M2: a build without the application id has no worker
+  if (ImGui::Checkbox(kDiscordLabel, &on) && SetPresentationSetting("doa4_discord_status", on ? "true" : "false", false)) {
+    discord::SetEnabled(on);
+  }
+  ImGui::EndDisabled();
+  ImGui::TextDisabled("%s", DiscordNote());
+}
+
 void MenuDialog::SetSkipIntro(bool on) {
   SetPresentationSetting("doa4_skip_intro", on ? "true" : "false", false);
 }
@@ -1141,6 +1160,10 @@ void MenuDialog::DrawGameTab() {
   ImGui::SeparatorText("Start-up");
   ImGui::PushID("intro");
   DrawIntroSettings();
+  ImGui::PopID();
+  ImGui::SeparatorText("Discord");
+  ImGui::PushID("discord");
+  DrawDiscordSettings();
   ImGui::PopID();
   const gamefiles::GameTab tab = gamefiles::DescribeGameTab(
       host_.game_files, host_.game_files_from_command_line,
