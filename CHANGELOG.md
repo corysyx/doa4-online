@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.114 (2026-11-12)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Changed
+- SnapTest saves the main thread's and the 25 job workers' stacks with a snapshot and puts them back at a load
+  (reporting how many words changed first). Stacks were outside the snapshot, yet a parked worker keeps locals in its
+  own frames from one frame to the next, so a rewind left the worker with pointers from the future: round 10's two
+  crashes were that worker freeing and locking heap objects the restored heap no longer had.
+  `DOA4_NP_SNAPTEST_STACKS=leave` only reports.
+
 ## 0.3.113 (2026-11-11)
 
 corysyx rollback research build (otherwise the same as 0.3.110).

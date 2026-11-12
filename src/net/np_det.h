@@ -46,4 +46,8 @@ bool SkipKeepAliveSwap(uint32_t lr);
 uint32_t SaveClocks();
 uint32_t RestoreClocks();
 
+// True for the entry point of one of the 25 job workers (np_det_workers.cpp), which are parked in their wait at a
+// frame boundary.
+bool IsWorkerEntry(uint32_t start);
+
 }  // namespace doa4::np::det

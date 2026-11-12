@@ -17,6 +17,7 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xevent.h>
 #include <rex/system/xobject.h>
+#include <rex/system/xthread.h>
 
 #include <map>
 
@@ -202,6 +203,16 @@ struct KObj {
   int32_t state = -1;  // events: signalled 1 / not 0
 };
 
+// A guest thread's stack at the save. Stacks (0x70000000-0x7EFFFFFF) are not in the snapshot's areas, yet a thread
+// parked at the frame boundary keeps locals there from one frame to the next (the job workers hand pointers into
+// their own frames to the work they run): the main thread's and the job workers' stacks are saved with the snapshot.
+struct StackSave {
+  const void* thread = nullptr;
+  uint32_t tid = 0, start = 0, low = 0, high = 0, r1 = 0;
+  bool main = false;
+  std::vector<uint8_t> bytes;
+};
+
 struct Snap {
   SnapConfig cfg;
   unsigned char seen[kPages] = {};   // pages the game's code wrote since the session started
@@ -237,6 +248,8 @@ struct Snap {
   std::vector<uint32_t> dev_live;  // restore mode: the device offsets kept live in this test
   bool dev_listed = false;         // the full list of changed device words was logged once
   std::map<uint32_t, struct KObj> kobj_save;  // the kernel's objects at the save, by handle
+  std::vector<StackSave> stacks;  // the thread stacks at the save
+  bool stacks_fix = true;          // DOA4_NP_SNAPTEST_STACKS=leave: only report the stacks, put none back
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
   std::vector<uint8_t> b1_buf;
@@ -508,6 +521,84 @@ void CaptureTestPages(Snap& s, uint8_t* base, std::vector<Chunk>* chunks, std::v
   Capture(base, map.data(), chunks, buf);
 }
 
+// The stacks of the main thread and the job workers: [stack end, stack base) from each thread's guest PCR.
+std::vector<StackSave> GuestStacks(uint8_t* base) {
+  std::vector<StackSave> out;
+  auto* ks = rex::system::kernel_state();
+  if (!ks) return out;
+  auto* me = rex::system::XThread::GetCurrentThread();
+  for (auto& o : ks->object_table()->GetAllObjects()) {
+    if (!o || o->type() != rex::system::XObject::Type::Thread) continue;
+    auto* t = static_cast<rex::system::XThread*>(o.get());
+    if (!t->is_guest_thread() || !t->pcr_ptr()) continue;
+    const bool main = t == me;
+    const uint32_t start = t->creation_params()->start_address;
+    if (!main && !np::det::IsWorkerEntry(start)) continue;
+    bool dup = false;
+    for (const auto& e : out) dup = dup || e.thread == t;
+    if (dup) continue;
+    auto* pcr = reinterpret_cast<const rex::system::X_KPCR*>(base + t->pcr_ptr());
+    StackSave st;
+    st.thread = t;
+    st.tid = t->thread_id();
+    st.start = start;
+    st.main = main;
+    st.high = pcr->stack_base_ptr;
+    st.low = pcr->stack_end_ptr;
+    if (st.low >= st.high || st.high - st.low > 16u << 20 || st.low < 0x70000000u || st.high > 0x7F000000u) continue;
+    if (t->thread_state() && t->thread_state()->context()) st.r1 = uint32_t(t->thread_state()->context()->r1.u64);
+    out.push_back(std::move(st));
+  }
+  return out;
+}
+
+void SaveStacks(Snap& s, uint8_t* base) {
+  s.stacks = GuestStacks(base);
+  for (auto& st : s.stacks) st.bytes.assign(base + st.low, base + st.high);
+}
+
+// At a load: how many words of each saved stack changed since the save; unless DOA4_NP_SNAPTEST_STACKS=leave, the
+// stacks go back. The main thread's stack goes back only if its r1 is where it was at the save (the same call
+// path into this hook); a worker's only if it still exists.
+void LoadStacks(Snap& s, uint8_t* base) {
+  const std::vector<StackSave> now = GuestStacks(base);
+  uint32_t threads = 0, words = 0, put_back = 0;
+  std::string text;
+  for (const auto& st : s.stacks) {
+    const StackSave* cur = nullptr;
+    for (const auto& n : now) cur = n.thread == st.thread ? &n : cur;
+    if (!cur || cur->low != st.low || cur->high != st.high) {
+      text += fmt::format(" tid {} gone", st.tid);
+      continue;
+    }
+    uint32_t changed = 0, first = 0, deepest = 0;
+    for (uint32_t o = 0; o + 4 <= st.bytes.size(); o += 4) {
+      if (std::memcmp(base + st.low + o, st.bytes.data() + o, 4) == 0) continue;
+      if (!changed) first = st.low + o;
+      deepest = st.low + o;
+      ++changed;
+    }
+    if (changed) {
+      ++threads;
+      words += changed;
+      if (threads <= 12) {
+        text += fmt::format(" tid {}{} ({:08X}) {} words {:08X}-{:08X} r1 {:08X}{}", st.tid, st.main ? " main" : "",
+                            st.start, changed, first, deepest, cur->r1,
+                            cur->r1 != st.r1 ? fmt::format(" (was {:08X})", st.r1) : std::string());
+      }
+    }
+    if (!s.stacks_fix || !changed) continue;
+    if (st.main && cur->r1 != st.r1) {
+      text += " (main left: r1 moved)";
+      continue;
+    }
+    std::memcpy(base + st.low, st.bytes.data(), st.bytes.size());
+    ++put_back;
+  }
+  Out(fmt::format("thread stacks since the save: {} of {} changed, {} words{}{}{}", threads, s.stacks.size(), words,
+                  text.empty() ? "" : ":", text, put_back ? fmt::format("; {} put back", put_back) : std::string()));
+}
+
 const char* KTypeName(uint32_t t) {
   using T = rex::system::XObject::Type;
   switch (T(t)) {
@@ -663,6 +754,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   s.fence_at_save = fence.issued;
   const uint32_t clocks = np::det::SaveClocks();
   s.kobj_save = KernelObjects();
+  SaveStacks(s, base);
   std::memset(s.test, 0, sizeof s.test);
   s.fib_save = Fibers();
   s.h1.assign(1, Hash(s, base));
@@ -771,6 +863,7 @@ void Load(Snap& s, uint8_t* base) {
   const uint32_t clocks = np::det::RestoreClocks();
   const double ms = MsSince(t0);
   RepairStashes(s, base);
+  LoadStacks(s, base);
   Sleep(kSettleMs);
   const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
   Out(fmt::format("restored the state of frame {} ({:.1f} MB, {} kept ranges, {} thread clocks) in {:.1f} ms{}{}{}",
@@ -878,6 +971,8 @@ bool SnapActive() {
     }
     const char* kobj = std::getenv("DOA4_NP_SNAPTEST_KOBJ");
     s.kobj_fix = !(kobj && std::string(kobj) == "leave");
+    const char* stk = std::getenv("DOA4_NP_SNAPTEST_STACKS");
+    s.stacks_fix = !(stk && std::string(stk) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page
     np::LogLine(fmt::format("[doa4][RB] snaptest: on - {} tests of {} frames, the first entering frame {}, then every {} "
                             "frames; snapshot of {}",

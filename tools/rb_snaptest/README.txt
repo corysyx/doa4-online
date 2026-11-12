@@ -1,6 +1,6 @@
 DOA4 rollback test (milestone 2): does the game come out the same when it is rewound and replayed?
 
-1. Put run_snaptest.bat and snaptest_single.txt in the game folder (next to dead_or_alive_4.exe, alpha-v0.3.113 or later).
+1. Put run_snaptest.bat and snaptest_single.txt in the game folder (next to dead_or_alive_4.exe, alpha-v0.3.114 or later).
 2. Double-click run_snaptest.bat. The game plays a scripted Versus fight by itself twice (about 4 minutes) and closes.
    Do not touch it. Your own save is not used: each run gets a fresh user data folder. A run still going after
    4 minutes is closed.

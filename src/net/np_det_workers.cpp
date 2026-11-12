@@ -145,6 +145,10 @@ void MainWaitForWorkers(bool until_done) {
 
 }  // namespace
 
+bool IsWorkerEntry(uint32_t start) {
+  return std::find(std::begin(kWorkerEntries), std::end(kWorkerEntries), start) != std::end(kWorkerEntries);
+}
+
 void WorkerCreated(uint32_t start, uint32_t tid) {
   if (std::find(std::begin(kWorkerEntries), std::end(kWorkerEntries), start) == std::end(kWorkerEntries)) return;
   std::lock_guard lk(g_mu);
