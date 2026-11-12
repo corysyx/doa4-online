@@ -249,6 +249,10 @@ struct Snap {
   bool dev_listed = false;         // the full list of changed device words was logged once
   std::map<uint32_t, struct KObj> kobj_save;  // the kernel's objects at the save, by handle
   std::vector<StackSave> stacks;  // the thread stacks at the save
+  unsigned char phys_map[kPages] = {};  // physical pages (0xA0000000-0xDFFFFFFF) the game's code wrote, at the save
+  std::vector<Chunk> phys_chunks;  // their contents at the save (outside the snapshot proper: reported at a load)
+  std::vector<uint8_t> phys_buf;
+  bool phys_restore = false;       // DOA4_NP_SNAPTEST_PHYS=restore: they go back with the snapshot too
   bool stacks_fix = true;          // DOA4_NP_SNAPTEST_STACKS=leave: only report the stacks, put none back
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
@@ -739,6 +743,13 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     }
   }
   const size_t bytes = Capture(base, s.saved, &s.chunks, &s.buf);
+  // physical memory the game's code wrote: not in the snapshot (the GPU reads and writes it), copied to report
+  std::memset(s.phys_map, 0, sizeof s.phys_map);
+  for (uint32_t p = 0xA0000000u >> kPageShift; p < (0xE0000000u >> kPageShift); ++p) s.phys_map[p] = s.seen[p];
+  const size_t phys_bytes = Capture(base, s.phys_map, &s.phys_chunks, &s.phys_buf);
+  Out(fmt::format("physical memory the game's code wrote: {:.1f} MB in {} chunks copied for the load's report{}",
+                  double(phys_bytes) / (1024.0 * 1024.0), s.phys_chunks.size(),
+                  s.phys_restore ? " (and put back: DOA4_NP_SNAPTEST_PHYS=restore)" : ""));
   const double copy_ms = MsSince(t0);
   // memory that changes while the game stands at the boundary: written by the GPU or by threads that run on (kept)
   Sleep(kSettleMs);
@@ -823,6 +834,17 @@ void Load(Snap& s, uint8_t* base) {
     Out(fmt::format("device words left as they are (they moved with the ring, or DOA4_NP_SNAPTEST_DEVLIVE): {}:{}",
                     s.dev_live.size(), DevLiveText(s, base)));
   }
+  {
+    // the physical pages the game's code wrote: how many words changed since the save, by page run
+    std::vector<uint32_t> changed;
+    for (const Chunk& c : s.phys_chunks) {
+      for (uint32_t o = 0; o + 4 <= c.len; o += 4) {
+        if (std::memcmp(base + c.addr + o, s.phys_buf.data() + c.off + o, 4) != 0) changed.push_back(c.addr + o);
+      }
+    }
+    Out(fmt::format("physical memory since the save: {} words changed{}{}", changed.size(), changed.empty() ? "" : ": ",
+                    PagesText(changed, 24)));
+  }
   KernelObjectsAtLoad(s);
   const auto t0 = std::chrono::steady_clock::now();
   const Fence fence_before = ReadFence(s, base);  // the device's counter before the restore (restore mode puts it back)
@@ -859,6 +881,9 @@ void Load(Snap& s, uint8_t* base) {
     fence_text = fmt::format("; fence {:08X} (GPU finished {:08X}{}) put back to {:08X}", f.issued, f.finished,
                              gpu_ms < 0 ? ", still busy after 100 ms" : fmt::format(" after {:.1f} ms", gpu_ms),
                              s.fence_at_save);
+  }
+  if (s.phys_restore) {
+    for (const Chunk& c : s.phys_chunks) std::memcpy(base + c.addr, s.phys_buf.data() + c.off, c.len);
   }
   const uint32_t clocks = np::det::RestoreClocks();
   const double ms = MsSince(t0);
@@ -971,6 +996,8 @@ bool SnapActive() {
     }
     const char* kobj = std::getenv("DOA4_NP_SNAPTEST_KOBJ");
     s.kobj_fix = !(kobj && std::string(kobj) == "leave");
+    const char* phys = std::getenv("DOA4_NP_SNAPTEST_PHYS");
+    s.phys_restore = phys && std::string(phys) == "restore";
     const char* stk = std::getenv("DOA4_NP_SNAPTEST_STACKS");
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page

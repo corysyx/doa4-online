@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.115 (2026-11-12)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Changed
+- SnapTest copies the physical memory (0xA0000000-0xDFFFFFFF) the game's code wrote at a save and reports at the load
+  how much of it changed; `DOA4_NP_SNAPTEST_PHYS=restore` also puts it back. Round 11: restoring the thread stacks did
+  not stop the frame 4096 crash, and the first replayed frame already differs from the first pass.
+- SnapTest round 12 runner: three runs that all rewind at frame 4096 - as before, with every committed page in the
+  snapshot (`DOA4_NP_SNAPTEST_MODE=full`), and with physical memory put back.
+
 ## 0.3.114 (2026-11-12)
 
 corysyx rollback research build (otherwise the same as 0.3.110).
