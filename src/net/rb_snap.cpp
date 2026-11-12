@@ -210,7 +210,23 @@ struct StackSave {
   const void* thread = nullptr;
   uint32_t tid = 0, start = 0, low = 0, high = 0, r1 = 0;
   bool main = false;
+  bool parked = false;           // another guest thread, held in a system call for the save / load
+  uint32_t lr = 0;               // its guest lr while held
   std::vector<uint8_t> bytes;
+  std::vector<uint8_t> ctx;      // its PPC context (held threads and job workers)
+};
+
+// A guest thread other than the main thread and the job workers (the game's middleware threads, the kernel's
+// callbacks): it runs on through a boundary, so the save and the load hold it while it waits in a system call -
+// suspended with its host rip just after a syscall instruction, where it holds no user-mode lock and no guest state in
+// flight. Round 12: with all of guest memory, the stacks and the kernel objects in the snapshot the frame 4096 crash
+// stayed, and words kept changing during the save's 20 ms settle - something ran on.
+struct Held {
+  const void* thread = nullptr;
+  HANDLE h = nullptr;
+  uint32_t tid = 0, start = 0, lr = 0;
+  bool held = false;
+  uint64_t rip = 0;
 };
 
 struct Snap {
@@ -249,6 +265,8 @@ struct Snap {
   bool dev_listed = false;         // the full list of changed device words was logged once
   std::map<uint32_t, struct KObj> kobj_save;  // the kernel's objects at the save, by handle
   std::vector<StackSave> stacks;  // the thread stacks at the save
+  std::vector<Held> held;          // the other guest threads, held during a save / load
+  bool hold = true;                // DOA4_NP_SNAPTEST_HOLD=off: leave the other threads running
   unsigned char phys_map[kPages] = {};  // physical pages (0xA0000000-0xDFFFFFFF) the game's code wrote, at the save
   std::vector<Chunk> phys_chunks;  // their contents at the save (outside the snapshot proper: reported at a load)
   std::vector<uint8_t> phys_buf;
@@ -264,7 +282,22 @@ Snap& G() {
   return *s;
 }
 
-void Out(const std::string& line) { np::LogLine("[doa4][RB] snaptest: " + line); }
+// While other guest threads are held (HoldOthers), lines wait here: a held thread may have been stopped inside the
+// logger's own write.
+std::vector<std::string>* g_defer = nullptr;
+
+void Out(const std::string& line) {
+  if (g_defer) g_defer->push_back(line);
+  else np::LogLine("[doa4][RB] snaptest: " + line);
+}
+
+void FlushDeferred() {
+  std::vector<std::string>* d = g_defer;
+  g_defer = nullptr;
+  if (!d) return;
+  for (const std::string& l : *d) Out(l);
+  delete d;
+}
 
 double MsSince(std::chrono::steady_clock::time_point t) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
@@ -526,7 +559,88 @@ void CaptureTestPages(Snap& s, uint8_t* base, std::vector<Chunk>* chunks, std::v
 }
 
 // The stacks of the main thread and the job workers: [stack end, stack base) from each thread's guest PCR.
-std::vector<StackSave> GuestStacks(uint8_t* base) {
+bool InSyscall(uint64_t rip) {
+  if (rip < 2) return false;
+  MEMORY_BASIC_INFORMATION mbi = {};
+  if (VirtualQuery(reinterpret_cast<const void*>(rip - 2), &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+  if (mbi.State != MEM_COMMIT || !(mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE))) return false;
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(rip - 2);
+  return p[0] == 0x0F && p[1] == 0x05;
+}
+
+// Holds every guest thread but the main thread and the job workers, each once it waits in a system call (up to
+// 300 ms in all); the ones that never do run on and are reported.
+void HoldOthers(Snap& s, const char* when) {
+  s.held.clear();
+  if (!g_defer) g_defer = new std::vector<std::string>();
+  auto* ks = rex::system::kernel_state();
+  if (!ks || !s.hold) return;
+  auto* me = rex::system::XThread::GetCurrentThread();
+  for (auto& o : ks->object_table()->GetAllObjects()) {
+    if (!o || o->type() != rex::system::XObject::Type::Thread) continue;
+    auto* t = static_cast<rex::system::XThread*>(o.get());
+    if (t == me || !t->is_guest_thread() || !t->thread() || !t->thread_state() || !t->thread_state()->context()) continue;
+    const uint32_t start = t->creation_params()->start_address;
+    if (np::det::IsWorkerEntry(start)) continue;
+    bool dup = false;
+    for (const auto& e : s.held) dup = dup || e.thread == t;
+    if (dup) continue;
+    Held h;
+    h.thread = t;
+    h.h = static_cast<HANDLE>(t->thread()->native_handle());
+    h.tid = t->thread_id();
+    h.start = start;
+    s.held.push_back(h);
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  for (;;) {
+    bool all = true;
+    for (Held& h : s.held) {
+      if (h.held || !h.h) continue;
+      if (SuspendThread(h.h) == DWORD(-1)) {
+        h.h = nullptr;
+        continue;
+      }
+      CONTEXT c = {};
+      c.ContextFlags = CONTEXT_CONTROL;
+      if (GetThreadContext(h.h, &c) && InSyscall(c.Rip)) {
+        h.held = true;
+        h.rip = c.Rip;
+        h.lr = uint32_t(static_cast<rex::system::XThread*>(const_cast<void*>(h.thread))->thread_state()->context()->lr);
+        continue;
+      }
+      h.rip = c.Rip;
+      ResumeThread(h.h);
+      all = false;
+    }
+    if (all || MsSince(t0) > 300.0) break;
+    Sleep(1);
+  }
+  std::string text, running;
+  uint32_t n = 0;
+  const uint64_t exe = uint64_t(GetModuleHandleW(nullptr));
+  for (const Held& h : s.held) {
+    if (h.held) {
+      ++n;
+      text += fmt::format(" {}({:08X}) lr {:08X}", h.tid, h.start, h.lr);
+    } else {
+      running += fmt::format(" {}({:08X}) rip {}{:X}", h.tid, h.start, h.rip >= exe && h.rip < exe + 0x10000000 ? "exe+" : "",
+                             h.rip >= exe && h.rip < exe + 0x10000000 ? h.rip - exe : h.rip);
+    }
+  }
+  Out(fmt::format("other guest threads at the {}: {} held in a system call{}{}{}{}", when, n, n ? ":" : "", text,
+                  running.empty() ? "" : "; still running after 300 ms:", running));
+}
+
+void ReleaseOthers(Snap& s) {
+  for (Held& h : s.held) {
+    if (h.held && h.h) ResumeThread(h.h);
+    h.held = false;
+  }
+  FlushDeferred();
+}
+
+std::vector<StackSave> GuestStacks(Snap& s, uint8_t* base) {
   std::vector<StackSave> out;
   auto* ks = rex::system::kernel_state();
   if (!ks) return out;
@@ -537,7 +651,9 @@ std::vector<StackSave> GuestStacks(uint8_t* base) {
     if (!t->is_guest_thread() || !t->pcr_ptr()) continue;
     const bool main = t == me;
     const uint32_t start = t->creation_params()->start_address;
-    if (!main && !np::det::IsWorkerEntry(start)) continue;
+    const Held* held = nullptr;
+    for (const Held& h : s.held) held = h.thread == t && h.held ? &h : held;
+    if (!main && !held && !np::det::IsWorkerEntry(start)) continue;
     bool dup = false;
     for (const auto& e : out) dup = dup || e.thread == t;
     if (dup) continue;
@@ -547,25 +663,35 @@ std::vector<StackSave> GuestStacks(uint8_t* base) {
     st.tid = t->thread_id();
     st.start = start;
     st.main = main;
+    st.parked = held != nullptr;
     st.high = pcr->stack_base_ptr;
     st.low = pcr->stack_end_ptr;
     if (st.low >= st.high || st.high - st.low > 16u << 20 || st.low < 0x70000000u || st.high > 0x7F000000u) continue;
-    if (t->thread_state() && t->thread_state()->context()) st.r1 = uint32_t(t->thread_state()->context()->r1.u64);
+    if (t->thread_state() && t->thread_state()->context()) {
+      st.r1 = uint32_t(t->thread_state()->context()->r1.u64);
+      st.lr = uint32_t(t->thread_state()->context()->lr);
+    }
     out.push_back(std::move(st));
   }
   return out;
 }
 
 void SaveStacks(Snap& s, uint8_t* base) {
-  s.stacks = GuestStacks(base);
-  for (auto& st : s.stacks) st.bytes.assign(base + st.low, base + st.high);
+  s.stacks = GuestStacks(s, base);
+  for (auto& st : s.stacks) {
+    st.bytes.assign(base + st.low, base + st.high);
+    if (!st.main) {
+      auto* c = static_cast<rex::system::XThread*>(const_cast<void*>(st.thread))->thread_state()->context();
+      st.ctx.assign(reinterpret_cast<const uint8_t*>(c), reinterpret_cast<const uint8_t*>(c) + sizeof(*c));
+    }
+  }
 }
 
 // At a load: how many words of each saved stack changed since the save; unless DOA4_NP_SNAPTEST_STACKS=leave, the
 // stacks go back. The main thread's stack goes back only if its r1 is where it was at the save (the same call
 // path into this hook); a worker's only if it still exists.
 void LoadStacks(Snap& s, uint8_t* base) {
-  const std::vector<StackSave> now = GuestStacks(base);
+  const std::vector<StackSave> now = GuestStacks(s, base);
   uint32_t threads = 0, words = 0, put_back = 0;
   std::string text;
   for (const auto& st : s.stacks) {
@@ -591,12 +717,22 @@ void LoadStacks(Snap& s, uint8_t* base) {
                             cur->r1 != st.r1 ? fmt::format(" (was {:08X})", st.r1) : std::string());
       }
     }
-    if (!s.stacks_fix || !changed) continue;
+    if (!s.stacks_fix) continue;
     if (st.main && cur->r1 != st.r1) {
       text += " (main left: r1 moved)";
       continue;
     }
+    if (st.parked && (!cur->parked || cur->lr != st.lr)) {
+      // held somewhere else than at the save: its host call chain is another one, so its guest state cannot go back
+      text += fmt::format(" (tid {} left: {})", st.tid,
+                          cur->parked ? fmt::format("lr {:08X}, was {:08X}", cur->lr, st.lr) : std::string("not held"));
+      continue;
+    }
     std::memcpy(base + st.low, st.bytes.data(), st.bytes.size());
+    if (!st.main && !st.ctx.empty() && cur->lr == st.lr) {
+      auto* c = static_cast<rex::system::XThread*>(const_cast<void*>(st.thread))->thread_state()->context();
+      std::memcpy(reinterpret_cast<uint8_t*>(c), st.ctx.data(), std::min(st.ctx.size(), sizeof(*c)));
+    }
     ++put_back;
   }
   Out(fmt::format("thread stacks since the save: {} of {} changed, {} words{}{}{}", threads, s.stacks.size(), words,
@@ -715,6 +851,7 @@ void RepairStashes(Snap& s, uint8_t* base) {
 void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
+  HoldOthers(s, "save");
   const auto t0 = std::chrono::steady_clock::now();
   AddLive(&s.live, s.live_new);
   s.live_new.clear();
@@ -784,6 +921,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                   !s.fence_rewind  ? std::string()
                   : gpu_ms < 0     ? std::string("; the GPU was still busy after 100 ms")
                                    : fmt::format("; waited {:.1f} ms for the GPU", gpu_ms)));
+  ReleaseOthers(s);
 }
 
 void EndFirstPass(Snap& s, uint8_t* base) {
@@ -800,6 +938,7 @@ void EndFirstPass(Snap& s, uint8_t* base) {
 }
 
 void Load(Snap& s, uint8_t* base) {
+  HoldOthers(s, "load");
   // the fibers: a fiber parked somewhere else than at the save resumes its host stack where it is now, with the
   // guest state of the save (rb_snap.h)
   s.fib_end1 = Fibers();
@@ -899,6 +1038,7 @@ void Load(Snap& s, uint8_t* base) {
                                               "test on): {}",
                                               moved.size(), kSettleMs, WordsText(base, moved, s.chunks, s.buf, 16))));
   AddLive(&s.live_new, moved);
+  ReleaseOthers(s);
 }
 
 // Logs how memory now differs from a copy of the first pass at the same point: by area, by run and by how much the
@@ -998,6 +1138,8 @@ bool SnapActive() {
     s.kobj_fix = !(kobj && std::string(kobj) == "leave");
     const char* phys = std::getenv("DOA4_NP_SNAPTEST_PHYS");
     s.phys_restore = phys && std::string(phys) == "restore";
+    const char* hold = std::getenv("DOA4_NP_SNAPTEST_HOLD");
+    s.hold = !(hold && std::string(hold) == "off");
     const char* stk = std::getenv("DOA4_NP_SNAPTEST_STACKS");
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page

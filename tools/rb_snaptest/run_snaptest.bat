@@ -1,6 +1,6 @@
 @echo off
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
-rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.115 or later) and double-click it. The game plays a scripted
+rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.116 or later) and double-click it. The game plays a scripted
 rem Versus fight by itself three times (about 2 minutes each), rewinds it 12 times each time and checks that every replay
 rem comes out the same (the D3D device's render state goes back with the snapshot): first from frame 3600, then
 rem with the first test at frame 4096, where the third test of the first run has crashed so far.
@@ -29,9 +29,9 @@ set "CACHEARG="
 if exist "%CACHE%" set "CACHEARG=--cache_path=%CACHE%"
 echo The game now plays a fight by itself, three times, and rewinds it a few times (about 6 minutes in all).
 echo Do not touch it: it closes by itself each time.
-for %%M in (b4096 c4096full d4096phys) do call :run %%M
+for %%M in (a3600 b4096 c4096full) do call :run %%M
 if exist "%HERE%snaptest_results.zip" del "%HERE%snaptest_results.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_b4096','%HERE%snaptest_run_c4096full','%HERE%snaptest_run_d4096phys' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a3600','%HERE%snaptest_run_b4096','%HERE%snaptest_run_c4096full' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
 echo.
 if exist "%HERE%snaptest_results.zip" (
   echo DONE. Send snaptest_results.zip from the game folder.
@@ -50,6 +50,7 @@ set "DOA4_NP_DIR=%RUN%\out"
 set "DOA4_NP_SNAPTEST_FENCE=rewind"
 set "DOA4_NP_SNAPTEST_DEVICE=state"
 set "DOA4_NP_SNAPTEST=4096,8,240,12"
+if "%1"=="a3600" set "DOA4_NP_SNAPTEST=1"
 set "DOA4_NP_SNAPTEST_MODE=marked"
 if "%1"=="c4096full" set "DOA4_NP_SNAPTEST_MODE=full"
 set "DOA4_NP_SNAPTEST_PHYS="

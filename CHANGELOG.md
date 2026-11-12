@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.116 (2026-11-12)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Changed
+- SnapTest holds the game's other guest threads (its middleware threads: all but the main thread and the job workers)
+  during a save and a load, each once it waits in a system call, and saves and restores their stacks and PPC context
+  with the snapshot (only when a thread is held at the same place at the load). Round 12: with every committed page
+  in the snapshot (`full`) and with physical memory put back, the frame 4096 crash stayed the same, while words kept
+  changing during the save's settle: those threads run on through a rewind. `DOA4_NP_SNAPTEST_HOLD=off` leaves them.
+- The job workers' PPC context goes back with their stacks.
+- SnapTest round 13 runner: frame 3600 (every 240 frames), frame 4096, and frame 4096 with every committed page.
+
 ## 0.3.115 (2026-11-12)
 
 corysyx rollback research build (otherwise the same as 0.3.110).
