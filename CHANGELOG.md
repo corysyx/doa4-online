@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.117 (2026-11-12)
+
+corysyx rollback research build (otherwise the same as 0.3.110).
+
+### Changed
+- SnapTest puts the audio lockstep's counters back with a snapshot. The guest audio callback (the sound library's
+  render step) takes its time from the SDK's callback number, which a restore did not take back: every replayed
+  callback saw a time 25 callbacks (8 frames) later than the first time. Its time is now the callback number less the
+  callbacks rewound so far, and the 1/60 s units granted go back too. Round 13: with the middleware threads held in
+  their system calls (all 8, at the same place at the save and the load) the frame 4096 crash and the differences from
+  the first replayed frame stayed the same. `DOA4_NP_SNAPTEST_AUDIO=leave` keeps the old behaviour.
+- SnapTest lists the SDK's host threads once (some run guest code: the audio callbacks, the GPU interrupt).
+- SnapTest round 14 runner: frame 3600, frame 4096, and frame 3600 with the audio counters left (for comparison).
+
 ## 0.3.116 (2026-11-12)
 
 corysyx rollback research build (otherwise the same as 0.3.110).

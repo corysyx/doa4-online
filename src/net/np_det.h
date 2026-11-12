@@ -46,6 +46,15 @@ bool SkipKeepAliveSwap(uint32_t lr);
 uint32_t SaveClocks();
 uint32_t RestoreClocks();
 
+// Rollback: the audio lockstep's host-side counters (np_det_middleware.cpp) go back with a snapshot. The SDK's
+// callback count keeps rising, so after a restore the guest audio callback's time (AudioTimebase) is taken from the
+// count less the callbacks rewound so far; the 1/60 s units granted go back too. RestoreAudio returns the callbacks
+// this restore took back (-1: nothing saved).
+void SaveAudio();
+int64_t RestoreAudio();
+// Callbacks the restores took back so far: subtracted from the SDK's callback number for the callback's time.
+uint64_t AudioRewound();
+
 // True for the entry point of one of the 25 job workers (np_det_workers.cpp), which are parked in their wait at a
 // frame boundary.
 bool IsWorkerEntry(uint32_t start);

@@ -46,6 +46,7 @@
 
 #include "../doa4_intro_skip.h"
 #include "np_det_internal.h"
+#include "np_det.h"
 #include "np_session.h"
 
 extern "C" {
@@ -131,6 +132,13 @@ double g_sched_worst_late_ms = 0;           // the latest a continued frame star
 uint64_t g_audio_units = 0;  // 1/60 s units of audio granted so far (starts at the first step's frame number)
 bool g_audio_units_init = false;
 uint32_t g_audio_vblanks_last = 1, g_audio_vblank_logs = 0;
+uint64_t g_audio_granted = 0;              // callbacks granted since the lockstep started (the SDK's real count)
+std::atomic<uint64_t> g_audio_rewound{0};  // callbacks the snapshot restores took back (see SaveAudio)
+struct AudioSaved {
+  bool valid = false, units_init = false;
+  uint64_t units = 0, granted = 0;
+  uint32_t extra_vblanks = 0, vblanks_last = 1;
+} g_audio_saved;
 
 // The slow-motion grant's wait: every granted callback has run before the main thread goes on.
 void LimiterWait() {
@@ -144,6 +152,7 @@ void LimiterWait() {
 uint32_t AudioUnitsToCallbacks(uint32_t units) {
   const uint32_t n = uint32_t((g_audio_units + units) * 800 / 256 - g_audio_units * 800 / 256);
   g_audio_units += units;
+  g_audio_granted += n;
   return n;
 }
 
@@ -329,6 +338,9 @@ void MiddlewareStart() {
   // The audio budget's latches start afresh with the session (host memory, outside the digest).
   g_audio_units_init = false;
   g_audio_units = 0;
+  g_audio_granted = 0;
+  g_audio_rewound = 0;
+  g_audio_saved = AudioSaved{};
   g_extra_vblanks = g_limiter_pending = 0;
   g_limiter_granted = false;
   g_audio_vblanks_last = 1;
@@ -346,6 +358,30 @@ void MiddlewareStart() {
                         g_sched_off ? "off (the game's own loop)" : "on"));
   }
   if (On(kAudio)) rex_audio_lockstep(1);
+}
+
+uint64_t AudioRewound() { return g_audio_rewound.load(std::memory_order_acquire); }
+
+void SaveAudio() {
+  g_audio_saved.valid = true;
+  g_audio_saved.units_init = g_audio_units_init;
+  g_audio_saved.units = g_audio_units;
+  g_audio_saved.granted = g_audio_granted;
+  g_audio_saved.extra_vblanks = g_extra_vblanks;
+  g_audio_saved.vblanks_last = g_audio_vblanks_last;
+}
+
+int64_t RestoreAudio() {
+  if (!g_audio_saved.valid) return -1;
+  // Every granted callback has run at a frame boundary (AudioStep waited for them), so the SDK's count equals
+  // g_audio_granted here; the callbacks since the save are replayed with the times they had the first time.
+  const uint64_t back = g_audio_granted - g_audio_saved.granted;
+  g_audio_rewound.fetch_add(back, std::memory_order_acq_rel);
+  g_audio_units_init = g_audio_saved.units_init;
+  g_audio_units = g_audio_saved.units;
+  g_extra_vblanks = g_audio_saved.extra_vblanks;
+  g_audio_vblanks_last = g_audio_saved.vblanks_last;
+  return int64_t(back);
 }
 
 // The loader gate's waiter (the sub_8277EFC8 hook, g_loader_cv.wait_for with the predicate

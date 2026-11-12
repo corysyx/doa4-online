@@ -271,6 +271,7 @@ struct Snap {
   std::vector<Chunk> phys_chunks;  // their contents at the save (outside the snapshot proper: reported at a load)
   std::vector<uint8_t> phys_buf;
   bool phys_restore = false;       // DOA4_NP_SNAPTEST_PHYS=restore: they go back with the snapshot too
+  bool audio_rewind = true;        // the audio lockstep's counters go back (DOA4_NP_SNAPTEST_AUDIO=leave: they don't)
   bool stacks_fix = true;          // DOA4_NP_SNAPTEST_STACKS=leave: only report the stacks, put none back
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
@@ -576,9 +577,12 @@ void HoldOthers(Snap& s, const char* when) {
   auto* ks = rex::system::kernel_state();
   if (!ks || !s.hold) return;
   auto* me = rex::system::XThread::GetCurrentThread();
+  static bool host_listed = false;
+  std::string host;
   for (auto& o : ks->object_table()->GetAllObjects()) {
     if (!o || o->type() != rex::system::XObject::Type::Thread) continue;
     auto* t = static_cast<rex::system::XThread*>(o.get());
+    if (t != me && !t->is_guest_thread()) host += fmt::format(" {} '{}'", t->thread_id(), t->name());
     if (t == me || !t->is_guest_thread() || !t->thread() || !t->thread_state() || !t->thread_state()->context()) continue;
     const uint32_t start = t->creation_params()->start_address;
     if (np::det::IsWorkerEntry(start)) continue;
@@ -630,6 +634,10 @@ void HoldOthers(Snap& s, const char* when) {
   }
   Out(fmt::format("other guest threads at the {}: {} held in a system call{}{}{}{}", when, n, n ? ":" : "", text,
                   running.empty() ? "" : "; still running after 300 ms:", running));
+  if (!host_listed) {  // once: the SDK's host threads (some run guest code: the audio callbacks, GPU interrupts)
+    host_listed = true;
+    Out("host threads (not held):" + (host.empty() ? std::string(" none") : host));
+  }
 }
 
 void ReleaseOthers(Snap& s) {
@@ -901,6 +909,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   const Fence fence = ReadFence(s, base);
   s.fence_at_save = fence.issued;
   const uint32_t clocks = np::det::SaveClocks();
+  np::det::SaveAudio();
   s.kobj_save = KernelObjects();
   SaveStacks(s, base);
   std::memset(s.test, 0, sizeof s.test);
@@ -1025,6 +1034,7 @@ void Load(Snap& s, uint8_t* base) {
     for (const Chunk& c : s.phys_chunks) std::memcpy(base + c.addr, s.phys_buf.data() + c.off, c.len);
   }
   const uint32_t clocks = np::det::RestoreClocks();
+  const int64_t audio_back = s.audio_rewind ? np::det::RestoreAudio() : -2;
   const double ms = MsSince(t0);
   RepairStashes(s, base);
   LoadStacks(s, base);
@@ -1038,6 +1048,11 @@ void Load(Snap& s, uint8_t* base) {
                                               "test on): {}",
                                               moved.size(), kSettleMs, WordsText(base, moved, s.chunks, s.buf, 16))));
   AddLive(&s.live_new, moved);
+  Out(audio_back >= 0   ? fmt::format("audio: {} callbacks since the save are replayed with their first times; the "
+                                      "time of the audio callback is now {} callbacks behind the SDK's count",
+                                      audio_back, np::det::AudioRewound())
+      : audio_back == -1 ? std::string("audio: nothing saved (no audio lockstep counters)")
+                         : std::string("audio: the lockstep counters are left as they are (DOA4_NP_SNAPTEST_AUDIO=leave)"));
   ReleaseOthers(s);
 }
 
@@ -1140,6 +1155,8 @@ bool SnapActive() {
     s.phys_restore = phys && std::string(phys) == "restore";
     const char* hold = std::getenv("DOA4_NP_SNAPTEST_HOLD");
     s.hold = !(hold && std::string(hold) == "off");
+    const char* audio = std::getenv("DOA4_NP_SNAPTEST_AUDIO");
+    s.audio_rewind = !(audio && std::string(audio) == "leave");
     const char* stk = std::getenv("DOA4_NP_SNAPTEST_STACKS");
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page

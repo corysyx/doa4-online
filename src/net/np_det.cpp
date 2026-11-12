@@ -110,6 +110,16 @@ __declspec(dllimport) int rex_audio_worker_callback(uint64_t* index);
 }
 
 namespace doa4::np::det {
+// The SDK audio worker running a guest callback: its callback number less the callbacks the snapshot restores took
+// back (RestoreAudio), so a replayed callback gets the time it had the first time.
+bool AudioCallbackNumber(uint64_t* cb) {
+  if (!rex_audio_worker_callback(cb)) return false;
+  *cb -= AudioRewound();
+  return true;
+}
+}  // namespace doa4::np::det
+
+namespace doa4::np::det {
 namespace {
 
 // The Fix bits (np_det_internal.h) are the indices of np_core.h kFixNames, which DOA4_NP_FIX and the meta use.
@@ -189,7 +199,7 @@ ThreadClock* MyClock() {
 bool GuestTime(int kind, uint64_t* value) {
   if (!On(kSdkClock)) return false;
   uint64_t cb;
-  if (rex_audio_worker_callback(&cb)) {  // the SDK audio worker running a guest callback
+  if (doa4::np::det::AudioCallbackNumber(&cb)) {  // the SDK audio worker running a guest callback
     *value = kind == 0 ? AudioTimebase(cb) : AudioFileTime(cb);
     return true;
   }
@@ -416,7 +426,7 @@ REX_HOOK_RAW(sub_82334C60) {
 REX_HOOK_RAW(sub_82790138) {
   if (doa4::np::Active() && On(kClock)) {
     uint64_t cb;
-    if (rex_audio_worker_callback(&cb)) {  // the SDK audio worker's callback: time from its callback number
+    if (doa4::np::det::AudioCallbackNumber(&cb)) {  // the SDK audio worker's callback: time from its callback number
       ctx.r3.u64 = doa4::np::AudioTickCount(cb);
       return;
     }
@@ -432,7 +442,7 @@ REX_HOOK_RAW(sub_82790138) {
 REX_HOOK_RAW(sub_82792660) {
   if (doa4::np::Active() && On(kClock)) {
     uint64_t cb;
-    if (rex_audio_worker_callback(&cb)) {  // the SDK audio worker's callback: time from its callback number
+    if (doa4::np::det::AudioCallbackNumber(&cb)) {  // the SDK audio worker's callback: time from its callback number
       rex::memory::store_and_swap<uint64_t>(base + ctx.r3.u32, doa4::np::AudioTimebase(cb));
       ctx.r3.u64 = 1;
       return;
@@ -449,7 +459,7 @@ REX_HOOK_RAW(sub_82792660) {
 REX_HOOK_RAW(sub_82790130) {
   if (doa4::np::Active() && On(kClock) && ctx.r3.u32) {
     uint64_t cb;
-    if (rex_audio_worker_callback(&cb)) {  // the SDK audio worker's callback: time from its callback number
+    if (doa4::np::det::AudioCallbackNumber(&cb)) {  // the SDK audio worker's callback: time from its callback number
       rex::memory::store_and_swap<uint64_t>(base + ctx.r3.u32, doa4::np::AudioFileTime(cb));
       return;
     }
