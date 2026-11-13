@@ -168,6 +168,12 @@ constexpr std::array<const char*, 2> kSpeakersNote = {
     "Automatic follows Windows: 5.1 when the speakers are set to 5.1 or more,",
     "stereo otherwise. 5.1 surround always sends six channels."};
 constexpr float kLanguageComboWidth = 220.0f;
+constexpr float kShaderSliderWidth = 260.0f;
+constexpr const char* kShaderHelpNote = "Hover a setting for a description. Ctrl+click a slider to type a value.";
+constexpr const char* kShaderDepthNote =
+    "Ambient occlusion, depth of field, haze and light shafts are not available: the effects only see the finished "
+    "picture.";
+constexpr const char* kShaderSplitLabel = "Split-screen compare (left half: the original picture)";
 constexpr const char* kSkipIntroLabel = "Skip the intro at start-up";
 constexpr const char* kSkipIntroNote = "Starts at the title screen. Applies at the next start.";
 constexpr const char* kDiscordLabel = "Show \"Playing Dead or Alive 4 Online\" on Discord";
@@ -338,6 +344,10 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
         DrawGameTab();
         ImGui::EndTabItem();
       }
+      if (ImGui::BeginTabItem("Shader")) {
+        DrawShaderTab();
+        ImGui::EndTabItem();
+      }
       if (ImGui::BeginTabItem("Controls")) {
         DrawControlsTab();
         ImGui::EndTabItem();
@@ -426,6 +436,11 @@ float MenuDialog::WidestRow() {
   w.push_back(row({display::MenuPx(kLanguageComboWidth, ImGui::GetFontSize()), text(online_view::kLockedText)}));
   w.push_back(toggle(kSkipIntroLabel));
   w.push_back(toggle(kDiscordLabel));
+  // Shader
+  for (const auto& e : picture_fx::kEffects) w.push_back(row({display::MenuPx(kShaderSliderWidth, ImGui::GetFontSize()), text(e.label)}));
+  w.push_back(row({display::MenuPx(kShaderSliderWidth, ImGui::GetFontSize()), text("Preset")}));
+  w.push_back(toggle(kShaderSplitLabel));
+  w.push_back(text(kShaderHelpNote));
   w.push_back(text(DiscordNote()));
   w.push_back(row({button("Change..."), text(online_view::kLockedText), button("Open folder")}));
   // Controls
@@ -982,6 +997,55 @@ void MenuDialog::PickLanguage(uint8_t id) {
 }
 
 // Not locked in a session: a session skips every movie on both PCs whatever the box says (doa4_intro_skip.h).
+// The Shader tab (doa4_picture_fx.h): presentation only, so not locked in a session (SetPresentationSetting).
+void MenuDialog::DrawShaderTab() {
+  namespace fx = picture_fx;
+  if (!shader_loaded_) {
+    shader_ = fx::Parse(rex::cvar::Query<std::string>("doa4_picture_fx"));
+    shader_loaded_ = true;
+  }
+  fx::Settings& s = shader_;
+  bool changed = false, commit = false;
+  const float slider_w = display::MenuPx(kShaderSliderWidth, ImGui::GetFontSize());
+  const int match = fx::MatchPreset(s);
+  ImGui::SetNextItemWidth(slider_w);
+  if (ImGui::BeginCombo("Preset", match >= 0 ? fx::kPresets[size_t(match)].name : "Custom")) {
+    for (size_t p = 0; p < fx::kPresets.size(); ++p) {
+      if (ImGui::Selectable(fx::kPresets[p].name, match == int(p))) {
+        s.values = fx::kPresets[p].values;
+        if (p) s.on = true;
+        changed = commit = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::TextWrapped("%s", match >= 0 ? fx::kPresets[size_t(match)].description : "Your own settings.");
+  ImGui::Separator();
+  if (ImGui::Checkbox("Effects on", &s.on)) changed = commit = true;
+  ImGui::BeginDisabled(!s.on);
+  for (size_t i = 0; i < fx::kCount; ++i) {
+    const fx::EffectInfo& e = fx::kEffects[i];
+    ImGui::PushID(int(i));
+    ImGui::SetNextItemWidth(slider_w);
+    if (ImGui::SliderFloat(e.label, &s.values[i], e.min, e.max, "%.2f", ImGuiSliderFlags_AlwaysClamp)) changed = true;
+    if (ImGui::IsItemDeactivatedAfterEdit()) commit = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", e.help);
+    ImGui::PopID();
+  }
+  if (ImGui::Checkbox(kShaderSplitLabel, &s.split)) changed = commit = true;
+  ImGui::EndDisabled();
+  if (ImGui::Button("Reset to defaults")) {
+    const bool on = s.on;
+    s = fx::Settings();
+    s.on = on;
+    changed = commit = true;
+  }
+  ImGui::TextDisabled("%s", kShaderHelpNote);
+  ImGui::TextWrapped("%s", kShaderDepthNote);
+  if (changed) fx::Apply(s);
+  if (commit) SetPresentationSetting("doa4_picture_fx", fx::Format(s), true);
+}
+
 void MenuDialog::DrawIntroSettings() {
   bool skip = rex::cvar::Query<bool>("doa4_skip_intro");
   if (ImGui::Checkbox(kSkipIntroLabel, &skip)) SetSkipIntro(skip);

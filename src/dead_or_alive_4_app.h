@@ -46,6 +46,7 @@
 #include "doa4_config.h"
 #include "doa4_diag_overlay.h"
 #include "doa4_discord.h"
+#include "doa4_picture_fx.h"
 #include "doa4_extras.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
@@ -1640,6 +1641,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     }
     UpdateNetOverlay();  // a session process whose netplay_show_stats is on shows the box from the start
     doa4::discord::Start();  // the Discord status (doa4_discord.h), when doa4_discord_status is on
+    doa4::picture_fx::ApplyFromConfig();  // the Shader tab's picture effects (doa4_picture_fx.h)
     ui_tick_ = std::thread([this] {
       using namespace std::chrono_literals;
       while (!menu_tick_stop_.load(std::memory_order_acquire)) {

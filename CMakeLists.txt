@@ -8,6 +8,38 @@ project(dead_or_alive_4 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# SDK overrides (sdk_overrides/, see its README.md): whole SDK files this build replaces in the SDK tree before the SDK
+# is added (the picture effects in the D3D12 presenter). Each is copied over only when the SDK file is the one the
+# override was made from (SHA-256 of its text with LF line ends), so a new SDK pin that changes it stops the configure
+# instead of losing the SDK's change.
+set(DOA4_SDK_OVERRIDES
+    "src/ui/d3d12/d3d12_presenter.cpp=df9d80309baad15de4ea361358821f8d40caa8ad0388585c622294b4fdbfc5e7"
+    "include/rex/ui/d3d12/d3d12_presenter.h=deff58f7535358fefe421ec71e64c7343671ccd00bff174f26f26674b007189d")
+if(REXSDK_DIR)
+  foreach(entry IN LISTS DOA4_SDK_OVERRIDES)
+    string(REPLACE "=" ";" parts "${entry}")
+    list(GET parts 0 rel)
+    list(GET parts 1 want)
+    set(sdk_file "${REXSDK_DIR}/${rel}")
+    set(override_file "${CMAKE_CURRENT_SOURCE_DIR}/sdk_overrides/${rel}")
+    file(READ "${sdk_file}" sdk_text)
+    string(REPLACE "\r\n" "\n" sdk_text "${sdk_text}")
+    string(SHA256 sdk_hash "${sdk_text}")
+    file(READ "${override_file}" override_text)
+    string(REPLACE "\r\n" "\n" override_text "${override_text}")
+    string(SHA256 override_hash "${override_text}")
+    if(sdk_hash STREQUAL override_hash)
+      message(STATUS "SDK override in place: ${rel}")
+    elseif(sdk_hash STREQUAL want)
+      configure_file("${override_file}" "${sdk_file}" COPYONLY)
+      message(STATUS "SDK override applied: ${rel}")
+    else()
+      message(FATAL_ERROR "SDK override ${rel}: the SDK's file is not the one the override was made from "
+                          "(SHA-256 ${sdk_hash}, expected ${want}); update sdk_overrides/ for the new SDK pin")
+    endif()
+  endforeach()
+endif()
+
 include(generated/rexglue.cmake)
 
 # Sources
@@ -61,6 +93,7 @@ set(DEADORALIVE4_SOURCES
     src/doa4_suits_import_runner.cpp
     src/doa4_suits_import_view.cpp
     src/doa4_setup_win.cpp
+    src/doa4_picture_fx.cpp
     src/doa4_setup_dialog.cpp
     src/net/np_core.cpp
     src/net/np_exec.cpp
@@ -100,7 +133,7 @@ rexglue_setup_target(dead_or_alive_4)
 set(DOA4_RELEASE_TAG "dev" CACHE STRING "Release tag: alpha-v<major>.<minor>.<patch> in CI")
 set(DOA4_RELEASE_REPO "corysyx/doa4-online" CACHE STRING "GitHub repository of the releases")
 set(DOA4_RELEASE_CHANNEL "alpha" CACHE STRING "Release channel (the tag prefix)")
-set(DOA4_NETPLAY_VERSION "0.3.119" CACHE STRING "major.minor.patch of the next release, set by hand")
+set(DOA4_NETPLAY_VERSION "0.3.120" CACHE STRING "major.minor.patch of the next release, set by hand")
 target_compile_definitions(dead_or_alive_4 PRIVATE DOA4_RELEASE_TAG="${DOA4_RELEASE_TAG}"
     DOA4_RELEASE_REPO="${DOA4_RELEASE_REPO}" DOA4_RELEASE_CHANNEL="${DOA4_RELEASE_CHANNEL}")
 

@@ -1,0 +1,415 @@
+diff --git a/include/rex/ui/d3d12/d3d12_presenter.h b/include/rex/ui/d3d12/d3d12_presenter.h
+index ee7d533..37a1d7a 100644
+--- a/include/rex/ui/d3d12/d3d12_presenter.h
++++ b/include/rex/ui/d3d12/d3d12_presenter.h
+@@ -212,7 +212,10 @@ class D3D12Presenter final : public Presenter {
+       // guest_output_intermediate_texture_paint_last_usage_.
+       kRTVIndexGuestOutputIntermediate0 = kRTVIndexSwapChainBuffer0 + kSwapChainBufferCount,
+ 
+-      kRTVCount = kRTVIndexGuestOutputIntermediate0 + kGuestOutputMailboxSize - 1,
++      // The picture effects' texture (rex_post_fx_set): the guest output with the effects, at its size.
++      kRTVIndexPostFx = kRTVIndexGuestOutputIntermediate0 + kGuestOutputMailboxSize - 1,
++
++      kRTVCount = kRTVIndexPostFx + 1,
+     };
+ 
+     enum ViewIndex : UINT {
+@@ -224,7 +227,10 @@ class D3D12Presenter final : public Presenter {
+       // guest_output_intermediate_texture_paint_last_usage_.
+       kViewIndexGuestOutputIntermediate0Srv = kViewIndexGuestOutput0Srv + kGuestOutputMailboxSize,
+ 
+-      kViewCount = kViewIndexGuestOutputIntermediate0Srv + kMaxGuestOutputPaintEffects - 1,
++      // The picture effects' texture.
++      kViewIndexPostFxSrv = kViewIndexGuestOutputIntermediate0Srv + kMaxGuestOutputPaintEffects - 1,
++
++      kViewCount = kViewIndexPostFxSrv + 1,
+     };
+ 
+     void AwaitSwapChainUsageCompletion() {
+@@ -279,6 +285,11 @@ class D3D12Presenter final : public Presenter {
+         guest_output_intermediate_textures;
+     UINT64 guest_output_intermediate_texture_last_usage = 0;
+ 
++    // The picture effects' texture (rex_post_fx_set), the size of the guest output's frontbuffer; while not in use in
++    // D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE.
++    Microsoft::WRL::ComPtr<ID3D12Resource> post_fx_texture;
++    UINT64 post_fx_texture_last_usage = 0;
++
+     // Connection-specific.
+ 
+     uint32_t swap_chain_width = 0;
+@@ -342,6 +353,13 @@ class D3D12Presenter final : public Presenter {
+   std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, size_t(GuestOutputPaintEffect::kCount)>
+       guest_output_paint_final_pipelines_;
+ 
++  // The picture effects (rex_post_fx_set): one pass over the guest output before the paint effects, its shaders
++  // compiled at the first use with D3DCompiler_47.dll. Not available when that fails (logged once).
++  bool InitializePostFx();
++  bool post_fx_init_tried_ = false;
++  Microsoft::WRL::ComPtr<ID3D12RootSignature> post_fx_root_signature_;
++  Microsoft::WRL::ComPtr<ID3D12PipelineState> post_fx_pipeline_;
++
+   // The first is the refresher submission tracker fence value at which the
+   // guest output texture was last refreshed, the second is the reference to the
+   // texture, which may be null. The indices are the mailbox indices.
+diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
+index a243dbe..3ffe520 100644
+--- a/src/ui/d3d12/d3d12_presenter.cpp
++++ b/src/ui/d3d12/d3d12_presenter.cpp
+@@ -14,6 +14,7 @@
+ #include <climits>
+ #include <cmath>
+ #include <cstdlib>
++#include <cstring>
+ #include <map>
+ #include <memory>
+ #include <mutex>
+@@ -96,6 +97,122 @@ extern "C" __declspec(dllexport) uint32_t rex_lag_last_guest_swap(int64_t* qpc_o
+   return last.index;
+ }
+ 
++// The picture effects (a title's settings menu, e.g. DOA4's Shader tab): rex_post_fx_set stores them, the D3D12
++// presenter applies them to the guest output at every paint, before the paint effects (scaling, CAS, FSR). The values
++// are the shader's constants p0..p3 in order (16 floats): sharpen, clarity, bloom, bloom threshold; bloom size, bloom
++// haze, highlight roll-off, exposure; contrast, saturation, vibrance, warmth; shadow lift, vignette, split compare (the
++// left half without effects when 1), unused. Neutral: 0 0 0 0.7, 1 0 0 1, 1 1 0 0, 0 0 0 0.
++namespace {
++constexpr int kPostFxValues = 16;
++std::mutex g_post_fx_mutex;
++bool g_post_fx_on = false;
++float g_post_fx_values[kPostFxValues] = {};
++
++const char kPostFxHlsl[] = R"HLSL(
++Texture2D<float4> src_tex : register(t0);
++SamplerState lin_samp : register(s0);
++cbuffer PostFx : register(b0) {
++  float4 p0;  // sharpen, clarity, bloom, bloom threshold
++  float4 p1;  // bloom size, bloom haze, highlight roll-off, exposure
++  float4 p2;  // contrast, saturation, vibrance, warmth
++  float4 p3;  // shadow lift, vignette, split compare, unused
++  float4 p4;  // source width, height (pixels), unused, unused
++};
++struct VOut {
++  float4 pos : SV_Position;
++};
++VOut vs(uint id : SV_VertexID) {
++  VOut o;
++  float2 uv = float2(float((id << 1) & 2), float(id & 2));
++  o.pos = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
++  return o;
++}
++float3 Tap(float2 px) {
++  float w, h;
++  src_tex.GetDimensions(w, h);
++  px = clamp(px, float2(0.5, 0.5), p4.xy - 0.5);
++  return src_tex.SampleLevel(lin_samp, px / float2(w, h), 0.0).rgb;
++}
++float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
++float3 Bright(float3 c, float threshold) {
++  float l = Luma(c);
++  float knee = max(1.0 - threshold, 0.001);
++  float k = saturate((l - threshold) / knee);
++  return c * k * k;
++}
++float3 Ring(float2 px, float r, float threshold) {
++  float3 s = float3(0.0, 0.0, 0.0);
++  [unroll] for (int i = 0; i < 12; ++i) {
++    float a = float(i) * 0.5235988 + r * 0.01;
++    s += Bright(Tap(px + float2(cos(a), sin(a)) * r), threshold);
++  }
++  return s / 12.0;
++}
++float3 Shoulder(float3 x, float amount) {
++  float knee = 1.0 - 0.6 * amount;
++  float3 over = max(x - knee, 0.0);
++  float span = 1.0 - knee + 0.0001;
++  float3 soft = knee + span * (1.0 - exp(-over / span));
++  return lerp(x, soft, step(knee, x));
++}
++float4 ps(VOut i) : SV_Target {
++  float2 px = i.pos.xy;
++  float3 orig = Tap(px);
++  if (p3.z > 0.5 && px.x < p4.x * 0.5) {
++    return float4(orig, 1.0);
++  }
++  float3 c = orig;
++  if (p0.x != 0.0) {
++    float3 n = Tap(px + float2(1.0, 0.0)) + Tap(px - float2(1.0, 0.0)) + Tap(px + float2(0.0, 1.0)) +
++               Tap(px - float2(0.0, 1.0));
++    c += (c - n * 0.25) * p0.x;
++  }
++  if (p0.y != 0.0) {
++    float around = 0.0;
++    [unroll] for (int k = 0; k < 8; ++k) {
++      float a = float(k) * 0.7853982;
++      around += Luma(Tap(px + float2(cos(a), sin(a)) * 6.0));
++    }
++    around *= 0.125;
++    float l = Luma(c);
++    c += (l - around) * p0.y * (1.0 - abs(l * 2.0 - 1.0));
++  }
++  if (p0.z > 0.0) {
++    float r = max(p1.x, 0.1) * 3.0 * (p4.y / 720.0);
++    float3 b = Ring(px, r, p0.w) * 0.5 + Ring(px, r * 2.5, p0.w) * 0.35 + Ring(px, r * 5.0, p0.w) * 0.15;
++    float3 haze = Ring(px, r * 9.0, p0.w * 0.5);
++    b = lerp(b, haze, saturate(p1.y));
++    c += b * p0.z;
++  }
++  c *= p1.w;
++  if (p1.z > 0.0) {
++    c = Shoulder(c, saturate(p1.z));
++  }
++  c = (c - 0.5) * p2.x + 0.5;
++  float lum = Luma(c);
++  float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
++  c = lerp(float3(lum, lum, lum), c, max(p2.y * (1.0 + p2.z * (1.0 - saturate(sat))), 0.0));
++  c *= float3(1.0 + p2.w * 0.12, 1.0 + p2.w * 0.02, 1.0 - p2.w * 0.12);
++  if (p3.x != 0.0) {
++    float3 sh = 1.0 - saturate(c);
++    c += p3.x * 0.3 * sh * sh * sh;
++  }
++  if (p3.y > 0.0) {
++    float2 d = (px / p4.xy - 0.5) * 2.0;
++    float v = saturate(dot(d, d) * 0.5);
++    c *= 1.0 - p3.y * v * v;
++  }
++  return float4(saturate(c), 1.0);
++}
++)HLSL";
++}  // namespace
++
++extern "C" __declspec(dllexport) void rex_post_fx_set(int on, const float* values, int count) {
++  std::lock_guard<std::mutex> lock(g_post_fx_mutex);
++  g_post_fx_on = on != 0 && values && count > 0;
++  for (int i = 0; i < kPostFxValues; ++i) g_post_fx_values[i] = values && i < count ? values[i] : 0.0f;
++}
++
+ namespace rex::ui::d3d12 {
+ 
+ // Generated with `xb buildshaders`.
+@@ -1389,6 +1506,102 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+         command_list->SetDescriptorHeaps(1, &view_heap);
+       }
+ 
++      // The picture effects (rex_post_fx_set): the guest output through the effects into post_fx_texture, which the
++      // first paint effect then reads instead of the guest output.
++      bool post_fx_applied = false;
++      if (guest_output_flow.effect_count) {
++        bool post_fx_on;
++        float post_fx_constants[kPostFxValues + 4];
++        {
++          std::lock_guard<std::mutex> lock(g_post_fx_mutex);
++          post_fx_on = g_post_fx_on;
++          std::memcpy(post_fx_constants, g_post_fx_values, sizeof(g_post_fx_values));
++        }
++        const uint32_t fb_width = guest_output_flow.properties.frontbuffer_width;
++        const uint32_t fb_height = guest_output_flow.properties.frontbuffer_height;
++        if (post_fx_on && fb_width && fb_height && InitializePostFx()) {
++          Microsoft::WRL::ComPtr<ID3D12Resource>& post_fx_texture = paint_context_.post_fx_texture;
++          if (post_fx_texture) {
++            D3D12_RESOURCE_DESC current = post_fx_texture->GetDesc();
++            if (current.Width != fb_width || current.Height != fb_height) {
++              paint_context_.paint_submission_tracker.AwaitSubmissionCompletion(
++                  paint_context_.post_fx_texture_last_usage);
++              post_fx_texture.Reset();
++            }
++          }
++          if (!post_fx_texture) {
++            D3D12_RESOURCE_DESC post_fx_desc = {};
++            post_fx_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++            post_fx_desc.Width = fb_width;
++            post_fx_desc.Height = fb_height;
++            post_fx_desc.DepthOrArraySize = 1;
++            post_fx_desc.MipLevels = 1;
++            post_fx_desc.Format = kGuestOutputIntermediateFormat;
++            post_fx_desc.SampleDesc.Count = 1;
++            post_fx_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++            post_fx_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
++            if (SUCCEEDED(device->CreateCommittedResource(
++                    &util::kHeapPropertiesDefault, provider_.GetHeapFlagCreateNotZeroed(), &post_fx_desc,
++                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&post_fx_texture)))) {
++              D3D12_SHADER_RESOURCE_VIEW_DESC post_fx_srv_desc = {};
++              post_fx_srv_desc.Format = kGuestOutputIntermediateFormat;
++              post_fx_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++              post_fx_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++              post_fx_srv_desc.Texture2D.MipLevels = 1;
++              device->CreateShaderResourceView(
++                  post_fx_texture.Get(), &post_fx_srv_desc,
++                  provider_.OffsetViewDescriptor(view_heap_cpu_start, PaintContext::kViewIndexPostFxSrv));
++              D3D12_RENDER_TARGET_VIEW_DESC post_fx_rtv_desc = {};
++              post_fx_rtv_desc.Format = kGuestOutputIntermediateFormat;
++              post_fx_rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
++              device->CreateRenderTargetView(post_fx_texture.Get(), &post_fx_rtv_desc,
++                                             provider_.OffsetRTVDescriptor(rtv_heap_start,
++                                                                           PaintContext::kRTVIndexPostFx));
++            } else {
++              REXLOG_ERROR("D3D12Presenter: failed to create the picture effects texture");
++              post_fx_texture.Reset();
++            }
++          }
++          if (post_fx_texture) {
++            ID3D12Resource* post_fx_resource = post_fx_texture.Get();
++            D3D12_RESOURCE_BARRIER post_fx_barrier = {};
++            post_fx_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++            post_fx_barrier.Transition.pResource = post_fx_resource;
++            post_fx_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++            post_fx_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++            post_fx_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++            command_list->ResourceBarrier(1, &post_fx_barrier);
++            command_list->DiscardResource(post_fx_resource, nullptr);
++            D3D12_CPU_DESCRIPTOR_HANDLE post_fx_rtv =
++                provider_.OffsetRTVDescriptor(rtv_heap_start, PaintContext::kRTVIndexPostFx);
++            command_list->OMSetRenderTargets(1, &post_fx_rtv, TRUE, nullptr);
++            back_buffer_bound = false;
++            D3D12_VIEWPORT post_fx_viewport = {0.0f, 0.0f, float(fb_width), float(fb_height), 0.0f, 1.0f};
++            command_list->RSSetViewports(1, &post_fx_viewport);
++            D3D12_RECT post_fx_scissor = {0, 0, LONG(fb_width), LONG(fb_height)};
++            command_list->RSSetScissorRects(1, &post_fx_scissor);
++            command_list->SetPipelineState(post_fx_pipeline_.Get());
++            command_list->SetGraphicsRootSignature(post_fx_root_signature_.Get());
++            command_list->SetGraphicsRootDescriptorTable(
++                0, provider_.OffsetViewDescriptor(view_heap->GetGPUDescriptorHandleForHeapStart(),
++                                                  UINT(PaintContext::kViewIndexGuestOutput0Srv +
++                                                       guest_output_resource_paint_ref_index)));
++            post_fx_constants[kPostFxValues + 0] = float(fb_width);
++            post_fx_constants[kPostFxValues + 1] = float(fb_height);
++            post_fx_constants[kPostFxValues + 2] = 0.0f;
++            post_fx_constants[kPostFxValues + 3] = 0.0f;
++            command_list->SetGraphicsRoot32BitConstants(1, kPostFxValues + 4, post_fx_constants, 0);
++            command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++            command_list->DrawInstanced(3, 1, 0, 0);
++            post_fx_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++            post_fx_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++            command_list->ResourceBarrier(1, &post_fx_barrier);
++            paint_context_.post_fx_texture_last_usage = current_paint_submission;
++            post_fx_applied = true;
++          }
++        }
++      }
++
+       // This effect loop must not be aborted so the states of the resources
+       // involved are consistent.
+       D3D12_GPU_DESCRIPTOR_HANDLE view_heap_gpu_start =
+@@ -1466,7 +1679,8 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+           guest_output_flow.GetEffectInputSize(i, effect_input_width, effect_input_height);
+           ID3D12Resource* effect_source_resource =
+               i ? paint_context_.guest_output_intermediate_textures[i - 1].Get()
+-                : guest_output_resource.Get();
++              : post_fx_applied ? paint_context_.post_fx_texture.Get()
++                                : guest_output_resource.Get();
+           temporal_dispatch_done = DispatchTemporalUpscaler(
+               command_list, effect_source_resource, effect_input_width, effect_input_height,
+               effect_dest_resource, guest_output_flow.effect_output_sizes[i].first,
+@@ -1528,9 +1742,10 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+                   .Get());
+ 
+           UINT effect_src_view_index =
+-              UINT(i ? (PaintContext::kViewIndexGuestOutputIntermediate0Srv + (i - 1))
+-                     : (PaintContext::kViewIndexGuestOutput0Srv +
+-                        guest_output_resource_paint_ref_index));
++              UINT(i                 ? (PaintContext::kViewIndexGuestOutputIntermediate0Srv + (i - 1))
++                   : post_fx_applied ? PaintContext::kViewIndexPostFxSrv
++                                     : (PaintContext::kViewIndexGuestOutput0Srv +
++                                        guest_output_resource_paint_ref_index));
+           command_list->SetGraphicsRootDescriptorTable(
+               UINT(GuestOutputPaintRootParameter::kSource),
+               provider_.OffsetViewDescriptor(view_heap_gpu_start, effect_src_view_index));
+@@ -2186,4 +2401,98 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+   return InitializeCommonSurfaceIndependent();
+ }
+ 
++bool D3D12Presenter::InitializePostFx() {
++  if (post_fx_init_tried_) return post_fx_pipeline_ != nullptr;
++  post_fx_init_tried_ = true;
++  HMODULE compiler = LoadLibraryW(L"D3DCompiler_47.dll");  // kept loaded: the blobs come from it
++  using D3DCompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
++                                        LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
++  auto compile = compiler ? reinterpret_cast<D3DCompileFn>(GetProcAddress(compiler, "D3DCompile")) : nullptr;
++  if (!compile) {
++    REXLOG_ERROR("D3D12Presenter: picture effects unavailable: D3DCompiler_47.dll or D3DCompile not found");
++    return false;
++  }
++  Microsoft::WRL::ComPtr<ID3DBlob> vs, ps, errors;
++  constexpr UINT kOptimizationLevel3 = 1u << 15;  // D3DCOMPILE_OPTIMIZATION_LEVEL3
++  for (int stage = 0; stage < 2; ++stage) {
++    errors.Reset();
++    HRESULT hr = compile(kPostFxHlsl, sizeof(kPostFxHlsl) - 1, "rex_post_fx", nullptr, nullptr, stage ? "ps" : "vs",
++                         stage ? "ps_5_0" : "vs_5_0", kOptimizationLevel3, 0,
++                         stage ? ps.ReleaseAndGetAddressOf() : vs.ReleaseAndGetAddressOf(),
++                         errors.ReleaseAndGetAddressOf());
++    if (FAILED(hr)) {
++      REXLOG_ERROR("D3D12Presenter: picture effects unavailable: the {} shader did not compile: {}",
++                   stage ? "pixel" : "vertex",
++                   errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize())
++                          : std::string("(no message)"));
++      return false;
++    }
++  }
++  D3D12_DESCRIPTOR_RANGE range = {};
++  range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++  range.NumDescriptors = 1;
++  range.BaseShaderRegister = 0;
++  range.RegisterSpace = 0;
++  range.OffsetInDescriptorsFromTableStart = 0;
++  D3D12_ROOT_PARAMETER params[2] = {};
++  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++  params[0].DescriptorTable.NumDescriptorRanges = 1;
++  params[0].DescriptorTable.pDescriptorRanges = &range;
++  params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++  params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++  params[1].Constants.ShaderRegister = 0;
++  params[1].Constants.RegisterSpace = 0;
++  params[1].Constants.Num32BitValues = kPostFxValues + 4;
++  params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++  D3D12_STATIC_SAMPLER_DESC sampler = {};
++  sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
++  sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
++  sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
++  sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
++  sampler.MaxAnisotropy = 1;
++  sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
++  sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
++  sampler.MinLOD = 0.0f;
++  sampler.MaxLOD = 0.0f;
++  sampler.ShaderRegister = 0;
++  sampler.RegisterSpace = 0;
++  sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++  D3D12_ROOT_SIGNATURE_DESC root_desc = {};
++  root_desc.NumParameters = 2;
++  root_desc.pParameters = params;
++  root_desc.NumStaticSamplers = 1;
++  root_desc.pStaticSamplers = &sampler;
++  root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
++  ID3D12RootSignature* root_signature = util::CreateRootSignature(provider_, root_desc);
++  if (!root_signature) {
++    REXLOG_ERROR("D3D12Presenter: picture effects unavailable: no root signature");
++    return false;
++  }
++  *post_fx_root_signature_.ReleaseAndGetAddressOf() = root_signature;
++  D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline_desc = {};
++  pipeline_desc.pRootSignature = root_signature;
++  pipeline_desc.VS.pShaderBytecode = vs->GetBufferPointer();
++  pipeline_desc.VS.BytecodeLength = vs->GetBufferSize();
++  pipeline_desc.PS.pShaderBytecode = ps->GetBufferPointer();
++  pipeline_desc.PS.BytecodeLength = ps->GetBufferSize();
++  pipeline_desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++  pipeline_desc.SampleMask = UINT_MAX;
++  pipeline_desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++  pipeline_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++  pipeline_desc.RasterizerState.DepthClipEnable = TRUE;
++  pipeline_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++  pipeline_desc.NumRenderTargets = 1;
++  pipeline_desc.RTVFormats[0] = kGuestOutputIntermediateFormat;
++  pipeline_desc.SampleDesc.Count = 1;
++  if (FAILED(provider_.GetDevice()->CreateGraphicsPipelineState(&pipeline_desc,
++                                                                IID_PPV_ARGS(&post_fx_pipeline_)))) {
++    REXLOG_ERROR("D3D12Presenter: picture effects unavailable: no pipeline");
++    post_fx_pipeline_.Reset();
++    return false;
++  }
++  REXLOG_INFO("D3D12Presenter: picture effects ready");
++  return true;
++}
++
+ }  // namespace rex::ui::d3d12
++

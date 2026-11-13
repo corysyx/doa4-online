@@ -28,6 +28,7 @@
 #include "doa4_guest.h"
 #include "doa4_online_tab.h"
 #include "doa4_online_view.h"
+#include "doa4_picture_fx.h"
 #include "doa4_photo_service.h"
 #include "doa4_suits_import_flow.h"
 #include "doa4_tweaks.h"
@@ -186,6 +187,8 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   // menu (OnShutdown), so a call that passes this check still has its flow.
   std::function<void(std::function<void()>)> GuardedDefer();
   void DrawGameTab();
+  // The Shader tab: the picture effects (doa4_picture_fx.h). A slider applies while it moves and saves when let go.
+  void DrawShaderTab();
   bool SessionLocked() const;
   bool Locked(online_view::Control control) const;  // LockedInSession(control, SessionLocked())
   // Logs the Online tab's state and the locks once per change (every frame the menu draws, whichever tab is shown).
@@ -223,6 +226,8 @@ class MenuDialog : public rex::ui::ImGuiDialog, public rex::ui::WindowInputListe
   // listing is tried again at the next opening, not on every frame).
   bool exclusive_modes_attempted_ = false;
   std::string status_;     // last error, shown in red
+  picture_fx::Settings shader_;  // the Shader tab's settings (read from doa4_picture_fx when first drawn)
+  bool shader_loaded_ = false;
   OnlineTab online_tab_;
   std::string logged_tab_line_;  // the last "[doa4][NET] tab: ..." line written
   bool logged_locks_ = false;    // the "menu: locked in session" line was written

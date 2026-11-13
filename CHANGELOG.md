@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.120 (2026-11-13)
+
+corysyx build (otherwise the same as 0.3.119).
+
+### New
+- A **Shader** tab in the Esc menu: picture effects on top of the game's own image - Sharpen, Clarity, Bloom (with
+  threshold, size and haze), Highlight roll-off, Exposure, Contrast, Saturation, Vibrance, Warmth, Shadow lift and
+  Vignette, presets (Original, Modern Look, Vivid, Cinematic, Soft Glow), a split-screen compare and Reset to defaults.
+  Sliders apply while they move and are saved when let go (`doa4_picture_fx`). The effects run as one pass over the
+  game's picture before it is scaled to the window; they see only the finished picture, so there is no ambient
+  occlusion, depth of field, haze or light shafts.
+- `sdk_overrides/`: SDK files replaced at configure time (the D3D12 presenter's picture effects pass, `rex_post_fx_set`),
+  each only over the exact SDK file it was made from.
+
 ## 0.3.119 (2026-11-13)
 
 corysyx rollback research build, with dwreckgg's alpha-v0.3.3 merged in (Quit Game button, Paste buttons, Discord

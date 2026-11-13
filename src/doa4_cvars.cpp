@@ -46,6 +46,9 @@ REXCVAR_DEFINE_BOOL(doa4_suits_import_pending, false, "DOA4",
 REXCVAR_DEFINE_STRING(doa4_user_data, "", "DOA4",
                       "Folder for saves and the shader cache (empty: Documents/dead_or_alive_4)");
 
+// Shader tab: the picture effects (doa4_picture_fx.h), "on=1;split=0;sharpen=0.500;..."; empty: off.
+REXCVAR_DEFINE_STRING(doa4_picture_fx, "", "DOA4", "Picture effects of the Esc menu's Shader tab");
+
 // Photo tab: full-quality photos (doa4_photo_service.h).
 REXCVAR_DEFINE_STRING(doa4_photo_format, "png_monitor", "DOA4",
                       "Photo files: png_monitor, png_full or jpg_full")
