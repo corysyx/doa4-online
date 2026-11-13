@@ -244,6 +244,7 @@ struct Snap {
   uint32_t i = 0;  // boundaries since `at` in this pass
   uint32_t dev = 0, dev_end = 0;   // the D3D device's bytes (its heap block)
   std::vector<uint32_t> live;      // words seen changing while the game stood at a boundary (sorted, unique)
+  std::vector<Keep> noise;         // DOA4_NP_SNAPTEST_NOISE: ranges left live and out of the comparison (round 21)
   std::vector<uint32_t> live_new;  // found at a load: used from the next test on
   std::vector<Keep> keeps;         // this test's kept bytes: the device and the live words
   std::vector<Chunk> chunks;       // the snapshot
@@ -361,6 +362,7 @@ void BuildKeeps(Snap& s) {
   s.keeps.clear();
   if (s.dev_end > s.dev) s.keeps.push_back(Keep{s.dev, s.dev_end});  // restore mode writes it back after the load
   for (uint32_t w : s.live) s.keeps.push_back(Keep{w, w + 4});
+  for (const Keep& k : s.noise) s.keeps.push_back(k);
   std::sort(s.keeps.begin(), s.keeps.end(), [](const Keep& a, const Keep& b) { return a.lo < b.lo; });
   std::vector<Keep> merged;
   for (const Keep& k : s.keeps) {
@@ -1142,6 +1144,26 @@ void Load(Snap& s, uint8_t* base) {
                     PagesText(changed, 24)));
   }
   KernelObjectsAtLoad(s);
+  // Round 21: the GPU command stream is game-written physical memory, but it must not go back. The device's word +0 is
+  // its command write pointer; what the game wrote between the save's and the load's pointer (and the commands it has
+  // written but not yet handed to the GPU, just behind the load's) stays as it is. Putting it back made the GPU run old
+  // bytes in the replay's first submission ("INDIRECT RINGBUFFER: Failed to execute packet") and the game wait on a
+  // fence for ever (the 4096 run's freeze).
+  std::vector<std::pair<uint64_t, uint64_t>> cmd_spans;
+  uint32_t cmd_save = 0, cmd_now = 0;
+  if (s.dev && s.dev_save.size() >= 4) {
+    cmd_save = Be32(s.dev_save.data());
+    cmd_now = Be32(base + s.dev);
+    constexpr uint64_t kPad = 64u << 10, kSpan = 16u << 20;
+    if (cmd_save >= 0xA0000000u && cmd_now >= 0xA0000000u) {
+      if (cmd_now >= cmd_save && cmd_now - cmd_save < (64u << 20)) {
+        cmd_spans.push_back({uint64_t(cmd_save) - kPad, uint64_t(cmd_now) + kPad});
+      } else {  // the ring wrapped: from the save's pointer to the ring's end, from its start to the load's
+        cmd_spans.push_back({uint64_t(cmd_save) - kPad, uint64_t(cmd_save) + kSpan});
+        cmd_spans.push_back({uint64_t(cmd_now) - kSpan, uint64_t(cmd_now) + kPad});
+      }
+    }
+  }
   const auto t0 = std::chrono::steady_clock::now();
   const Fence fence_before = ReadFence(s, base);  // the device's counter before the restore (restore mode puts it back)
   // the kept bytes as they are now
@@ -1178,8 +1200,32 @@ void Load(Snap& s, uint8_t* base) {
                              gpu_ms < 0 ? ", still busy after 100 ms" : fmt::format(" after {:.1f} ms", gpu_ms),
                              s.fence_at_save);
   }
+  size_t cmd_skipped = 0;
   if (s.phys_restore) {
-    for (const Chunk& c : s.phys_chunks) std::memcpy(base + c.addr + HostOff(c.addr), s.phys_buf.data() + c.off, c.len);
+    for (const Chunk& c : s.phys_chunks) {
+      // the chunk minus the command stream's spans, piece by piece
+      uint64_t a = c.addr;
+      const uint64_t end = uint64_t(c.addr) + c.len;
+      while (a < end) {
+        uint64_t b = end;
+        bool skip = false;
+        for (const auto& sp : cmd_spans) {
+          if (a >= sp.first && a < sp.second) {
+            skip = true;
+            b = std::min(b, sp.second);
+          } else if (sp.first > a) {
+            b = std::min(b, sp.first);
+          }
+        }
+        const uint32_t n = uint32_t(b - a);
+        if (skip) {
+          cmd_skipped += n;
+        } else {
+          std::memcpy(base + a + HostOff(a), s.phys_buf.data() + c.off + (a - c.addr), n);
+        }
+        a = b;
+      }
+    }
   }
   const uint32_t clocks = np::det::RestoreClocks();
   const int64_t audio_back = s.audio_rewind ? np::det::RestoreAudio() : -2;
@@ -1189,6 +1235,11 @@ void Load(Snap& s, uint8_t* base) {
   LoadStacks(s, base);
   Sleep(kSettleMs);
   const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
+  if (s.phys_restore) {
+    Out(fmt::format("GPU command stream (device +0) {:08X} at the save, {:08X} now: {} KB of it left out of the physical "
+                    "restore",
+                    cmd_save, cmd_now, cmd_skipped / 1024));
+  }
   Out(fmt::format("restored the state of frame {} ({:.1f} MB, {} kept ranges, {} thread clocks) in {:.1f} ms{}{}{}",
                   s.at, double(restored) / (1024.0 * 1024.0), s.keeps.size(), clocks, ms, fence_text,
                   skipped ? fmt::format("; {} KB no longer committed, not restored", skipped / 1024) : "",
@@ -1285,6 +1336,35 @@ bool SnapActive() {
     Snap& s = G();
     s.cfg = c;
     s.next_at = c.at;
+    {
+      // Round 21's store watch: words that follow the wall clock or the GPU ring, not the game. 82F6C9D0/D4: loop
+      // counts of guest threads 9 and 11 (sub_829BC8F8, sub_829BC458), which wake on time; 8357A500-8357A900: the
+      // timebase (mftb) samples of sub_82765540; 8357C190: the main thread's pointer into the GPU command stream
+      // (sub_82770488), which follows the live ring. "off": none.
+      const char* nv = std::getenv("DOA4_NP_SNAPTEST_NOISE");
+      const std::string spec = nv && *nv ? nv : "82F6C9D0-82F6C9D8,8357A500-8357A900,8357C190-8357C194";
+      std::string shown;
+      if (spec != "off") {
+        size_t i = 0;
+        while (i < spec.size()) {
+          size_t j = spec.find(',', i);
+          if (j == std::string::npos) j = spec.size();
+          const std::string item = spec.substr(i, j - i);
+          const size_t dash = item.find('-');
+          if (dash != std::string::npos) {
+            const uint32_t lo = uint32_t(std::strtoul(item.substr(0, dash).c_str(), nullptr, 16)) & ~3u;
+            const uint32_t hi = (uint32_t(std::strtoul(item.substr(dash + 1).c_str(), nullptr, 16)) + 3u) & ~3u;
+            if (hi > lo) {
+              s.noise.push_back(Keep{lo, hi});
+              shown += fmt::format(" {:08X}-{:08X}", lo, hi);
+            }
+          }
+          i = j + 1;
+        }
+      }
+      np::LogLine("[doa4][RB] snaptest: left live and out of the comparison (wall clock, GPU ring):" +
+                  (shown.empty() ? std::string(" nothing") : shown));
+    }
     const char* mode = std::getenv("DOA4_NP_SNAPTEST_MODE");
     s.full = mode && std::string(mode) == "full";
     const char* fence = std::getenv("DOA4_NP_SNAPTEST_FENCE");

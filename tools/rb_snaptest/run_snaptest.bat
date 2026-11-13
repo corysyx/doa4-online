@@ -1,9 +1,9 @@
 @echo off
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
-rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.123 or later) and double-click it. The game plays a scripted
+rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.124 or later) and double-click it. The game plays a scripted
 rem Versus fight by itself two times (about 2 minutes each), rewinds it 12 times each time and checks that every replay
 rem comes out the same (the D3D device's and the XMA decoder's state go back with the snapshot): from frame 3600,
-rem with graphics memory put back too (round 21): from frame 3600 watching the last words that differ, then from 4096.
+rem with graphics memory put back too (round 22): from frame 3600, then from 4096.
 rem Your own save is not used or changed: each run gets a fresh, empty user data folder. A run that has not ended
 rem after 4 minutes, or that froze, is closed.
 setlocal
@@ -29,9 +29,9 @@ set "CACHEARG="
 if exist "%CACHE%" set "CACHEARG=--cache_path=%CACHE%"
 echo The game now plays a fight by itself, two times, and rewinds it a few times (about 8 minutes in all).
 echo Do not touch it: it closes by itself each time.
-for %%M in (a3600w b4096phys) do call :run %%M
+for %%M in (a3600phys b4096phys) do call :run %%M
 if exist "%HERE%snaptest_results.zip" del "%HERE%snaptest_results.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a3600w','%HERE%snaptest_run_b4096phys' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a3600phys','%HERE%snaptest_run_b4096phys' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
 echo.
 if exist "%HERE%snaptest_results.zip" (
   echo DONE. Send snaptest_results.zip from the game folder.
@@ -56,7 +56,6 @@ if "%1"=="b3600full" set "DOA4_NP_SNAPTEST_MODE=full"
 if "%1"=="c3600both" set "DOA4_NP_SNAPTEST_MODE=full"
 set "DOA4_NP_SNAPTEST_PHYS=restore"
 set "DOA4_NP_SNAPTEST_WATCH="
-if "%1"=="a3600w" set "DOA4_NP_SNAPTEST_WATCH=82F6C9D0-82F6C9D8,8357A5E0-8357A5F0,8357A7E0-8357A7E8,8357A818-8357A820,8357C190-8357C194"
 if "%1"=="c3600both" set "DOA4_NP_SNAPTEST_PHYS=restore"
 set "DOA4_NP_SNAPTEST_AUDIO="
 set "DOA4_NP_SNAPTEST_DEVLIVE="

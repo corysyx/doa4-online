@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.124 (2026-11-13)
+
+corysyx rollback research build (otherwise the same as 0.3.123).
+
+### Fixed
+- SnapTest's physical restore (DOA4_NP_SNAPTEST_PHYS=restore) no longer puts back the GPU command stream: the part
+  between the device's command write pointer (+0) at the save and at the load, and the commands just behind it that the
+  game has written but not yet handed to the GPU. Round 21: putting them back made the GPU run old bytes in the
+  replay's first submission ("INDIRECT RINGBUFFER: Failed to execute packet") and the game wait on a fence for ever
+  (the run from frame 4096 froze).
+
+### Changed
+- SnapTest leaves the words round 21's store watch traced to the wall clock or the GPU ring live and out of the
+  comparison (DOA4_NP_SNAPTEST_NOISE, "off" for none): two guest worker threads' loop counts (82F6C9D0/D4), the
+  timebase samples at 8357A500-8357A900 and the main thread's pointer into the command stream (8357C190).
+- SnapTest round 22 runner.
+
 ## 0.3.123 (2026-11-13)
 
 corysyx rollback research build (otherwise the same as 0.3.122).
