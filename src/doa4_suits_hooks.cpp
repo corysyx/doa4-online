@@ -93,6 +93,7 @@
 #include <rex/ppc/context.h>
 #include <rex/thread.h>
 
+#include "doa4_random_costume.h"
 #include "doa4_suits_bust.h"
 #include "doa4_suits_labels.h"
 #include "doa4_unlocks.h"
@@ -114,6 +115,7 @@ REX_EXTERN(__imp__sub_82408398);
 REX_EXTERN(__imp__sub_823BF210);
 REX_EXTERN(__imp__sub_823C1280);
 REX_EXTERN(__imp__sub_823C15E8);
+REX_EXTERN(__imp__sub_825211D0);
 }
 
 namespace {
@@ -405,6 +407,45 @@ REX_HOOK_RAW(sub_82408398) {
     }
   }
   ctx.r3.u64 = mine;
+}
+
+// The character select's RANDOM costume (doa4_random_costume.h): sub_825211D0(r3 = a shuffle bag) deals the bag's next card.
+// At the one call site that draws a RANDOM costume (sub_82523120, return address kDrawReturn, r3 = the costume bag) the card
+// is replaced by a costume drawn evenly from the pool with the game's gameplay generator sub_824061A0; the bag still deals
+// (its state moves as before). There the caller keeps the player's struct in r29 (its count copy row at +8), the character
+// in r30 and the count it read in r31 (all callee-saved, so as they were before the call); after the call it takes
+// r3 % r31, and r3 + 1 % r31 when the other player has the same character and costume. A pool below the count (both
+// players of a mixed session: no swimsuits) is written to r31 as well, so that step stays inside it. Offline, in a session and
+// in a recording or replay alike: main-thread guest work, the same draws on both PCs of a session.
+REX_HOOK_RAW(sub_825211D0) {
+  const uint32_t lr = uint32_t(ctx.lr);
+  const uint32_t bag = ctx.r3.u32;
+  __imp__sub_825211D0(ctx, base);
+  if (lr != doa4::random_costume::kDrawReturn || bag != doa4::random_costume::kCostumeBag) return;
+  const uint32_t count = ctx.r31.u32;
+  const uint32_t character = ctx.r30.u32 & 0xFF;
+  const uint32_t row = base[ctx.r29.u32 + 8];
+  const std::optional<uint8_t> holders = doa4::np::SessionMixedSuitHolders();
+  const bool suits_off = doa4::random_costume::SuitsOff(holders.has_value(), row);  // a mixed session: no suit on RANDOM
+  uint8_t table_max = 0, suits = 0;
+  if (character < doa4::costumes::kCharCount) {
+    table_max = base[doa4::costumes::kMaxTable + character];
+    if (g_suit_counts_on.load(std::memory_order_acquire)) suits = g_suit_counts[character];
+  }
+  const uint32_t pool = doa4::random_costume::Pool(count, table_max, suits, suits_off);
+  const uint64_t saved_lr = ctx.lr;
+  const uint32_t costume = doa4::random_costume::UniformBelow(pool, [&] {
+    sub_824061A0(ctx, base);  // the gameplay Mersenne Twister 0x833F7600: 31 bits in r3
+    return ctx.r3.u32;
+  });
+  ctx.lr = saved_lr;
+  if (pool != count) ctx.r31.u64 = pool;
+  ctx.r3.u64 = costume;
+  static std::atomic<int> s_logged{0};
+  if (s_logged.fetch_add(1) < 32)
+    REXLOG_INFO("[doa4][RANDOM] player row {} (loop player {}) charId {:#x}: costume #{} of a pool of {} (count {}, holders {}{})",
+                row, ctx.r28.u32, character, costume + 1, pool, count,
+                holders ? std::to_string(*holders) : std::string("-"), suits_off ? ", mixed session: no swimsuits" : "");
 }
 
 REX_HOOK_RAW(sub_82528190) {

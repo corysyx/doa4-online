@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.119 (2026-11-13)
+
+corysyx rollback research build, with dwreckgg's alpha-v0.3.3 merged in (Quit Game button, Paste buttons, Discord
+status, larger Esc menu text, DOA ONLINE item blocked, even RANDOM costumes; SDK pin 66daf4d).
+
+### Changed
+- SnapTest puts the SDK's XMA decoder host state back with a snapshot (`src/net/rb_xma.cpp`): for all 320 contexts the
+  allocation and enable flags, the carried-over packet bytes, the current frame's decoded samples, the subframes still
+  to write out and the loop state, plus the decoder's register file and allocation bitmap (the ffmpeg decoder inside
+  is not copied). Round 16's store watch: the voice positions the sound library writes from the SDK audio worker's
+  callback (sub_82976898, e.g. 400E809C) moved 0x80, 0xFF, 0x100 in the replay's first frame against 0x100 each in the
+  first pass, read from the XMA output write offsets; and the camera block 400D72F0.. is copied by the main thread
+  (sub_82793F80 from 824F3270). `DOA4_NP_SNAPTEST_XMA=leave` keeps the old behaviour.
+- SnapTest round 17 runner: frame 3600 and frame 4096.
+
 ## 0.3.118 (2026-11-12)
 
 corysyx rollback research build (otherwise the same as 0.3.110).
@@ -109,6 +124,26 @@ corysyx build: dwreckgg's 0.3.1 and 0.3.2 merged into this fork's lobby, quality
 - DOA4 Lobby launcher support: host and join automatically from the lobby (`netplay_autohost`, `netplay_autojoin`).
 - Skip the intro is on by default (it now uses dwreckgg's Game tab setting).
 - Rollback research builds: the one-PC snapshot test (`DOA4-SnapTest.zip`); not used in normal play.
+## 0.3.3 (2026-11-12)
+
+### New
+- A red **Quit Game** button at the top right of the Esc menu closes the game, offline or online.
+- **Paste** buttons beside the join-code field and the Reach out field in the Online tab put a copied code in.
+- Discord shows **"Playing Dead or Alive 4 Online"** (with the time played) while the game runs and the Discord app is
+  open. Turn it off in the Esc menu's Game tab.
+- The Esc menu's text is larger in fullscreen (borderless and exclusive). In a window it keeps the old size.
+
+### Fixed
+- The game's own DOA ONLINE (Xbox Live) item on MODE SELECT can no longer be entered: it froze the game. Everything else
+  on that screen works as before.
+- Ctrl+V, Ctrl+C, Ctrl+X and Ctrl+A now work in the Esc menu's text fields, so a join code can be pasted.
+- Spaces and line breaks copied along with a code are removed, whether it is pasted with Ctrl+V or the Paste button.
+- RANDOM on character select now gives every costume the same chance. Before, COS. 1 came up far more often than the rest.
+
+### Notes
+- RANDOM includes the DOAX2 swimsuits when you imported them. In an online match where only one player has the
+  swimsuits (or the two imports differ), RANDOM gives both players only the normal costumes, because a randomly picked
+  swimsuit there could make the match go out of sync. Picking a swimsuit by hand works as before.
 
 ## 0.3.2 (2026-11-11)
 

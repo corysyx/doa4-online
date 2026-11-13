@@ -224,4 +224,51 @@ std::string TabLogLine(const In& in, const View& view) {
          (view.join_host_note.empty() ? std::string() : " note=" + view.join_host_note);
 }
 
+bool IsCodeSpace(uint32_t c) {
+  return c <= 0x20 || c == 0x7F || c == 0x00A0 || c == 0x200B || c == 0xFEFF;
+}
+
+std::string StripCodeSpaces(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  size_t i = 0;
+  while (i < text.size()) {
+    const uint8_t lead = uint8_t(text[i]);
+    size_t len = 1;
+    uint32_t cp = lead;
+    if (lead >= 0xF0 && lead <= 0xF4) {
+      len = 4;
+      cp = lead & 0x07;
+    } else if (lead >= 0xE0) {
+      len = 3;
+      cp = lead & 0x0F;
+    } else if (lead >= 0xC2 && lead <= 0xDF) {
+      len = 2;
+      cp = lead & 0x1F;
+    }
+    bool whole = i + len <= text.size();
+    for (size_t k = 1; whole && k < len; ++k) {
+      const uint8_t b = uint8_t(text[i + k]);
+      whole = (b & 0xC0) == 0x80;
+      cp = (cp << 6) | (b & 0x3F);
+    }
+    if (!whole) {  // not a whole UTF-8 character: keep the byte as it is
+      len = 1;
+      cp = 0x80;
+    }
+    if (!IsCodeSpace(cp)) out.append(text.substr(i, len));
+    i += len;
+  }
+  return out;
+}
+
+std::string PastedCode(std::string_view clipboard, size_t capacity) {
+  const std::string s = StripCodeSpaces(clipboard);
+  if (capacity == 0) return {};
+  if (s.size() <= capacity - 1) return s;
+  size_t cut = capacity - 1;
+  while (cut > 0 && (uint8_t(s[cut]) & 0xC0) == 0x80) --cut;
+  return s.substr(0, cut);
+}
+
 }  // namespace doa4::online_view

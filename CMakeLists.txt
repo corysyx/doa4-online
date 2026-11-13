@@ -32,6 +32,8 @@ set(DEADORALIVE4_SOURCES
     src/doa4_language_hooks.cpp
     src/doa4_title_word.cpp
     src/doa4_intro_skip.cpp
+    src/doa4_discord.cpp
+    src/doa4_discord_proto.cpp
     src/doa4_update_notice.cpp
     src/doa4_suits_manifest.cpp
     src/doa4_costumes.cpp
@@ -66,6 +68,7 @@ set(DEADORALIVE4_SOURCES
     src/net/np_session.cpp
     src/net/rb_wmap.cpp
     src/net/rb_snap.cpp
+    src/net/rb_xma.cpp
     src/net/np_det.cpp
     src/net/np_det_middleware.cpp
     src/net/np_det_workers.cpp
@@ -97,7 +100,7 @@ rexglue_setup_target(dead_or_alive_4)
 set(DOA4_RELEASE_TAG "dev" CACHE STRING "Release tag: alpha-v<major>.<minor>.<patch> in CI")
 set(DOA4_RELEASE_REPO "corysyx/doa4-online" CACHE STRING "GitHub repository of the releases")
 set(DOA4_RELEASE_CHANNEL "alpha" CACHE STRING "Release channel (the tag prefix)")
-set(DOA4_NETPLAY_VERSION "0.3.118" CACHE STRING "major.minor.patch of the next release, set by hand")
+set(DOA4_NETPLAY_VERSION "0.3.119" CACHE STRING "major.minor.patch of the next release, set by hand")
 target_compile_definitions(dead_or_alive_4 PRIVATE DOA4_RELEASE_TAG="${DOA4_RELEASE_TAG}"
     DOA4_RELEASE_REPO="${DOA4_RELEASE_REPO}" DOA4_RELEASE_CHANNEL="${DOA4_RELEASE_CHANNEL}")
 

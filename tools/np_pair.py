@@ -70,7 +70,7 @@ REFUSED_SESSION_REASON = "internal: the other player's game did not start the se
 DUMP0 = os.path.join("dumps", "data_000000.bin")  # the frame-0 .data dump in a session folder (DOA4_NP_DUMP=0)
 TERMINAL = re.compile(r"^session ended at frame (\d+): (.*)$")
 SESSION_SWEEP = re.compile(r"^session on: online, \w+, sweep (\d+) blocks/frame")  # np_session.cpp StartOnline's last line
-SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)\s*$")  # np_session.cpp StartOnline's line
+SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)(?:, holders (\d+))?\s*$")  # np_session.cpp StartOnline's line (holders: hand-off v3)
 SESSION_GATE = re.compile(r"^fight gate open on (\d+) frames\s*$")  # np_session.cpp, at the session's end
 SESSION_RESYNC = re.compile(r"^scene generator made equal on (\d+) frames, its lock held on (\d+)\s*$")  # the same place, a mixed session
 # np_digest.h DigestRegions, pinned against the source by test_digest_regions_match_source; the two the hunting switch adds are left out.
@@ -642,6 +642,15 @@ class Pair:
         if states["host"] != states["joiner"]:
             self.problems.append(f"the copies disagree about the session's swimsuits: host {states['host']}, joiner {states['joiner']}")
         lines.append(f"session swimsuits: host {states['host']}, joiner {states['joiner']}")
+        # the hand-off's suit_holders (bit 0 host, bit 1 joiner; the RANDOM costume pool reads it): both copies the same byte
+        holders = {}
+        for s in (host, joiner):
+            found = [m.group(2) for m in (SESSION_SUITS.match(l) for l in s.np_log()) if m and m.group(2) is not None]
+            holders[s.name] = found[0] if found else "-"
+        if "-" not in holders.values():
+            lines.append(f"session swimsuit holders: host {holders['host']}, joiner {holders['joiner']}")
+            if holders["host"] != holders["joiner"]:
+                self.problems.append(f"the copies disagree about the swimsuit holders: host {holders['host']}, joiner {holders['joiner']}")
         # ruling 15: no sweep in a mixed session, and only there. A copy without the line (the stand-in, a session that never started) says nothing.
         # and the digest's header says which regions the session really hashed (a copy with no state word: not judged)
         for s in (host, joiner):

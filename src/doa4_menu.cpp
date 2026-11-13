@@ -38,6 +38,7 @@
 #include <windows.h>
 
 #include "doa4_config.h"
+#include "doa4_discord.h"
 #include "doa4_display.h"
 #include "doa4_gamefiles.h"
 #include "doa4_graphics.h"
@@ -50,6 +51,31 @@
 #include "doa4_unlocks.h"
 
 namespace doa4 {
+
+namespace {
+ImFont* g_menu_font = nullptr;  // AddMenuFont's; set once at start-up on the UI thread, before any menu draws
+}  // namespace
+
+void AddMenuFont(ImFontAtlas* atlas) {
+  if (!atlas) return;
+  ImFontConfig config;
+  config.OversampleH = config.OversampleV = 1;
+  config.PixelSnapH = true;
+  config.SizePixels = display::kMenuLargeFontPx;  // ProggyClean's own size, 13 px
+  g_menu_font = atlas->AddFontDefault(&config);
+  // The SDK's Japanese merge (rexglue imgui_drawer.cpp), at this font's size: paths and names can hold Japanese.
+  const char* jp_font_path = "C:\\Windows\\Fonts\\msgothic.ttc";
+  std::error_code ec;
+  if (g_menu_font && std::filesystem::exists(jp_font_path, ec)) {
+    ImFontConfig jp;
+    jp.MergeMode = true;
+    jp.OversampleH = jp.OversampleV = 1;
+    jp.PixelSnapH = true;
+    jp.FontNo = 0;
+    atlas->AddFontFromFileTTF(jp_font_path, display::kMenuLargeFontPx, &jp, atlas->GetGlyphRangesJapanese());
+  }
+  REXLOG_INFO("[doa4][menu] menu font: {}", g_menu_font ? "ProggyClean 13 px" : "none (the default font, scaled)");
+}
 
 namespace {
 
@@ -144,6 +170,10 @@ constexpr std::array<const char*, 2> kSpeakersNote = {
 constexpr float kLanguageComboWidth = 220.0f;
 constexpr const char* kSkipIntroLabel = "Skip the intro at start-up";
 constexpr const char* kSkipIntroNote = "Starts at the title screen. Applies at the next start.";
+constexpr const char* kDiscordLabel = "Show \"Playing Dead or Alive 4 Online\" on Discord";
+constexpr const char* kDiscordNote = "Needs the Discord app running on this PC. Applies at once.";
+constexpr const char* kDiscordNoteUnavailable = "Not available in this build yet.";
+const char* DiscordNote() { return discord::Available() ? kDiscordNote : kDiscordNoteUnavailable; }
 constexpr const char* kGameFilesNote = "A new location is used from the next start.";
 constexpr const char* kButtonNotesNote = "The game's Type A layout. Its Button Config (Options) can change these.";
 constexpr const char* kNoControllerNote = "No controller in this slot.";
@@ -264,15 +294,45 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
     if (host_.guest && host_.extras) PollSaved(*host_.guest, host_.save_dir, host_.extras);
     next_save_poll_ = ImGui::GetTime() + 1.0;
   }
+  // The menu's text size (AddMenuFont; display::kMenuFontScale), pushed before WidestRow so the window's width is measured
+  // with it.
+  // The user (2026-11-11): the larger font in fullscreen (borderless or exclusive), the SDK's 10 px one in a window, from
+  // the window's live state, so a switch while the menu is open changes it on the next frame.
+  const bool large = host_.window && host_.window->IsFullscreen();
+  if (!large) {
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase);
+  } else if (g_menu_font) {
+    ImGui::PushFont(g_menu_font, g_menu_font->LegacySize);
+  } else {
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * display::kMenuFontScale);
+  }
+  // The font changed since the last frame (a display mode switch): the window takes the new measured width once.
+  const bool font_changed = drawn_large_.has_value() && *drawn_large_ != large;
+  drawn_large_ = large;
+  // centred again on that switch too (review2 M3), or a taller window from a large display can hang off a smaller one
   ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                          ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+                          font_changed ? ImGuiCond_Always : ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   // Task 12 fix round 2: wide enough for the widest unwrapped row of every tab (measured, WidestRow), and never narrower
   // (a constraint, so a narrower size from an earlier opening or a drag cannot cut text off); clamped to the display.
   const ImGuiStyle& style = ImGui::GetStyle();
   const float width = display::MenuWindowWidth(WidestRow(), style.WindowPadding.x, style.ScrollbarSize, io.DisplaySize.x);
-  ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSize(ImVec2(width, 0.0f), font_changed ? ImGuiCond_Always : ImGuiCond_Appearing);
   ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
   if (ImGui::Begin("DOA4###doa4_menu", nullptr, ImGuiWindowFlags_NoCollapse)) {
+    // Quit Game (the user, 2026-11-11): a red button at the top right that closes the game, the same way as closing its
+    // window (the Restart buttons' path), in or out of an online session.
+    const float quit_w = ImGui::CalcTextSize("Quit Game").x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - quit_w));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.08f, 0.08f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.15f, 0.15f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.55f, 0.05f, 0.05f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 1.00f, 1.00f, 1.00f));
+    if (ImGui::Button("Quit Game")) {
+      REXLOG_INFO("[doa4][menu] Quit Game pressed: closing the game");
+      rex::ui::Window* window = host_.window;
+      host_.defer([window] { window->RequestClose(); });
+    }
+    ImGui::PopStyleColor(4);
     if (ImGui::BeginTabBar("tabs")) {
       if (ImGui::BeginTabItem("Game")) {
         DrawGameTab();
@@ -308,6 +368,7 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
     }
   }
   ImGui::End();
+  ImGui::PopFont();
 }
 
 // Task 12 fix round 2: the widest row any tab draws without wrapping, measured with the font in use (ImGui sizes a
@@ -323,7 +384,7 @@ float MenuDialog::WidestRow() {
   const auto row = [&](const std::vector<float>& items) { return display::RowWidth(items, st.ItemSpacing.x); };
   // a row of the two-column tables (first column kTableFirstColumnWidth): each column's cell padding and the 1-pixel inner
   // border (ImGuiTableFlags_BordersInnerV)
-  const auto table = [&](float second) { return kTableFirstColumnWidth + second + st.CellPadding.x * 4 + 1.0f; };
+  const auto table = [&](float second) { return display::MenuPx(kTableFirstColumnWidth, ImGui::GetFontSize()) + second + st.CellPadding.x * 4 + 1.0f; };
   const auto toggles = [&](const auto& labels) {
     std::vector<float> items;
     for (const auto& l : labels) items.push_back(toggle(l));
@@ -334,7 +395,7 @@ float MenuDialog::WidestRow() {
   for (const char* m : kDisplayModes) w.push_back(toggle(m));
   for (const char* t : {kDisplayModeNote, kVsyncNote, kOutputSizeNote, kSkipIntroNote, kGameFilesNote}) w.push_back(text(t));
   w.push_back(toggle("VSync"));
-  w.push_back(row({text(kOutputSizeLabel), kOutputSizeComboWidth}));
+  w.push_back(row({text(kOutputSizeLabel), display::MenuPx(kOutputSizeComboWidth, ImGui::GetFontSize())}));
   w.push_back(toggle(kShowFpsLabel));
   for (const char* s : graphics::kRenderScales) w.push_back(toggle(s));
   w.push_back(text(fmt::format("Applies after a restart (running at x{}).", graphics::kRenderScales.size())));
@@ -362,8 +423,10 @@ float MenuDialog::WidestRow() {
     unsaved.pending_wipe = true;
     w.push_back(text(UnsavedUnlocksWarning(unsaved)));
   }
-  w.push_back(row({kLanguageComboWidth, text(online_view::kLockedText)}));
+  w.push_back(row({display::MenuPx(kLanguageComboWidth, ImGui::GetFontSize()), text(online_view::kLockedText)}));
   w.push_back(toggle(kSkipIntroLabel));
+  w.push_back(toggle(kDiscordLabel));
+  w.push_back(text(DiscordNote()));
   w.push_back(row({button("Change..."), text(online_view::kLockedText), button("Open folder")}));
   // Controls
   w.push_back(toggles(std::array<std::string, 4>{"Player 1", "Player 2", "Player 3", "Player 4"}));
@@ -385,7 +448,7 @@ float MenuDialog::WidestRow() {
   // Extras
   w.push_back(text(online_view::kLockedText));
   w.push_back(text(kLoadProfileNote));
-  w.push_back(row({kExtrasButtonWidth, text("Unlocked")}));
+  w.push_back(row({display::MenuPx(kExtrasButtonWidth, ImGui::GetFontSize()), text("Unlocked")}));
   w.push_back(text(kWipeQuestion));
   w.push_back(row({button("Yes, wipe unlocks"), button("Cancel")}));
   w.push_back(text("Waiting for the game to save..."));
@@ -534,7 +597,7 @@ void MenuDialog::DrawControlsTab() {
   ImGui::Spacing();
   ImGui::SeparatorText("What the buttons do");
   if (ImGui::BeginTable("button_notes", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-    ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, kTableFirstColumnWidth);
+    ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, display::MenuPx(kTableFirstColumnWidth, ImGui::GetFontSize()));
     ImGui::TableSetupColumn("Action");
     for (const auto& note : kButtonNotes) {
       ImGui::TableNextRow();
@@ -582,7 +645,7 @@ void MenuDialog::DrawPadSection() {
 
   const PadRemap remap = CurrentRemap(slot_);
   if (ImGui::BeginTable("pad", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, kTableFirstColumnWidth);
+    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, display::MenuPx(kTableFirstColumnWidth, ImGui::GetFontSize()));
     ImGui::TableSetupColumn("Driven by");
     for (size_t row = 0; row < rex::input::kPadControlCount; ++row) {
       ImGui::TableNextRow();
@@ -624,7 +687,7 @@ void MenuDialog::DrawKeyboardSection() {
   }
 
   if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, kTableFirstColumnWidth);
+    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, display::MenuPx(kTableFirstColumnWidth, ImGui::GetFontSize()));
     ImGui::TableSetupColumn("Key");
     for (size_t row = 0; row < kKeyRows.size(); ++row) {
       ImGui::TableNextRow();
@@ -669,7 +732,7 @@ void MenuDialog::DrawExtrasTab() {
   for (const UnlockRow& row : kUnlockRows) {
     const bool done = profile && unlocks::IsUnlocked(*host_.guest, *profile, row.what);
     ImGui::BeginDisabled(!profile || done || extras_locked);
-    if (ImGui::Button(row.label, ImVec2(kExtrasButtonWidth, 0.0f)) &&
+    if (ImGui::Button(row.label, ImVec2(display::MenuPx(kExtrasButtonWidth, ImGui::GetFontSize()), 0.0f)) &&
         !(host_.refuse && host_.refuse(std::string("unlock ") + row.label, &status_))) {
       std::string error;
       if (UnlockWithBackup(*host_.guest, *profile, row.what, host_.save_dir, host_.backup_root,
@@ -779,7 +842,7 @@ void MenuDialog::DrawWipeUnlocks(const std::optional<uint32_t>& profile, bool lo
   ImGui::Spacing();
   ImGui::BeginDisabled(!profile || locked);
   if (!wipe_armed_) {
-    if (ImGui::Button("Wipe unlocks...", ImVec2(kExtrasButtonWidth, 0.0f))) wipe_armed_ = true;
+    if (ImGui::Button("Wipe unlocks...", ImVec2(display::MenuPx(kExtrasButtonWidth, ImGui::GetFontSize()), 0.0f))) wipe_armed_ = true;
   } else {
     ImGui::TextColored(kErrorColor, "%s", kWipeQuestion);
     ImGui::TextWrapped(
@@ -891,7 +954,7 @@ void MenuDialog::DrawLanguageSettings() {
   }
   const bool locked = Locked(online_view::Control::kLanguage);
   ImGui::BeginDisabled(locked);
-  ImGui::SetNextItemWidth(kLanguageComboWidth);
+  ImGui::SetNextItemWidth(display::MenuPx(kLanguageComboWidth, ImGui::GetFontSize()));
   if (ImGui::BeginCombo("##language", preview)) {
     for (const language::Choice& choice : language::kTextChoices) {
       const bool selected = shown && choice.id == *shown;
@@ -923,6 +986,18 @@ void MenuDialog::DrawIntroSettings() {
   bool skip = rex::cvar::Query<bool>("doa4_skip_intro");
   if (ImGui::Checkbox(kSkipIntroLabel, &skip)) SetSkipIntro(skip);
   ImGui::TextDisabled("%s", kSkipIntroNote);
+}
+
+// The Discord status (doa4_discord.h): host-only, so not locked in a session; near one it is set in memory only, as the
+// other presentation settings are (SetPresentationSetting).
+void MenuDialog::DrawDiscordSettings() {
+  bool on = rex::cvar::Query<bool>("doa4_discord_status");
+  ImGui::BeginDisabled(!discord::Available());  // review2 M2: a build without the application id has no worker
+  if (ImGui::Checkbox(kDiscordLabel, &on) && SetPresentationSetting("doa4_discord_status", on ? "true" : "false", false)) {
+    discord::SetEnabled(on);
+  }
+  ImGui::EndDisabled();
+  ImGui::TextDisabled("%s", DiscordNote());
 }
 
 void MenuDialog::SetSkipIntro(bool on) {
@@ -984,7 +1059,7 @@ void MenuDialog::DrawDisplayRows() {
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted(kOutputSizeLabel);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(kOutputSizeComboWidth);
+  ImGui::SetNextItemWidth(display::MenuPx(kOutputSizeComboWidth, ImGui::GetFontSize()));
   if (mode == kBorderless) {
     ImGui::BeginDisabled();
     if (ImGui::BeginCombo("##size", "Desktop size")) ImGui::EndCombo();
@@ -1085,6 +1160,10 @@ void MenuDialog::DrawGameTab() {
   ImGui::SeparatorText("Start-up");
   ImGui::PushID("intro");
   DrawIntroSettings();
+  ImGui::PopID();
+  ImGui::SeparatorText("Discord");
+  ImGui::PushID("discord");
+  DrawDiscordSettings();
   ImGui::PopID();
   const gamefiles::GameTab tab = gamefiles::DescribeGameTab(
       host_.game_files, host_.game_files_from_command_line,

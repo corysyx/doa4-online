@@ -24,6 +24,7 @@
 
 #include "np_det.h"
 #include "np_session.h"
+#include "rb_xma.h"
 
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -273,6 +274,8 @@ struct Snap {
   std::vector<uint8_t> phys_buf;
   bool phys_restore = false;       // DOA4_NP_SNAPTEST_PHYS=restore: they go back with the snapshot too
   bool audio_rewind = true;        // the audio lockstep's counters go back (DOA4_NP_SNAPTEST_AUDIO=leave: they don't)
+  bool xma_rewind = true;          // the SDK's XMA decoder state goes back (DOA4_NP_SNAPTEST_XMA=leave: it doesn't)
+  bool xma_saved = false;
   bool stacks_fix = true;          // DOA4_NP_SNAPTEST_STACKS=leave: only report the stacks, put none back
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
@@ -1047,6 +1050,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   s.fence_at_save = fence.issued;
   const uint32_t clocks = np::det::SaveClocks();
   np::det::SaveAudio();
+  s.xma_saved = s.xma_rewind && SaveXma();
   s.kobj_save = KernelObjects();
   SaveStacks(s, base);
   std::memset(s.test, 0, sizeof s.test);
@@ -1174,6 +1178,7 @@ void Load(Snap& s, uint8_t* base) {
   }
   const uint32_t clocks = np::det::RestoreClocks();
   const int64_t audio_back = s.audio_rewind ? np::det::RestoreAudio() : -2;
+  const int xma_back = s.xma_saved ? RestoreXma() : -2;
   const double ms = MsSince(t0);
   RepairStashes(s, base);
   LoadStacks(s, base);
@@ -1192,6 +1197,9 @@ void Load(Snap& s, uint8_t* base) {
                                       audio_back, np::det::AudioRewound())
       : audio_back == -1 ? std::string("audio: nothing saved (no audio lockstep counters)")
                          : std::string("audio: the lockstep counters are left as they are (DOA4_NP_SNAPTEST_AUDIO=leave)"));
+  Out(xma_back >= 0 ? fmt::format("XMA decoder: the host state of {} of 320 contexts put back", xma_back)
+      : !s.xma_rewind ? std::string("XMA decoder: left as it is (DOA4_NP_SNAPTEST_XMA=leave)")
+                      : std::string("XMA decoder: nothing saved (no audio system)"));
   ReleaseOthers(s);
 }
 
@@ -1296,6 +1304,8 @@ bool SnapActive() {
     s.hold = !(hold && std::string(hold) == "off");
     const char* audio = std::getenv("DOA4_NP_SNAPTEST_AUDIO");
     s.audio_rewind = !(audio && std::string(audio) == "leave");
+    const char* xma = std::getenv("DOA4_NP_SNAPTEST_XMA");
+    s.xma_rewind = !(xma && std::string(xma) == "leave");
     const char* stk = std::getenv("DOA4_NP_SNAPTEST_STACKS");
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page

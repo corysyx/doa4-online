@@ -18,8 +18,9 @@
 
 namespace doa4::np::handoff {
 
-// Layout (little-endian): "D4HO", u16 version (2), u64 build, text release, u8 role, u8 delay, u16 local_port,
-// u8 peer ip[4], u16 peer port, u32 session_token, u64 seed, u8 suit_state, text guest_settings (u32 length), u32 file count,
+// Layout (little-endian): "D4HO", u16 version (3), u64 build, text release, u8 role, u8 delay, u16 local_port,
+// u8 peer ip[4], u16 peer port, u32 session_token, u64 seed, u8 suit_state, u8 suit_holders, text guest_settings (u32 length),
+// u32 file count,
 // then per file: text name (u16 length), u32 data length, data. Every length checked before use; the bytes must
 // end exactly where the last file does.
 inline constexpr char kSavePrefix[] = "B13EBABEBABEBABE/544307D1/";  // the profile XUID (a constant of the SDK) / DOA4's title id
@@ -46,6 +47,10 @@ struct Handoff {
   uint32_t session_token = 0;   // non-zero
   uint64_t seed = 0;            // the session seed (np_session SessionSeed)
   rules::SuitSession suit_state = rules::SuitSession::kNone;  // the host's rules::SuitSessionOf; read before guest code runs
+  // Who has a swimsuit import (version 3, the RANDOM costume's pool, doa4_random_costume.h): bit 0 the host (player 0),
+  // bit 1 the joiner (player 1); set by the host from both import checksums. Agrees with suit_state (SuitHoldersOk): none
+  // 0, same 3, mixed 1, 2 or 3 (3: two different imports).
+  uint8_t suit_holders = 0;
   std::string guest_settings;   // CaptureGuestSettings text
   std::vector<File> files;      // the host's save, names under kSavePrefix
 };

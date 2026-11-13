@@ -130,6 +130,10 @@ std::optional<std::string> SessionGuestValue(std::string_view name);
 std::optional<bool> SessionFullBust();
 // True in an online session whose hand-off says mixed. Costume code acts on it; nothing else does.
 bool SessionSuitsMixed();
+// An online session whose swimsuit state is mixed: the hand-off's suit_holders (bit 0 the host = player 0, bit 1 the joiner =
+// player 1); nothing otherwise (offline, a replay, none or the same import). Fixed before guest code runs. The RANDOM
+// costume's pool reads it (doa4_random_costume.h).
+std::optional<uint8_t> SessionMixedSuitHolders();
 bool BannerWaiting();                 // a hold has lasted >= 1 s and is still on (any thread; the overlay's banner)
 int32_t SessionFrame();               // the last frame hook's frame (-1 before the first)
 live::FrameResult LastResult();

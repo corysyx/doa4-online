@@ -115,6 +115,13 @@ NoticeLayout NoticeLayoutFor(float display_h, float font_px, float pad_x, float 
 // it draws without wrapping, in every tab (a text with ImGui::CalcTextSize, a radio button or checkbox with ToggleWidth, a
 // row of widgets on one line with RowWidth); the window opens that wide and cannot be made narrower (a size constraint).
 inline constexpr float kMenuMinWidth = 560.0f;  // the width it opened at before: never narrower than that
+// The Esc menu's text size (the user, 2026-11-11): "a few sizes larger" in fullscreen (borderless or exclusive), the SDK's
+// own 10 px in a window (doa4_menu.h AddMenuFont). Every fixed width the menu draws (combo boxes, buttons, the tables' first
+// column, the code fields) follows the font in use: MenuPx(px, font_px) is px at the 10 px font, scaled to font_px.
+inline constexpr float kMenuBaseFontPx = 10.0f;
+inline constexpr float kMenuLargeFontPx = 13.0f;  // the fullscreen font (ProggyClean's own size; doa4_menu AddMenuFont)
+inline constexpr float kMenuFontScale = kMenuLargeFontPx / kMenuBaseFontPx;
+constexpr float MenuPx(float px, float font_px) { return px * font_px / kMenuBaseFontPx; }
 // A radio button or checkbox as ImGui sizes it: the square (the frame height), then the inner spacing and the label.
 constexpr float ToggleWidth(float frame_h, float inner_spacing, float label_w) {
   return frame_h + (label_w > 0 ? inner_spacing + label_w : 0);
