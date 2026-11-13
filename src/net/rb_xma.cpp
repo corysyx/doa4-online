@@ -67,6 +67,11 @@ struct ContextState {
   // output buffer the decoder writes (block count x 256 bytes). Only for a context allocated at the save.
   uint32_t guest_ptr = 0, output_ptr = 0;
   std::vector<uint8_t> data, output;
+  // The two input buffers (packet count x 2048 bytes each): the compressed packets the decoder reads. The game's
+  // streaming fills them by file reads the host does, which the store marks never see (round 18: the replay's first
+  // callback found one output block less and the voice starved, 400E67CC 1->4).
+  uint32_t input_ptr[2] = {0, 0};
+  std::vector<uint8_t> inputs[2];
 
   bool operator==(const ContextState& o) const {
     return allocated == o.allocated && enabled == o.enabled && remaining_blocks == o.remaining_blocks &&
@@ -77,15 +82,25 @@ struct ContextState {
 
 uint8_t* Phys(uint8_t* base, uint32_t addr) { return base + 0xA0000000u + (addr & 0x1FFFFFFFu); }
 uint32_t Be32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
+constexpr uint32_t kPacketBytes = 2048;
+constexpr uint32_t kMaxInputBytes = 4u << 20;  // a buffer larger than this is not copied (logged)
+
+size_t Differ(const uint8_t* a, const uint8_t* b, size_t n) {
+  size_t d = 0;
+  for (size_t i = 0; i < n; ++i) d += a[i] != b[i];
+  return d;
+}
 
 struct Saved {
   bool valid = false;
   size_t guest_bytes = 0;
+  size_t too_large = 0;
   std::unique_ptr<rex::audio::XmaRegisterFile> regs;
   std::vector<uint64_t> bitmap;
   std::vector<ContextState> contexts;
 };
 Saved g_saved;
+XmaRestoreStats g_stats;
 
 XmaDecoder* Decoder() {
   auto* ks = rex::system::kernel_state();
@@ -123,6 +138,7 @@ void Write(XmaContext& c, const ContextState& s) {
 bool SaveXma(uint8_t* base) {
   XmaDecoder* d = Decoder();
   if (!d) return false;
+  g_saved.too_large = 0;
   ContextArray& contexts = d->*Get(DecContexts{});
   if (!g_saved.regs) g_saved.regs = std::make_unique<rex::audio::XmaRegisterFile>();
   *g_saved.regs = d->*Get(DecRegs{});
@@ -136,19 +152,38 @@ bool SaveXma(uint8_t* base) {
     st.data.clear();
     st.output.clear();
     st.output_ptr = 0;
+    for (int b = 0; b < 2; ++b) {
+      st.input_ptr[b] = 0;
+      st.inputs[b].clear();
+    }
     if (st.allocated && st.guest_ptr && base) {
       const uint8_t* ctx_data = Phys(base, st.guest_ptr);
       st.data.assign(ctx_data, ctx_data + 64);
-      const uint32_t blocks = (Be32(ctx_data) >> 22) & 0x1F;  // output_buffer_block_count
-      st.output_ptr = Be32(ctx_data + 0x20);                 // output_buffer_ptr
+      const uint32_t dw0 = Be32(ctx_data), dw1 = Be32(ctx_data + 4);
+      const uint32_t blocks = (dw0 >> 22) & 0x1F;  // output_buffer_block_count
+      st.output_ptr = Be32(ctx_data + 0x1C);       // DWORD 7: output_buffer_ptr
       if (st.output_ptr && blocks) {
         const uint8_t* out = Phys(base, st.output_ptr);
         st.output.assign(out, out + blocks * 256u);
       }
+      const uint32_t packets[2] = {dw0 & 0xFFF, dw1 & 0xFFF};  // input_buffer_0/1_packet_count
+      const uint32_t ptrs[2] = {Be32(ctx_data + 0x14), Be32(ctx_data + 0x18)};  // DWORD 5, 6
+      for (int b = 0; b < 2; ++b) {
+        const uint32_t bytes = packets[b] * kPacketBytes;
+        if (!ptrs[b] || !bytes) continue;
+        if (bytes > kMaxInputBytes) {
+          ++g_saved.too_large;
+          continue;
+        }
+        st.input_ptr[b] = ptrs[b];
+        const uint8_t* in = Phys(base, ptrs[b]);
+        st.inputs[b].assign(in, in + bytes);
+      }
     }
   }
   g_saved.guest_bytes = 0;
-  for (const ContextState& st : g_saved.contexts) g_saved.guest_bytes += st.data.size() + st.output.size();
+  for (const ContextState& st : g_saved.contexts)
+    g_saved.guest_bytes += st.data.size() + st.output.size() + st.inputs[0].size() + st.inputs[1].size();
   g_saved.valid = true;
   return true;
 }
@@ -160,13 +195,28 @@ int RestoreXma(uint8_t* base) {
   d->*Get(DecRegs{}) = *g_saved.regs;
   (d->*Get(DecBitmap{})).data() = g_saved.bitmap;
   int changed = 0;
+  g_stats = {};
+  g_stats.too_large = g_saved.too_large;
   ContextState now;
   for (uint32_t i = 0; i < kContexts; ++i) {
     std::lock_guard<std::mutex> lock(contexts[i].*Get(CtxLock{}));
     const ContextState& st = g_saved.contexts[i];
     if (base && st.guest_ptr && st.data.size() == 64) {
-      std::memcpy(Phys(base, st.guest_ptr), st.data.data(), 64);
-      if (st.output_ptr && !st.output.empty()) std::memcpy(Phys(base, st.output_ptr), st.output.data(), st.output.size());
+      uint8_t* ctx_data = Phys(base, st.guest_ptr);
+      g_stats.data_differ += Differ(ctx_data, st.data.data(), 64);
+      std::memcpy(ctx_data, st.data.data(), 64);
+      if (st.output_ptr && !st.output.empty()) {
+        uint8_t* out = Phys(base, st.output_ptr);
+        g_stats.output_differ += Differ(out, st.output.data(), st.output.size());
+        std::memcpy(out, st.output.data(), st.output.size());
+      }
+      for (int b = 0; b < 2; ++b) {
+        if (!st.input_ptr[b] || st.inputs[b].empty()) continue;
+        uint8_t* in = Phys(base, st.input_ptr[b]);
+        g_stats.input_differ += Differ(in, st.inputs[b].data(), st.inputs[b].size());
+        g_stats.input_bytes += st.inputs[b].size();
+        std::memcpy(in, st.inputs[b].data(), st.inputs[b].size());
+      }
     }
     Read(contexts[i], &now);
     if (now == st) continue;
@@ -177,5 +227,6 @@ int RestoreXma(uint8_t* base) {
 }
 
 size_t SavedXmaGuestBytes() { return g_saved.valid ? g_saved.guest_bytes : 0; }
+XmaRestoreStats LastXmaRestore() { return g_stats; }
 
 }  // namespace doa4::rb

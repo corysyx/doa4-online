@@ -1197,7 +1197,8 @@ void Load(Snap& s, uint8_t* base) {
                                       audio_back, np::det::AudioRewound())
       : audio_back == -1 ? std::string("audio: nothing saved (no audio lockstep counters)")
                          : std::string("audio: the lockstep counters are left as they are (DOA4_NP_SNAPTEST_AUDIO=leave)"));
-  Out(xma_back >= 0 ? fmt::format("XMA decoder: the host state of {} of 320 contexts and {} bytes of context data and output buffers put back", xma_back, SavedXmaGuestBytes())
+  const XmaRestoreStats xs = LastXmaRestore();
+  Out(xma_back >= 0 ? fmt::format("XMA decoder: the host state of {} of 320 contexts and {} bytes of context data, output and input buffers put back; changed since the save: context data {} bytes, output buffers {} bytes, input buffers {} of {} bytes{}", xma_back, SavedXmaGuestBytes(), xs.data_differ, xs.output_differ, xs.input_differ, xs.input_bytes, xs.too_large ? fmt::format(" ({} input buffers over 4 MB not copied)", xs.too_large) : std::string())
       : !s.xma_rewind ? std::string("XMA decoder: left as it is (DOA4_NP_SNAPTEST_XMA=leave)")
                       : std::string("XMA decoder: nothing saved (no audio system)"));
   ReleaseOthers(s);

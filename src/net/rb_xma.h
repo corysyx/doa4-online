@@ -24,4 +24,10 @@ int RestoreXma(uint8_t* base);
 // The guest bytes the last save copied (context data and output buffers).
 size_t SavedXmaGuestBytes();
 
+// What the last RestoreXma found changed since the save (bytes that differed before they were put back).
+struct XmaRestoreStats {
+  size_t data_differ = 0, output_differ = 0, input_differ = 0, input_bytes = 0, too_large = 0;
+};
+XmaRestoreStats LastXmaRestore();
+
 }  // namespace doa4::rb

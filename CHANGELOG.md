@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.122 (2026-11-13)
+
+corysyx rollback research build (otherwise the same as 0.3.121).
+
+### Changed
+- SnapTest's XMA snapshot also copies every allocated context's two input buffers (the compressed packets the decoder
+  reads). The game's streaming fills them by file reads the host does, so no write of the game's code marks them, and
+  after a load the decoder read later packets at the saved offset. Round 18: the replay's first audio callback found
+  one output block less than the first pass (voice positions +0x80 instead of +0x100) and a voice went to state 4.
+- Fixed: the XMA snapshot took the output buffer from DWORD 8 (the work buffer); it is DWORD 7.
+- The load's report says how many bytes of the context data, output buffers and input buffers had changed since the
+  save before they were put back.
+- SnapTest round 19 runner.
+
 ## 0.3.121 (2026-11-13)
 
 corysyx rollback research build (otherwise the same as 0.3.120).
