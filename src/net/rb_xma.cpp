@@ -80,7 +80,15 @@ struct ContextState {
   }
 };
 
-uint8_t* Phys(uint8_t* base, uint32_t addr) { return base + 0xA0000000u + (addr & 0x1FFFFFFFu); }
+// Round 19: the context array lives in a heap the SDK maps with a host offset (4 KB on Windows), so the address must go
+// through the SDK's own translation; adding the guest address to the membase by hand read 64 unrelated bytes per
+// context (0.3.119-0.3.122 saved and put back the wrong memory and took the buffer pointers from it).
+rex::memory::Memory* Mem() {
+  auto* ks = rex::system::kernel_state();
+  return ks ? ks->memory() : nullptr;
+}
+uint8_t* Virt(uint32_t addr) { return Mem()->TranslateVirtual<uint8_t*>(addr); }
+uint8_t* Phys(uint32_t addr) { return Mem()->TranslatePhysical<uint8_t*>(addr); }
 uint32_t Be32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
 constexpr uint32_t kPacketBytes = 2048;
 constexpr uint32_t kMaxInputBytes = 4u << 20;  // a buffer larger than this is not copied (logged)
@@ -156,14 +164,14 @@ bool SaveXma(uint8_t* base) {
       st.input_ptr[b] = 0;
       st.inputs[b].clear();
     }
-    if (st.allocated && st.guest_ptr && base) {
-      const uint8_t* ctx_data = Phys(base, st.guest_ptr);
+    if (st.allocated && st.guest_ptr && base && Mem()) {
+      const uint8_t* ctx_data = Virt(st.guest_ptr);
       st.data.assign(ctx_data, ctx_data + 64);
       const uint32_t dw0 = Be32(ctx_data), dw1 = Be32(ctx_data + 4);
       const uint32_t blocks = (dw0 >> 22) & 0x1F;  // output_buffer_block_count
       st.output_ptr = Be32(ctx_data + 0x1C);       // DWORD 7: output_buffer_ptr
       if (st.output_ptr && blocks) {
-        const uint8_t* out = Phys(base, st.output_ptr);
+        const uint8_t* out = Phys(st.output_ptr);
         st.output.assign(out, out + blocks * 256u);
       }
       const uint32_t packets[2] = {dw0 & 0xFFF, dw1 & 0xFFF};  // input_buffer_0/1_packet_count
@@ -176,7 +184,7 @@ bool SaveXma(uint8_t* base) {
           continue;
         }
         st.input_ptr[b] = ptrs[b];
-        const uint8_t* in = Phys(base, ptrs[b]);
+        const uint8_t* in = Phys(ptrs[b]);
         st.inputs[b].assign(in, in + bytes);
       }
     }
@@ -201,18 +209,18 @@ int RestoreXma(uint8_t* base) {
   for (uint32_t i = 0; i < kContexts; ++i) {
     std::lock_guard<std::mutex> lock(contexts[i].*Get(CtxLock{}));
     const ContextState& st = g_saved.contexts[i];
-    if (base && st.guest_ptr && st.data.size() == 64) {
-      uint8_t* ctx_data = Phys(base, st.guest_ptr);
+    if (base && Mem() && st.guest_ptr && st.data.size() == 64) {
+      uint8_t* ctx_data = Virt(st.guest_ptr);
       g_stats.data_differ += Differ(ctx_data, st.data.data(), 64);
       std::memcpy(ctx_data, st.data.data(), 64);
       if (st.output_ptr && !st.output.empty()) {
-        uint8_t* out = Phys(base, st.output_ptr);
+        uint8_t* out = Phys(st.output_ptr);
         g_stats.output_differ += Differ(out, st.output.data(), st.output.size());
         std::memcpy(out, st.output.data(), st.output.size());
       }
       for (int b = 0; b < 2; ++b) {
         if (!st.input_ptr[b] || st.inputs[b].empty()) continue;
-        uint8_t* in = Phys(base, st.input_ptr[b]);
+        uint8_t* in = Phys(st.input_ptr[b]);
         g_stats.input_differ += Differ(in, st.inputs[b].data(), st.inputs[b].size());
         g_stats.input_bytes += st.inputs[b].size();
         std::memcpy(in, st.inputs[b].data(), st.inputs[b].size());

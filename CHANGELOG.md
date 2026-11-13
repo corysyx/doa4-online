@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.123 (2026-11-13)
+
+corysyx rollback research build (otherwise the same as 0.3.122).
+
+### Fixed
+- SnapTest's XMA snapshot read the wrong memory: the SDK maps the XMA context array's heap (0xE0000000, physical
+  memory in 4 KB pages) 4 KB further on in the host, and the snapshot added the guest address to the membase by hand.
+  0.3.119-0.3.122 saved and put back 64 unrelated bytes per context and took the buffer pointers from them (round 19:
+  "0 bytes changed since the save" after 8 frames of decoding). It now goes through the SDK's own address translation.
+- SnapTest's physical-memory copy (the load's report, and DOA4_NP_SNAPTEST_PHYS=restore) left out the 0xE0000000 heap;
+  it now covers 0xA0000000-0xFFFFFFFF, with that heap's host offset.
+- SnapTest round 20 runner.
+
 ## 0.3.122 (2026-11-13)
 
 corysyx rollback research build (otherwise the same as 0.3.121).

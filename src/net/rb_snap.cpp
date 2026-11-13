@@ -269,7 +269,7 @@ struct Snap {
   std::vector<StackSave> stacks;  // the thread stacks at the save
   std::vector<Held> held;          // the other guest threads, held during a save / load
   bool hold = true;                // DOA4_NP_SNAPTEST_HOLD=off: leave the other threads running
-  unsigned char phys_map[kPages] = {};  // physical pages (0xA0000000-0xDFFFFFFF) the game's code wrote, at the save
+  unsigned char phys_map[kPages] = {};  // physical pages (0xA0000000-0xFFFFFFFF) the game's code wrote, at the save
   std::vector<Chunk> phys_chunks;  // their contents at the save (outside the snapshot proper: reported at a load)
   std::vector<uint8_t> phys_buf;
   bool phys_restore = false;       // DOA4_NP_SNAPTEST_PHYS=restore: they go back with the snapshot too
@@ -310,6 +310,10 @@ double MsSince(std::chrono::steady_clock::time_point t) {
 
 uint32_t Be32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
 
+// The SDK maps the 0xE0000000 heap (physical memory in 4 KB pages: the XMA context array, small physical allocations)
+// 4 KB further on in the host (its host_address_offset; GuestPtr below).
+constexpr uint32_t HostOff(uint64_t a) { return a >= 0xE0000000u ? 0x1000u : 0u; }
+
 // Calls fn(addr, len) for the committed, writable parts of [addr, addr + len) of guest memory.
 template <typename Fn>
 void ForCommitted(uint8_t* base, uint32_t addr, uint32_t len, Fn&& fn) {
@@ -317,9 +321,9 @@ void ForCommitted(uint8_t* base, uint32_t addr, uint32_t len, Fn&& fn) {
   uint64_t a = addr;
   while (a < end) {
     MEMORY_BASIC_INFORMATION mbi{};
-    if (!VirtualQuery(base + a, &mbi, sizeof mbi)) return;
+    if (!VirtualQuery(base + a + HostOff(a), &mbi, sizeof mbi)) return;
     const uint64_t region_end =
-        uint64_t(reinterpret_cast<uint8_t*>(mbi.BaseAddress) - base) + uint64_t(mbi.RegionSize);
+        uint64_t(reinterpret_cast<uint8_t*>(mbi.BaseAddress) - base) + uint64_t(mbi.RegionSize) - HostOff(a);
     const uint64_t b = std::min(end, region_end);
     if (b <= a) return;
     const DWORD writable = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
@@ -396,7 +400,7 @@ size_t Capture(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chun
     });
   }
   if (buf->size() < bytes) buf->resize(bytes);
-  for (const Chunk& c : *chunks) std::memcpy(buf->data() + c.off, base + c.addr, c.len);
+  for (const Chunk& c : *chunks) std::memcpy(buf->data() + c.off, base + c.addr + HostOff(c.addr), c.len);
   return bytes;
 }
 
@@ -415,7 +419,7 @@ std::vector<uint32_t> ChangedWords(const Snap& s, uint8_t* base, const std::vect
   for (const Chunk& c : chunks) {
     for (uint32_t o = 0; o < c.len; o += kPage) {
       const uint8_t* was = copy.data() + c.off + o;
-      const uint8_t* now = base + c.addr + o;
+      const uint8_t* now = base + c.addr + HostOff(c.addr) + o;
       if (std::memcmp(was, now, kPage) == 0) continue;
       for (uint32_t w = 0; w < kPage; w += 4) {
         if (std::memcmp(was + w, now + w, 4) == 0) continue;
@@ -1030,7 +1034,8 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   const size_t bytes = Capture(base, s.saved, &s.chunks, &s.buf);
   // physical memory the game's code wrote: not in the snapshot (the GPU reads and writes it), copied to report
   std::memset(s.phys_map, 0, sizeof s.phys_map);
-  for (uint32_t p = 0xA0000000u >> kPageShift; p < (0xE0000000u >> kPageShift); ++p) s.phys_map[p] = s.seen[p];
+  // 0xA0000000-0xFFFFFFFF: round 19 found the 0xE0000000 heap left out (0.3.122 and before)
+  for (uint32_t p = 0xA0000000u >> kPageShift; p < kPages; ++p) s.phys_map[p] = s.seen[p];
   const size_t phys_bytes = Capture(base, s.phys_map, &s.phys_chunks, &s.phys_buf);
   Out(fmt::format("physical memory the game's code wrote: {:.1f} MB in {} chunks copied for the load's report{}",
                   double(phys_bytes) / (1024.0 * 1024.0), s.phys_chunks.size(),
@@ -1130,7 +1135,7 @@ void Load(Snap& s, uint8_t* base) {
     std::vector<uint32_t> changed;
     for (const Chunk& c : s.phys_chunks) {
       for (uint32_t o = 0; o + 4 <= c.len; o += 4) {
-        if (std::memcmp(base + c.addr + o, s.phys_buf.data() + c.off + o, 4) != 0) changed.push_back(c.addr + o);
+        if (std::memcmp(base + c.addr + HostOff(c.addr) + o, s.phys_buf.data() + c.off + o, 4) != 0) changed.push_back(c.addr + o);
       }
     }
     Out(fmt::format("physical memory since the save: {} words changed{}{}", changed.size(), changed.empty() ? "" : ": ",
@@ -1174,7 +1179,7 @@ void Load(Snap& s, uint8_t* base) {
                              s.fence_at_save);
   }
   if (s.phys_restore) {
-    for (const Chunk& c : s.phys_chunks) std::memcpy(base + c.addr, s.phys_buf.data() + c.off, c.len);
+    for (const Chunk& c : s.phys_chunks) std::memcpy(base + c.addr + HostOff(c.addr), s.phys_buf.data() + c.off, c.len);
   }
   const uint32_t clocks = np::det::RestoreClocks();
   const int64_t audio_back = s.audio_rewind ? np::det::RestoreAudio() : -2;
