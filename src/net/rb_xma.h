@@ -10,13 +10,18 @@
 // inside each context is not copied: it shapes the decoded sample values, not how many there are.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace doa4::rb {
 
 // False when the SDK's audio system or XMA decoder is not there.
-bool SaveXma();
+// base: the guest memory base. With it the allocated contexts' XMA_CONTEXT_DATA and output buffers in physical memory
+// go into the snapshot too (round 17: the host state alone changed nothing).
+bool SaveXma(uint8_t* base);
 // The number of contexts whose host state the restore changed (-1: nothing saved).
-int RestoreXma();
+int RestoreXma(uint8_t* base);
+// The guest bytes the last save copied (context data and output buffers).
+size_t SavedXmaGuestBytes();
 
 }  // namespace doa4::rb

@@ -1050,7 +1050,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   s.fence_at_save = fence.issued;
   const uint32_t clocks = np::det::SaveClocks();
   np::det::SaveAudio();
-  s.xma_saved = s.xma_rewind && SaveXma();
+  s.xma_saved = s.xma_rewind && SaveXma(base);
   s.kobj_save = KernelObjects();
   SaveStacks(s, base);
   std::memset(s.test, 0, sizeof s.test);
@@ -1178,7 +1178,7 @@ void Load(Snap& s, uint8_t* base) {
   }
   const uint32_t clocks = np::det::RestoreClocks();
   const int64_t audio_back = s.audio_rewind ? np::det::RestoreAudio() : -2;
-  const int xma_back = s.xma_saved ? RestoreXma() : -2;
+  const int xma_back = s.xma_saved ? RestoreXma(base) : -2;
   const double ms = MsSince(t0);
   RepairStashes(s, base);
   LoadStacks(s, base);
@@ -1197,7 +1197,7 @@ void Load(Snap& s, uint8_t* base) {
                                       audio_back, np::det::AudioRewound())
       : audio_back == -1 ? std::string("audio: nothing saved (no audio lockstep counters)")
                          : std::string("audio: the lockstep counters are left as they are (DOA4_NP_SNAPTEST_AUDIO=leave)"));
-  Out(xma_back >= 0 ? fmt::format("XMA decoder: the host state of {} of 320 contexts put back", xma_back)
+  Out(xma_back >= 0 ? fmt::format("XMA decoder: the host state of {} of 320 contexts and {} bytes of context data and output buffers put back", xma_back, SavedXmaGuestBytes())
       : !s.xma_rewind ? std::string("XMA decoder: left as it is (DOA4_NP_SNAPTEST_XMA=leave)")
                       : std::string("XMA decoder: nothing saved (no audio system)"));
   ReleaseOthers(s);

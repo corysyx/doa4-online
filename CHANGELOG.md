@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.121 (2026-11-13)
+
+corysyx rollback research build (otherwise the same as 0.3.120).
+
+### Changed
+- SnapTest's XMA snapshot also copies the guest side of every allocated context: its 64-byte XMA_CONTEXT_DATA (read and
+  write offsets, valid bits) and its output buffer, both in physical memory and written by the SDK's decoder, so no
+  write of the game's code marks them. Round 17: putting back the host state of 6 contexts alone changed nothing (the
+  first replayed frame and the frame 4096 crash stayed the same).
+- SnapTest round 18 runner: frame 3600, frame 4096, and frame 3600 with physical memory put back.
+
 ## 0.3.120 (2026-11-13)
 
 corysyx build (otherwise the same as 0.3.119).

@@ -52,6 +52,7 @@ DOA4_RB_ROB(CtxRemainingBlocks, XmaContext, int32_t, remaining_subframe_blocks_i
 DOA4_RB_ROB(CtxRemainingSubframes, XmaContext, uint8_t, current_frame_remaining_subframes_);
 DOA4_RB_ROB(CtxLoopLimit, XmaContext, uint8_t, loop_frame_output_limit_);
 DOA4_RB_ROB(CtxLoopSkip, XmaContext, bool, loop_start_skip_pending_);
+DOA4_RB_ROB(CtxGuestPtr, XmaContext, uint32_t, guest_ptr_);
 #undef DOA4_RB_ROB
 
 struct ContextState {
@@ -62,6 +63,10 @@ struct ContextState {
   int32_t remaining_blocks = 0;
   uint8_t remaining_subframes = 0, loop_limit = 0;
   bool loop_skip = false;
+  // The guest side, in physical memory: the 64-byte XMA_CONTEXT_DATA (read and write offsets, valid bits) and the
+  // output buffer the decoder writes (block count x 256 bytes). Only for a context allocated at the save.
+  uint32_t guest_ptr = 0, output_ptr = 0;
+  std::vector<uint8_t> data, output;
 
   bool operator==(const ContextState& o) const {
     return allocated == o.allocated && enabled == o.enabled && remaining_blocks == o.remaining_blocks &&
@@ -70,8 +75,12 @@ struct ContextState {
   }
 };
 
+uint8_t* Phys(uint8_t* base, uint32_t addr) { return base + 0xA0000000u + (addr & 0x1FFFFFFFu); }
+uint32_t Be32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
+
 struct Saved {
   bool valid = false;
+  size_t guest_bytes = 0;
   std::unique_ptr<rex::audio::XmaRegisterFile> regs;
   std::vector<uint64_t> bitmap;
   std::vector<ContextState> contexts;
@@ -111,7 +120,7 @@ void Write(XmaContext& c, const ContextState& s) {
 
 }  // namespace
 
-bool SaveXma() {
+bool SaveXma(uint8_t* base) {
   XmaDecoder* d = Decoder();
   if (!d) return false;
   ContextArray& contexts = d->*Get(DecContexts{});
@@ -121,13 +130,30 @@ bool SaveXma() {
   g_saved.contexts.resize(kContexts);
   for (uint32_t i = 0; i < kContexts; ++i) {
     std::lock_guard<std::mutex> lock(contexts[i].*Get(CtxLock{}));
-    Read(contexts[i], &g_saved.contexts[i]);
+    ContextState& st = g_saved.contexts[i];
+    Read(contexts[i], &st);
+    st.guest_ptr = contexts[i].*Get(CtxGuestPtr{});
+    st.data.clear();
+    st.output.clear();
+    st.output_ptr = 0;
+    if (st.allocated && st.guest_ptr && base) {
+      const uint8_t* ctx_data = Phys(base, st.guest_ptr);
+      st.data.assign(ctx_data, ctx_data + 64);
+      const uint32_t blocks = (Be32(ctx_data) >> 22) & 0x1F;  // output_buffer_block_count
+      st.output_ptr = Be32(ctx_data + 0x20);                 // output_buffer_ptr
+      if (st.output_ptr && blocks) {
+        const uint8_t* out = Phys(base, st.output_ptr);
+        st.output.assign(out, out + blocks * 256u);
+      }
+    }
   }
+  g_saved.guest_bytes = 0;
+  for (const ContextState& st : g_saved.contexts) g_saved.guest_bytes += st.data.size() + st.output.size();
   g_saved.valid = true;
   return true;
 }
 
-int RestoreXma() {
+int RestoreXma(uint8_t* base) {
   XmaDecoder* d = Decoder();
   if (!d || !g_saved.valid) return -1;
   ContextArray& contexts = d->*Get(DecContexts{});
@@ -137,12 +163,19 @@ int RestoreXma() {
   ContextState now;
   for (uint32_t i = 0; i < kContexts; ++i) {
     std::lock_guard<std::mutex> lock(contexts[i].*Get(CtxLock{}));
+    const ContextState& st = g_saved.contexts[i];
+    if (base && st.guest_ptr && st.data.size() == 64) {
+      std::memcpy(Phys(base, st.guest_ptr), st.data.data(), 64);
+      if (st.output_ptr && !st.output.empty()) std::memcpy(Phys(base, st.output_ptr), st.output.data(), st.output.size());
+    }
     Read(contexts[i], &now);
-    if (now == g_saved.contexts[i]) continue;
+    if (now == st) continue;
     ++changed;
-    Write(contexts[i], g_saved.contexts[i]);
+    Write(contexts[i], st);
   }
   return changed;
 }
+
+size_t SavedXmaGuestBytes() { return g_saved.valid ? g_saved.guest_bytes : 0; }
 
 }  // namespace doa4::rb
