@@ -5,7 +5,7 @@
 **Dead or Alive 4 Online** is a native Windows build of **Dead or Alive 4** (Xbox 360) with two-player
 online play, statically recompiled with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). It
 also builds **34 swimsuits from Dead or Alive Xtreme 2** (DOAX2) on your PC from your own disc, as extra
-costumes. This is **alpha 0.3.3**: it works and is used, but it is still an alpha, and the
+costumes. This is **alpha 0.3.4**: it works and is used, but it is still an alpha, and the
 [known issues](#known-issues) are listed below. **No game data is included.** You need your own copy of
 the game, and the swimsuits need your own DOAX2 disc.
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.4 (2026-11-12)
+
+### New
+- **Alpha-152 is playable.** Tick "Alpha-152 playable" in the Esc menu's Extras tab, then restart the game (the
+  "Restart now" button beside it does that). It is off by default. Online, the host's setting is used for both players.
+  - She takes the old RANDOM cell on character select. RANDOM moves to a new last cell, and it can now pick her.
+  - She has one costume.
+  - Her model is not shown on character select in an online match where the two players' DOAX2 swimsuit imports
+    differ, or in Tag's second-fighter panel. She is still playable there.
+  - In Team Battle her icon in the team list shows "?".
+
+### Fixed
+- Fixed a crash when a throw is the final hit (seen at the end of Ayane's story against Alpha-152).
+- Pressing START and BACK together in Sparring no longer leaves streaks on the paused picture (the pause now opens one
+  frame after the position reset).
+
 ## 0.3.3 (2026-11-12)
 
 ### New
