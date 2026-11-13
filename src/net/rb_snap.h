@@ -34,6 +34,8 @@
 #include "np_core.h"
 #endif
 
+struct PPCContext;
+
 namespace doa4::rb {
 
 struct SnapConfig {
@@ -71,7 +73,9 @@ struct SnapStep {
   bool record = false;  // a first-pass frame: give its input to SnapRecordInput
 };
 bool SnapActive();  // DOA4_NP_SNAPTEST, read once (logs the setting)
-SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state);
+// ctx: the main thread's registers at the frame hook; they are saved with the snapshot and put back at a load
+// (DOA4_NP_SNAPTEST_REGS=leave: left as they are).
+SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCContext* ctx);
 void SnapRecordInput(const np::FrameInput& input);
 
 #endif

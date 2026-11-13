@@ -278,6 +278,8 @@ struct Snap {
   bool xma_rewind = true;          // the SDK's XMA decoder state goes back (DOA4_NP_SNAPTEST_XMA=leave: it doesn't)
   bool xma_saved = false;
   bool stacks_fix = true;          // DOA4_NP_SNAPTEST_STACKS=leave: only report the stacks, put none back
+  bool regs_fix = true;            // DOA4_NP_SNAPTEST_REGS=leave: the main thread's registers are not put back
+  std::vector<uint8_t> regs;       // the main thread's PPCContext at the save (sizeof(::PPCContext) bytes)
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
   std::vector<uint8_t> b1_buf;
@@ -468,8 +470,11 @@ std::atomic<int> g_watch_armed{0};
 std::atomic<uint8_t*> g_watch_base{nullptr};   // 0 off, 1 the first pass's first frame, 2 the replay's (and the load before it)
 std::mutex g_watch_mu;
 std::vector<WatchHit> g_watch_hits;  // under g_watch_mu
+std::vector<uint32_t> g_watch_repeat;  // under g_watch_mu: per hit, the stores folded into it (same word, thread, lr, value)
 uint32_t g_watch_dropped = 0;        // under g_watch_mu
-constexpr size_t kWatchMaxHits = 160;
+constexpr size_t kWatchMaxHits = 400;
+uint32_t g_watch_test = 1;           // DOA4_NP_SNAPTEST_WATCH_TEST: the test the watch is armed in (1-based)
+bool g_watch_all = false;            // DOA4_NP_SNAPTEST_WATCH_FRAMES=all: every frame of that test, not just the first
 
 bool WatchStackReadable(const uint8_t* p, size_t n) {
   MEMORY_BASIC_INFORMATION mbi = {};
@@ -512,8 +517,19 @@ extern "C" void doa4_wwatch_hit(unsigned int addr, unsigned int n, void* vctx, c
     sp = up;
   }
   std::lock_guard<std::mutex> lock(g_watch_mu);
-  if (g_watch_hits.size() < kWatchMaxHits) g_watch_hits.push_back(h);
-  else ++g_watch_dropped;
+  if (!g_watch_hits.empty()) {
+    const WatchHit& b = g_watch_hits.back();
+    if (b.addr == h.addr && b.n == h.n && b.tid == h.tid && b.lr == h.lr && b.value == h.value) {
+      ++g_watch_repeat.back();
+      return;
+    }
+  }
+  if (g_watch_hits.size() < kWatchMaxHits) {
+    g_watch_hits.push_back(h);
+    g_watch_repeat.push_back(0);
+  } else {
+    ++g_watch_dropped;
+  }
 }
 
 namespace doa4::rb {
@@ -526,6 +542,12 @@ void WatchSetup() {
   const char* env = std::getenv("DOA4_NP_SNAPTEST_WATCH");
   std::string spec = env && *env ? env : "400D72F0-400D7380,400E8098-400E80A0,400E67C8-400E67D0";
   if (spec == "off") return;
+  if (const char* t = std::getenv("DOA4_NP_SNAPTEST_WATCH_TEST")) {
+    const unsigned long v = std::strtoul(t, nullptr, 10);
+    if (v >= 1) g_watch_test = uint32_t(v);
+  }
+  const char* fr = std::getenv("DOA4_NP_SNAPTEST_WATCH_FRAMES");
+  g_watch_all = fr && std::string(fr) == "all";
   size_t i = 0;
   while (i < spec.size()) {
     size_t j = spec.find(',', i);
@@ -544,7 +566,8 @@ void WatchSetup() {
     t += fmt::format(" {:08X}-{:08X}", r.lo, r.hi);
     for (uint32_t p = r.lo >> 12; p <= (r.hi - 1) >> 12; ++p) doa4_wwatch[p] = 1;
   }
-  Out("store watch on (test 1's first frame in both passes):" + (t.empty() ? std::string(" nothing") : t));
+  Out(fmt::format("store watch on (test {}'s {} in both passes):{}", g_watch_test,
+                  g_watch_all ? "frames" : "first frame", t.empty() ? std::string(" nothing") : t));
 }
 
 void WatchArm(int pass, uint8_t* base) {
@@ -553,6 +576,7 @@ void WatchArm(int pass, uint8_t* base) {
   {
     std::lock_guard<std::mutex> lock(g_watch_mu);
     g_watch_hits.clear();
+    g_watch_repeat.clear();
     g_watch_dropped = 0;
   }
   g_watch_armed.store(pass, std::memory_order_release);
@@ -562,20 +586,26 @@ void WatchReport(uint8_t* base, const char* what) {
   if (!g_watch_armed.load(std::memory_order_acquire)) return;
   g_watch_armed.store(0, std::memory_order_release);
   std::vector<WatchHit> hits;
+  std::vector<uint32_t> repeat;
   uint32_t dropped;
   {
     std::lock_guard<std::mutex> lock(g_watch_mu);
     hits.swap(g_watch_hits);
+    repeat.swap(g_watch_repeat);
     dropped = g_watch_dropped;
   }
-  Out(fmt::format("store watch, {}: {} stores{}", what, hits.size() + dropped,
+  size_t total = dropped;
+  for (uint32_t r : repeat) total += 1 + r;
+  Out(fmt::format("store watch, {}: {} stores{}", what, total,
                   dropped ? fmt::format(" ({} not listed)", dropped) : std::string()));
-  for (const WatchHit& h : hits) {
+  for (size_t k = 0; k < hits.size(); ++k) {
+    const WatchHit& h = hits[k];
     std::string chain;
-    for (int k = 0; k < h.chain_n; ++k) chain += fmt::format(" {:08X}", h.chain[k]);
-    Out(fmt::format("  {:08X} {} {} tid {} {} lr {:08X} chain{}", h.addr,
+    for (int c = 0; c < h.chain_n; ++c) chain += fmt::format(" {:08X}", h.chain[c]);
+    Out(fmt::format("  {:08X} {} {} tid {} {} lr {:08X} chain{}{}", h.addr,
                     h.n ? fmt::format("n{}", h.n) : std::string("vec"),
-                    h.n ? fmt::format("={:08X}", h.value) : std::string("-"), h.tid, h.fn ? h.fn : "?", h.lr, chain));
+                    h.n ? fmt::format("={:08X}", h.value) : std::string("-"), h.tid, h.fn ? h.fn : "?", h.lr, chain,
+                    repeat[k] ? fmt::format(" (x{})", repeat[k] + 1) : std::string()));
   }
   std::string now;
   for (const WatchRange& r : g_watch) {
@@ -1079,7 +1109,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                   : gpu_ms < 0     ? std::string("; the GPU was still busy after 100 ms")
                                    : fmt::format("; waited {:.1f} ms for the GPU", gpu_ms)));
   ReleaseOthers(s);
-  if (s.tests_done == 0) WatchArm(1, base);
+  if (s.tests_done + 1 == g_watch_test) WatchArm(1, base);
 }
 
 void EndFirstPass(Snap& s, uint8_t* base) {
@@ -1096,7 +1126,7 @@ void EndFirstPass(Snap& s, uint8_t* base) {
 }
 
 void Load(Snap& s, uint8_t* base) {
-  if (s.tests_done == 0) WatchArm(2, base);
+  if (s.tests_done + 1 == g_watch_test) WatchArm(2, base);
   HoldOthers(s, "load");
   // the fibers: a fiber parked somewhere else than at the save resumes its host stack where it is now, with the
   // guest state of the save (rb_snap.h)
@@ -1394,6 +1424,8 @@ bool SnapActive() {
     s.xma_rewind = !(xma && std::string(xma) == "leave");
     const char* stk = std::getenv("DOA4_NP_SNAPTEST_STACKS");
     s.stacks_fix = !(stk && std::string(stk) == "leave");
+    const char* regs = std::getenv("DOA4_NP_SNAPTEST_REGS");
+    s.regs_fix = !(regs && std::string(regs) == "leave");
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page
     WatchSetup();
     np::LogLine(fmt::format("[doa4][RB] snaptest: on - {} tests of {} frames, the first entering frame {}, then every {} "
@@ -1405,13 +1437,48 @@ bool SnapActive() {
   return on;
 }
 
-SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
+// The main thread's registers (round 22): the frame hook runs inside the game's loop, so values left in its registers
+// at the boundary (VMX registers holding last frame's camera, which a fiber switch then saves to memory) come along
+// into the next frame. The save keeps the whole PPCContext; the load puts it back, so the replay starts with them too.
+void SaveRegs(Snap& s, const ::PPCContext* ctx) {
+  s.regs.assign(sizeof(::PPCContext), 0);
+  if (ctx) std::memcpy(s.regs.data(), ctx, sizeof(::PPCContext));
+  else s.regs.clear();
+}
+
+void LoadRegs(Snap& s, ::PPCContext* ctx) {
+  if (!ctx || s.regs.size() != sizeof(::PPCContext)) {
+    Out("registers: none saved, left as they are");
+    return;
+  }
+  const uint8_t* now = reinterpret_cast<const uint8_t*>(ctx);
+  size_t differ = 0;
+  for (size_t o = 0; o + 8 <= s.regs.size(); o += 8) differ += std::memcmp(now + o, s.regs.data() + o, 8) != 0;
+  ::PPCContext saved;
+  std::memcpy(&saved, s.regs.data(), sizeof saved);
+  const bool same_stack = saved.r1.u32 == ctx->r1.u32;
+  if (!s.regs_fix || !same_stack) {
+    Out(fmt::format("registers: {} of {} 8-byte words of the main thread's context differ from the save; left as they "
+                    "are ({})",
+                    differ, s.regs.size() / 8,
+                    !same_stack ? fmt::format("the stack pointer moved: {:08X} at the save, {:08X} now", saved.r1.u32,
+                                              ctx->r1.u32)
+                                : std::string("DOA4_NP_SNAPTEST_REGS=leave")));
+    return;
+  }
+  std::memcpy(ctx, s.regs.data(), sizeof(::PPCContext));
+  Out(fmt::format("registers: {} of {} 8-byte words of the main thread's context differed from the save; put back",
+                  differ, s.regs.size() / 8));
+}
+
+SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCContext* ctx) {
   Snap& s = G();
   FoldMarks(s);
   SnapStep step;
   if (s.phase == 0 && s.tests_done < s.cfg.count && frame == s.next_at) {
     s.at = frame;
     Save(s, base, frame, fight_state);
+    SaveRegs(s, ctx);
     s.phase = 1;
     s.i = 1;
     step.record = true;
@@ -1419,7 +1486,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
   }
   if (s.phase == 1) {
     s.h1.push_back(Hash(s, base));
-    if (s.i == 1) WatchReport(base, fmt::format("first pass, frame {}", s.at).c_str());
+    if (s.i == (g_watch_all ? s.cfg.frames : 1)) WatchReport(base, fmt::format("first pass, frame {}{}", s.at, g_watch_all ? fmt::format("-{}", s.at + s.cfg.frames - 1) : std::string()).c_str());
     if (s.i == 1 && s.cfg.frames > 1) CaptureTestPages(s, base, &s.b1_chunks, &s.b1_buf, nullptr);
     if (s.i < s.cfg.frames) {
       ++s.i;
@@ -1429,6 +1496,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
     // the end of the first pass: keep it, put the snapshot back, run the same frames again
     EndFirstPass(s, base);
     Load(s, base);
+    LoadRegs(s, ctx);
     s.h2.assign(1, Hash(s, base));
     s.phase = 2;
     s.i = 1;
@@ -1440,7 +1508,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state) {
   }
   if (s.phase == 2) {
     s.h2.push_back(Hash(s, base));
-    if (s.i == 1) WatchReport(base, fmt::format("replay (and the load), frame {}", s.at).c_str());
+    if (s.i == (g_watch_all ? s.cfg.frames : 1)) WatchReport(base, fmt::format("replay (and the load), frame {}{}", s.at, g_watch_all ? fmt::format("-{}", s.at + s.cfg.frames - 1) : std::string()).c_str());
     if (s.i == 1 && s.cfg.frames > 1) {
       Differences(s, base, s.b1_chunks, s.b1_buf,
                   fmt::format("test {}, after the first replayed frame (frame {})", s.tests_done + 1, s.at));

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.125 (2026-11-13)
+
+corysyx rollback research build (otherwise the same as 0.3.124).
+
+### Fixed
+- SnapTest now saves the main thread's registers (its whole PPCContext) with the snapshot and puts them back at a load
+  (DOA4_NP_SNAPTEST_REGS=leave: left as they are). Round 22: every replay's first frame differed in 35 words at
+  400D72F0-400D7380, where a fiber switch (sub_82793F80) stores the VMX registers. The frame hook runs inside the
+  game's loop, so the replay started with the registers of the frame the first pass ended on (last frame's camera
+  values) instead of the ones it started with.
+
+### Changed
+- SnapTest's store watch can be armed in any test (DOA4_NP_SNAPTEST_WATCH_TEST, 1-based) and over all of its frames
+  (DOA4_NP_SNAPTEST_WATCH_FRAMES=all). Repeated stores of the same value by the same code are folded into one line
+  (xN), and up to 400 are listed.
+- SnapTest round 23 runner: watches the sound voice words that differed after 8 frames from frame 4344 in both of
+  round 22's runs.
+
 ## 0.3.124 (2026-11-13)
 
 corysyx rollback research build (otherwise the same as 0.3.123).

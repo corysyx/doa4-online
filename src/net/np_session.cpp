@@ -1385,7 +1385,7 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
   // earlier boundary, so the frame counter goes back with it and those frames run again with their recorded input.
   rb::SnapStep snap;
   if (s.mode == Mode::kRecord && rb::SnapActive()) {
-    snap = rb::SnapBoundary(f, base, base[kFightState]);
+    snap = rb::SnapBoundary(f, base, base[kFightState], &ctx);
     if (snap.rewind) {
       f = snap.frame;
       s.frame = f + 1;
