@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,8 @@ struct Tweak {
   const char* label;
   std::vector<Patch> patches;
   std::vector<CostumeAddition> additions;
+  // The game reads part of it once at boot: applied at load or not at all. The menu only saves it, for the next start.
+  bool at_load_only = false;
 };
 
 inline constexpr size_t kTagAllStages = 0;
@@ -42,7 +45,40 @@ inline constexpr size_t kMpHiddenCharacters = 1;
 inline constexpr size_t kHelenaOpera = 2;
 inline constexpr size_t kKokoroKimonos = 3;
 inline constexpr size_t kChristieCostume = 4;
-const std::array<Tweak, 5>& AllTweaks();
+inline constexpr size_t kAlpha152 = 5;
+const std::array<Tweak, 6>& AllTweaks();
+// The order the Extras tab lists them in: the table tweaks and Alpha-152 under "Game tweaks", then the costume boxes.
+inline constexpr std::array<size_t, 6> kMenuOrder = {kTagAllStages,  kMpHiddenCharacters, kAlpha152,
+                                                     kHelenaOpera,   kKokoroKimonos,      kChristieCostume};
+
+// Alpha-152's Random cell: the one item of her tweak that is a write after the load, not a patch. The game fills the
+// 24th select cell (kSelectLastCell) once at boot, by copying the 40 bytes at kSelectStandIn (its static initialiser
+// sub_82A3DCB0). The Xenia patch puts Random's record into that source. The port leaves the source alone, because the
+// select code shows the same record in place of every locked character and pads the Story grid with it (as Random, a
+// locked cell reads RANDOM and A on it picks a random fighter: runs f_vs_off / f_vs_on of 2026-11-12), and writes
+// Random's record into the cell itself, right after the game's copy (the hook on sub_82A3DCB0,
+// doa4_alpha_select_hooks.cpp), only when her patches were applied at load.
+inline constexpr uint32_t kSelectStandIn = 0x82C346D0;   // 40 bytes: the boot copy's source, and the locked cell's stand-in
+inline constexpr uint32_t kSelectLastCell = 0x82F5F2C8;  // 40 bytes: the 24th select cell
+// Random's record at kSelectLastCell (the Xenia patch's 40 bytes for kSelectStandIn).
+const Patch& Alpha152RandomCell();
+// The step right after the game's boot copy. `applied_at_load`: her tweak's bytes are in guest memory since the load
+// (TweakPatcher::IsOn once EndLoad was called), so all of her patches or none; the menu's box never changes it. Writes
+// Random's record into the 24th cell, or nothing; returns the bytes written.
+size_t FillAlpha152RandomCell(const GuestBytes& guest, bool applied_at_load);
+
+// What the Extras tab says under an at-load-only tweak's box (Alpha-152). `saved`: the setting as saved (her cvar, which
+// the box changes). `running`: whether her tweak is in the running game, or nothing while the image is not loaded yet:
+// then the saved setting is still to be applied at this very start, so there is nothing to restart for.
+enum class RestartNote : uint8_t {
+  kNone,            // the running game is as saved, or not loaded yet
+  kRunningWith,     // "Applies after a restart (running with ...)"
+  kRunningWithout,  // "Applies after a restart (running without ...)"
+};
+inline RestartNote RestartNoteFor(bool saved, std::optional<bool> running) {
+  if (!running || saved == *running) return RestartNote::kNone;
+  return *running ? RestartNote::kRunningWith : RestartNote::kRunningWithout;
+}
 
 // The game's costume tables, by charId. The lookup sub_82526B78 reads the list,
 // the variants and the length; the select screen and the unlocks read the max.
@@ -72,6 +108,11 @@ class TweakPatcher {
   void CaptureOriginals(const GuestBytes& guest, const AllocFn& alloc);
   bool captured() const { return !originals_.empty(); }
 
+  // The load is over (the app calls it once, after it applied the saved tweaks and before any guest code runs): from here
+  // on Apply refuses an at_load_only tweak in both directions, "applies at the next start", and writes nothing for it.
+  void EndLoad() { load_ended_ = true; }
+  bool load_ended() const { return load_ended_; }
+
   // Writes the tweak's bytes (on) or the off-state bytes (off): what CaptureOriginals saw, or for a girl with suits the state
   // CarrySuits worked out. Read-only
   // patches are made writable first and read-only again after; if any cannot
@@ -98,6 +139,7 @@ class TweakPatcher {
   std::vector<std::vector<std::vector<uint8_t>>> originals_;
   std::vector<bool> unavailable_;  // by tweak: no guest memory for its blocks
   std::vector<std::string> refuse_on_;  // by tweak: why turning it on is refused (CarrySuits), or empty
+  bool load_ended_ = false;
 };
 
 }  // namespace doa4::tweaks

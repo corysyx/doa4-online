@@ -26,6 +26,35 @@ std::vector<Patch> MpHiddenCharacterPatches() {
   return patches;
 }
 
+// Alpha-152 playable. Two of the Xenia patch's three items: select entry 22 (Random) becomes Alpha-152, and 0x821B52A7
+// switches the 24th cell on (READONLY_DATA). The third item makes the 24th cell Random by rewriting the 40 bytes at
+// 0x82C346D0, which the game copies into that cell once at boot. That record is not patched here: it is also the
+// stand-in the select code shows for every cell whose state is not 3 (a locked character) and the padding of the Story
+// grid, read by sub_82525E80, sub_82523120, sub_82524D78, sub_82525848, sub_825265E0, sub_825267D0, sub_82526960,
+// sub_82528D48, sub_82528FF0 and sub_82529DB8; with Random's record there (character 0xFF, flags 1, state 0, instead of
+// 0xFE, 0, 1) a locked cell read RANDOM and A on it picked a random fighter (runs f_vs_off / f_vs_on, 2026-11-12, on a
+// save with locked characters). Random's record goes into the 24th cell itself, after the game's boot copy
+// (Alpha152RandomCell, FillAlpha152RandomCell). The boot copy and the switch are why the tweak applies at load only.
+// Then her select view, the port's own (notes/research/alpha152_select_model_2026-11-12.md): her row of three
+// per-character tables takes Kasumi's values (charId 5), so her panel has Kasumi's position and cameras instead of the
+// filler's distant one: the panel offset (0x82C338F0, four be16 a character: hover x -112, y 0; confirmed 0, 0), the
+// hover camera id (0x82C339B8, a be32 each) and the confirmed camera id (0x82C33A50).
+std::vector<Patch> Alpha152Patches() {
+  constexpr uint32_t kAlpha = 0x10;
+  return {
+      {0x82F5F2A0,
+       {
+           0x10, 0x01, 0x01, 0x01, 0x00, 0x06, 0x00, 0x18, 0x00, 0x06, 0x00, 0x18, 0x00, 0x06,
+           0x00, 0x32, 0x00, 0x06, 0x00, 0x32, 0x00, 0x06, 0x00, 0xB9, 0x00, 0x06, 0x00, 0xB9,
+           0x00, 0x06, 0x00, 0x61, 0x00, 0x06, 0x00, 0x49, 0x00, 0x00, 0x00, 0x00,
+       }},
+      {0x821B52A7, {0x01}},
+      {0x82C338F0 + 8 * kAlpha, {0xFF, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+      {0x82C339B8 + 4 * kAlpha, {0x00, 0x00, 0x00, 0xF8}},
+      {0x82C33A50 + 4 * kAlpha, {0x00, 0x00, 0x01, 0x0F}},
+  };
+}
+
 constexpr uint32_t kCostumeBlockSize = 32;  // zero-filled past the entries; no character here comes near it
 
 std::vector<uint8_t> Be32Bytes(uint32_t value) {
@@ -70,11 +99,11 @@ std::vector<std::vector<uint8_t>> WordsOf(const costume_lists::Tables& t) {
 
 }  // namespace
 
-// Alpha-152 (a third patch) was removed on 2026-10-28: her character data
-// lacks the motions and script entries a player-controlled fighter needs, and
-// selecting her crashed in Survival, Time Attack and Versus.
-const std::array<Tweak, 5>& AllTweaks() {
-  static const std::array<Tweak, 5> tweaks = {{
+// Alpha-152 (charId 0x10) was removed on 2026-10-28 and came back on 2026-11-12: the crash on confirm of that day was the
+// relocation defect fixed on 2026-10-30 (the low guest memory reservation, doa4_lowmem.h), and with it she plays through
+// whole matches (notes/research/alpha152_runtime_experiment_2026-11-12.md). Her select model: doa4_alpha_select.h.
+const std::array<Tweak, 6>& AllTweaks() {
+  static const std::array<Tweak, 6> tweaks = {{
       {"doa4_tag_all_stages", "All stages in Tag battle", TagAllStagesPatches(), {}},
       {"doa4_mp_hidden_characters", "Hidden characters in multiplayer select",
        MpHiddenCharacterPatches(), {}},
@@ -83,8 +112,26 @@ const std::array<Tweak, 5>& AllTweaks() {
       {"doa4_helena_opera", "Helena's opera dress", {}, {{0x07, {0x03}}}},
       {"doa4_kokoro_kimonos", "Kokoro's pink and blue kimonos", {}, {{0x0A, {0x08, 0x03}}}},
       {"doa4_christie_costume", "Christie's cutscene costume", {}, {{0x14, {0x05}}}},
+      {"doa4_alpha152", "Alpha-152 playable", Alpha152Patches(), {}, true},
   }};
   return tweaks;
+}
+
+const Patch& Alpha152RandomCell() {
+  static const Patch cell = {kSelectLastCell,
+                             {
+                                 0xFF, 0x01, 0x01, 0x01, 0x00, 0x06, 0x00, 0x11, 0x00, 0x06, 0x00, 0x11, 0x00, 0x06,
+                                 0x00, 0x11, 0x00, 0x06, 0x00, 0x11, 0x00, 0x06, 0x00, 0xB8, 0x00, 0x06, 0x00, 0xB8,
+                                 0x00, 0x06, 0x00, 0x3E, 0x00, 0x06, 0x00, 0x6E, 0x00, 0x00, 0x00, 0x00,
+                             }};
+  return cell;
+}
+
+size_t FillAlpha152RandomCell(const GuestBytes& guest, bool applied_at_load) {
+  if (!applied_at_load) return 0;
+  const Patch& cell = Alpha152RandomCell();
+  for (size_t i = 0; i < cell.bytes.size(); ++i) guest.Write(cell.address + uint32_t(i), cell.bytes[i]);
+  return cell.bytes.size();
 }
 
 bool IsReadOnly(uint32_t address) {
@@ -118,6 +165,7 @@ std::string TweakPatcher::Apply(const GuestBytes& guest, size_t tweak, bool on,
                                 const ProtectFn& protect) {
   if (tweak >= AllTweaks().size()) return std::format("no tweak {}", tweak);
   if (!captured()) return "the original bytes were never recorded";
+  if (load_ended_ && AllTweaks()[tweak].at_load_only) return "applies at the next start";
   if (unavailable_[tweak]) return "no guest memory for this costume";
   if (on && !refuse_on_[tweak].empty()) return refuse_on_[tweak];
   const std::vector<Patch>& patches = patches_[tweak];

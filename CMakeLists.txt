@@ -16,6 +16,7 @@ set(DEADORALIVE4_SOURCES
     src/doa4_app_hooks.cpp
     src/doa4_idle_waits.cpp
     src/doa4_move_guard_hooks.cpp
+    src/doa4_alpha_select_hooks.cpp
     src/doa4_debug_hooks.cpp
     src/doa4_diag_overlay.cpp
     src/doa4_config.cpp

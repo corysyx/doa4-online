@@ -186,6 +186,11 @@ constexpr const char* kLoadProfileNote = "Load a profile first (reach the main m
 constexpr const char* kWipeQuestion = "Lock everything again, as in a new save?";
 constexpr const char* kBustLabel = "Full DOAX2 breast movement";
 constexpr const char* kBustNote = "Up and down range of DOAX2 instead of the character's DOA4 range. Takes effect at once.";
+// Under Alpha-152's box while the saved setting differs from the running game (the game copies her select cell at boot, so
+// the box only saves): `running` = she is in the running game.
+constexpr const char* AlphaRestartNote(bool running) {
+  return running ? "Applies after a restart (running with Alpha-152)." : "Applies after a restart (running without Alpha-152).";
+}
 constexpr const char* kPhotoMonitorNote = "Monitor size: at x4 the same clean, supersampled image you see on screen.";
 constexpr const char* kPhotoCopyLabel = "Also save a full-quality copy when you save a snapshot to the in-game Album";
 constexpr const char* kPhotoCopyNote = "The copy is the game's 3:2 photo, at the render scale's full quality.";
@@ -453,6 +458,7 @@ float MenuDialog::WidestRow() {
   w.push_back(row({button("Yes, wipe unlocks"), button("Cancel")}));
   w.push_back(text("Waiting for the game to save..."));
   for (const tweaks::Tweak& t : tweaks::AllTweaks()) w.push_back(toggle(t.label));
+  for (const bool running : {false, true}) w.push_back(text(AlphaRestartNote(running)));  // the "Restart now" button: above
   w.push_back(toggle(kBustLabel));
   w.push_back(text(kBustNote));
   for (const std::string& note : host_.suits_notes) w.push_back(text(note));
@@ -784,7 +790,7 @@ void MenuDialog::DrawExtrasTab() {
   }
 
   ImGui::SeparatorText("Game tweaks");
-  for (size_t i = 0; i < tweaks::AllTweaks().size(); ++i) {
+  for (const size_t i : tweaks::kMenuOrder) {
     const tweaks::Tweak& tweak = tweaks::AllTweaks()[i];
     if (i == tweaks::kHelenaOpera) {
       ImGui::SeparatorText("Extra costumes");
@@ -793,11 +799,30 @@ void MenuDialog::DrawExtrasTab() {
           "Re-enter character select to see the change.");
     }
     bool on = rex::cvar::Query<bool>(tweak.cvar);
-    ImGui::BeginDisabled(!host_.guest || extras_locked);  // a tweak is applied to guest memory
+    // A live tweak is applied to guest memory; an at-load-only one (Alpha-152) is only saved, for the next start.
+    ImGui::BeginDisabled((!tweak.at_load_only && !host_.guest) || extras_locked);
     if (ImGui::Checkbox(tweak.label, &on)) {
       SetTweak(i, on);
     }
     ImGui::EndDisabled();
+    // The game copies her select cell once at boot: the box changes the saved setting, the running game keeps its own.
+    // The running state is asked now, not when the menu was built (before the load it is not known: no note).
+    const tweaks::RestartNote note =
+        i == tweaks::kAlpha152
+            ? tweaks::RestartNoteFor(rex::cvar::Query<bool>(tweak.cvar),
+                                     host_.running_alpha152 ? host_.running_alpha152() : std::nullopt)
+            : tweaks::RestartNote::kNone;
+    if (note != tweaks::RestartNote::kNone) {
+      ImGui::TextColored(kNoteColor, "%s", AlphaRestartNote(note == tweaks::RestartNote::kRunningWith));
+      ImGui::BeginDisabled(extras_locked);
+      if (ImGui::Button("Restart now##alpha152")) {
+        Restart(online_view::Control::kExtras);
+      }
+      ImGui::EndDisabled();
+      if (const char* warning = UnsavedUnlocksWarning(*host_.extras)) {
+        ImGui::TextColored(kErrorColor, "%s", warning);
+      }
+    }
   }
 
   ImGui::SeparatorText("DOAX2 swimsuits");
@@ -1297,6 +1322,10 @@ bool MenuDialog::SetTweak(size_t index, bool on) {
   status_.clear();
   if (on && !tweak.additions.empty()) CostumeBoxOn(host_.extras);
   rex::cvar::SetFlagByName(tweak.cvar, value);
+  if (tweak.at_load_only) {  // Alpha-152: the cvar is the saved setting; the running game is patched at load or not at all
+    REXLOG_INFO("[doa4][EXTRAS] {} = {}: saved for the next start", tweak.cvar, value);
+    return true;
+  }
   std::string apply_error = host_.patcher->Apply(*host_.guest, index, on, host_.protect);
   if (!apply_error.empty()) {
     status_ = fmt::format("{}: {}", tweak.label, apply_error);

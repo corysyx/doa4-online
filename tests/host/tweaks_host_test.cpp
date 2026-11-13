@@ -1,6 +1,9 @@
 // Host test for src/doa4_tweaks.cpp, against the Xenia patch file's bytes (doa4_tweak_fixtures.h) and the bytes the game
 // holds at the patch sites ("originals"): the test's own, each different from its patch byte, always; and with
-// DOA4_TEST_IMAGE set (doa4_test_image.h) the real ones too, read from your own image and checked by one SHA-1. The costume
+// DOA4_TEST_IMAGE set (doa4_test_image.h) the real ones too, read from your own image and checked by one SHA-1. Alpha-152's
+// tweak is two of the patch file's three items plus three select-view values of the port's own (kAlphaViews); the file's
+// third item, Random's record, is not patched where the file puts it but written into the 24th cell after the game's boot
+// copy (TestAlphaRandomCell). The costume
 // tweaks are checked on the game's real costume tables, read from your own image the same way. With the variable unset those
 // sections print SKIPPED; set but unreadable or failing a pin, they FAIL. Built and run by run_tweaks_test.bat.
 
@@ -31,12 +34,70 @@ static int g_checks = 0;
 using namespace doa4::tweaks;
 namespace fx = doa4_fixtures;
 
+// Alpha-152's select view (not in the patch file; notes/research/alpha152_select_model_2026-11-12.md): her row (charId
+// 0x10) of three per-character select tables takes Kasumi's values (charId 5), so her panel has Kasumi's camera and
+// position. The tables: 0x82C338F0 panel offset, four be16 per character; 0x82C339B8 hover camera id and 0x82C33A50
+// confirmed camera id, one be32 per character. The values are Kasumi's rows; the image tier reads them from your image.
+inline constexpr uint32_t kAlphaChar = 0x10, kKasumiChar = 0x05;
+inline constexpr uint32_t kPanelOffsets = 0x82C338F0, kHoverCameras = 0x82C339B8, kConfirmedCameras = 0x82C33A50;
+static const std::vector<fx::FixturePatch> kAlphaViews = {
+    {kPanelOffsets + 8 * kAlphaChar, {0xFF, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},  // x -112, y 0 (hover); 0, 0 (confirmed)
+    {kHoverCameras + 4 * kAlphaChar, {0x00, 0x00, 0x00, 0xF8}},
+    {kConfirmedCameras + 4 * kAlphaChar, {0x00, 0x00, 0x01, 0x0F}},
+};
+// Alpha-152 in the patch file plus the three view values, by address: the six sites the image tier reads (the pinned 97
+// bytes). Five are her tweak's patches (AlphaFixture). The sixth is the patch file's item at kSelectStandIn (XeniaRandom):
+// the port does not patch it there, because the select code shows that record in place of every locked character; its 40
+// bytes go into the 24th cell after the game's boot copy instead (RandomCellFixture).
+static const std::vector<fx::FixturePatch>& AlphaFileAndViews() {
+  static const std::vector<fx::FixturePatch> all = [] {
+    std::vector<fx::FixturePatch> v = fx::kAlpha152;
+    v.insert(v.end(), kAlphaViews.begin(), kAlphaViews.end());
+    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.address < b.address; });
+    return v;
+  }();
+  return all;
+}
+// The patch file's Random record: its one item at kSelectStandIn (main checks there is exactly one).
+static const fx::FixturePatch& XeniaRandom() {
+  static const fx::FixturePatch item = [] {
+    for (const auto& p : fx::kAlpha152) {
+      if (p.address == kSelectStandIn) return p;
+    }
+    return fx::FixturePatch{0, {}};
+  }();
+  return item;
+}
+// The whole Alpha-152 tweak, by address: the patch file's two other items and the three view values.
+static const std::vector<fx::FixturePatch>& AlphaFixture() {
+  static const std::vector<fx::FixturePatch> patched = [] {
+    std::vector<fx::FixturePatch> v;
+    for (const auto& p : AlphaFileAndViews()) {
+      if (p.address != kSelectStandIn) v.push_back(p);
+    }
+    return v;
+  }();
+  return patched;
+}
+// The 24th select cell with Random's record in it: what the step after the boot copy leaves when she was applied at load.
+static const std::vector<fx::FixturePatch>& RandomCellFixture() {
+  static const std::vector<fx::FixturePatch> cell = {{kSelectLastCell, XeniaRandom().on}};
+  return cell;
+}
+// The stand-in's site alone: Holds(StandInSite(), false) = the bytes the game holds there, untouched.
+static const std::vector<fx::FixturePatch>& StandInSite() {
+  static const std::vector<fx::FixturePatch> site = {XeniaRandom()};
+  return site;
+}
+
 const std::vector<fx::FixturePatch>& FixtureFor(size_t tweak) {
   switch (tweak) {
     case kTagAllStages:
       return fx::kTagAllStages;
     case kMpHiddenCharacters:
       return fx::kMpHiddenCharacters;
+    case kAlpha152:
+      return AlphaFixture();
     default: {
       static const std::vector<fx::FixturePatch> kNoPatches;  // the costume tweaks: tested through their own tables below
       return kNoPatches;
@@ -51,32 +112,53 @@ static const AllocFn kNoAlloc = [](uint32_t) { return uint32_t(0); };
 static std::map<uint32_t, uint8_t> g_original;
 static const char* g_originals_name = "synthetic";
 static const char kPatchSitesSha1[] = "14f9cc36cf7a8e270c1a7eeeafc3cb5afca4c334";  // the 24 image bytes at the sites below, by address
+static const char kAlphaSitesSha1[] = "2fab24e0528883efdbcf79316e43b58af8209de1";  // the 97 image bytes at Alpha-152's six sites, by address
+static const char kLastCellSha1[] = "b80de5d138758541c5f05265ad144ab9fa86d1db";  // the 24th cell in the image: 40 zero bytes (filled at boot)
+// Kasumi's rows of the three select-view tables (16 image bytes, by address): what Alpha-152's rows are set to.
+static const char kKasumiViewsSha1[] = "c60f8beec0a72ccdc7a89c8f68e8f6ae965573fb";
 
-static std::vector<doa4_test::ImageSite> PatchSites() {
+static std::vector<doa4_test::ImageSite> SitesOf(std::initializer_list<const std::vector<fx::FixturePatch>*> lists) {
   std::vector<doa4_test::ImageSite> sites;
-  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters}) {
+  for (const auto* patches : lists) {
     for (const auto& p : *patches) sites.push_back({p.address, uint32_t(p.on.size())});
   }
   std::sort(sites.begin(), sites.end(), [](const auto& a, const auto& b) { return a.address < b.address; });
   return sites;
 }
+static std::vector<doa4_test::ImageSite> PatchSites() { return SitesOf({&fx::kTagAllStages, &fx::kMpHiddenCharacters}); }
+static std::vector<doa4_test::ImageSite> AlphaSites() { return SitesOf({&AlphaFileAndViews()}); }
+static std::vector<doa4_test::ImageSite> LastCellSites() { return SitesOf({&RandomCellFixture()}); }
+// Kasumi's rows, in kAlphaViews order (which is address order).
+static std::vector<doa4_test::ImageSite> KasumiViewSites() {
+  return {{kPanelOffsets + 8 * kKasumiChar, 8}, {kHoverCameras + 4 * kKasumiChar, 4}, {kConfirmedCameras + 4 * kKasumiChar, 4}};
+}
 // The test's own originals: every byte differs from the patch byte at its address.
 static void UseSyntheticOriginals() {
   g_original.clear();
   g_originals_name = "synthetic";
-  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters}) {
+  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters, &AlphaFileAndViews()}) {
     for (const auto& p : *patches) {
       for (size_t i = 0; i < p.on.size(); ++i) g_original[p.address + uint32_t(i)] = uint8_t(p.on[i] ^ 0x5A);
     }
   }
+  // The 24th cell before the boot copy: its own bytes, unlike Random's record and unlike the stand-in's (main checks both).
+  for (uint32_t i = 0; i < 40; ++i) g_original[kSelectLastCell + i] = uint8_t(0xC0 + i);
 }
-static void UseImageOriginals(const std::vector<uint8_t>& bytes) {
+// `bytes`: the two table tweaks' sites (PatchSites order); `alpha`: Alpha-152's six sites (AlphaSites order); `cell`: the
+// 24th select cell.
+static void UseImageOriginals(const std::vector<uint8_t>& bytes, const std::vector<uint8_t>& alpha,
+                              const std::vector<uint8_t>& cell) {
   g_original.clear();
   g_originals_name = "image";
   size_t at = 0;
   for (const auto& site : PatchSites()) {
     for (uint32_t i = 0; i < site.length; ++i) g_original[site.address + i] = bytes[at++];
   }
+  at = 0;
+  for (const auto& site : AlphaSites()) {
+    for (uint32_t i = 0; i < site.length; ++i) g_original[site.address + i] = alpha[at++];
+  }
+  for (uint32_t i = 0; i < 40; ++i) g_original[kSelectLastCell + i] = cell[i];
 }
 
 // Guest memory holding the originals at every patch address.
@@ -87,7 +169,8 @@ struct FakeGuest {
   int writes = 0;
   int faults = 0;
   std::vector<std::pair<uint32_t, bool>> protect_calls;
-  bool protect_fails = false;
+  bool protect_fails = false;          // every protection change is refused
+  bool protect_fails_restore = false;  // only making a page read-only again is refused
 
   doa4::GuestBytes guest{[this](uint32_t a) { return bytes[a]; },
                          [this](uint32_t a, uint8_t v) {
@@ -100,7 +183,7 @@ struct FakeGuest {
                          }};
   ProtectFn protect = [this](uint32_t address, uint32_t size, bool writable) {
     protect_calls.emplace_back(address, writable);
-    if (protect_fails) return false;
+    if (protect_fails || (protect_fails_restore && !writable)) return false;
     for (uint32_t a = address; a < address + size; ++a) {
       if (writable) {
         writable_read_only.insert(a);
@@ -117,6 +200,15 @@ struct FakeGuest {
         for (size_t i = 0; i < p.on.size(); ++i) bytes[p.address + uint32_t(i)] = g_original.at(p.address + uint32_t(i));
       }
     }
+    // The two sites of Alpha-152's Random cell that no tweak patches: the stand-in record and the 24th cell.
+    for (const uint32_t site : {kSelectStandIn, kSelectLastCell}) {
+      for (uint32_t i = 0; i < 40; ++i) bytes[site + i] = g_original.at(site + i);
+    }
+  }
+  // The game's boot copy, the static initialiser sub_82A3DCB0 (ten words from kSelectStandIn to kSelectLastCell): the
+  // test's model of it. It runs after the load, so after the tweaks were applied and EndLoad was called.
+  void BootCopy() {
+    for (uint32_t i = 0; i < 40; ++i) bytes[kSelectLastCell + i] = bytes[kSelectStandIn + i];
   }
   bool Holds(const std::vector<fx::FixturePatch>& patches, bool on) {
     for (const auto& p : patches) {
@@ -143,11 +235,24 @@ static void TestListsMatchThePatchFile() {
   }
   CHECK(std::string(AllTweaks()[kTagAllStages].cvar) == "doa4_tag_all_stages");
   CHECK(std::string(AllTweaks()[kMpHiddenCharacters].cvar) == "doa4_mp_hidden_characters");
-  // Alpha-152 was removed (2026-10-28): her character data lacks the motions
-  // and script entries a player-controlled fighter needs, so selecting her
-  // crashed in every mode tested. The two table tweaks and the three costume tweaks remain.
-  CHECK(AllTweaks().size() == 5);
-  for (const auto& tweak : AllTweaks()) CHECK(std::string(tweak.cvar) != "doa4_alpha152");
+  // Alpha-152 came back on 2026-11-12 as the sixth tweak (removed on 2026-10-28; the crash of that day was the relocation
+  // defect fixed on 2026-10-30). The two table tweaks, the three costume tweaks and hers.
+  CHECK(AllTweaks().size() == 6);
+  CHECK(kAlpha152 == 5);  // appended: the five older tweaks keep their numbers (the menu's test action, the hand-off's name order)
+  CHECK(std::string(AllTweaks()[kAlpha152].cvar) == "doa4_alpha152");
+  CHECK(std::string(AllTweaks()[kAlpha152].label) == "Alpha-152 playable");
+  CHECK(AllTweaks()[kAlpha152].additions.empty());
+  CHECK(AllTweaks()[kAlpha152].patches.size() == 5);
+  // Hers is the only tweak the game reads at boot: applied at load only.
+  for (size_t t = 0; t < AllTweaks().size(); ++t) CHECK(AllTweaks()[t].at_load_only == (t == kAlpha152));
+  // Her view rows are the tables' rows of charId 0x10 (derived above from the table addresses, not copied).
+  CHECK(kAlphaViews[0].address == 0x82C33970 && kAlphaViews[1].address == 0x82C339F8 && kAlphaViews[2].address == 0x82C33A90);
+  // The menu draws every tweak once: the table tweaks and Alpha-152 first, then the costume boxes.
+  std::set<size_t> drawn(kMenuOrder.begin(), kMenuOrder.end());
+  CHECK(kMenuOrder.size() == AllTweaks().size() && drawn.size() == AllTweaks().size());
+  for (const size_t t : kMenuOrder) CHECK(t < AllTweaks().size());
+  CHECK(kMenuOrder[0] == kTagAllStages && kMenuOrder[1] == kMpHiddenCharacters && kMenuOrder[2] == kAlpha152);
+  CHECK(kMenuOrder[3] == kHelenaOpera && kMenuOrder[4] == kKokoroKimonos && kMenuOrder[5] == kChristieCostume);
 }
 
 static void TestReadOnlyRanges() {
@@ -165,7 +270,7 @@ static void TestReadOnlyRanges() {
 }
 
 static void TestOnThenOffRestoresEveryByte() {
-  for (size_t t = 0; t <= kMpHiddenCharacters; ++t) {
+  for (const size_t t : {kTagAllStages, kMpHiddenCharacters, kAlpha152}) {
     FakeGuest g;
     TweakPatcher patcher;
     patcher.CaptureOriginals(g.guest, kNoAlloc);
@@ -185,15 +290,22 @@ static void TestOnThenOffRestoresEveryByte() {
   }
 }
 
-// The remaining tweaks patch DATA only: none needs a read-only page made
-// writable. (The read-only path stays in TweakPatcher for future tweaks; its
-// only user and its tests went with Alpha-152.)
-static void TestNoTweakTouchesReadOnlyData() {
+// Every tweak but Alpha-152 patches DATA only: none of them needs a read-only page made writable. Hers has one read-only
+// byte, the 24th select cell's switch at 0x821B52A7.
+static void TestOnlyAlphaTouchesReadOnlyData() {
+  int read_only_bytes = 0;
   for (size_t t = 0; t < AllTweaks().size(); ++t) {
     for (const auto& p : AllTweaks()[t].patches) {
-      for (size_t i = 0; i < p.bytes.size(); ++i) CHECK(!IsReadOnly(p.address + uint32_t(i)));
+      for (size_t i = 0; i < p.bytes.size(); ++i) {
+        if (t != kAlpha152) CHECK(!IsReadOnly(p.address + uint32_t(i)));
+        if (t == kAlpha152 && IsReadOnly(p.address + uint32_t(i))) {
+          ++read_only_bytes;
+          CHECK(p.address == 0x821B52A7 && p.bytes.size() == 1);
+        }
+      }
     }
   }
+  CHECK(read_only_bytes == 1);
   for (const uint32_t table : {kCostumeList, kCostumeVariants, kCostumeLength, kCostumeMax}) CHECK(!IsReadOnly(table));
   for (size_t t = 0; t <= kMpHiddenCharacters; ++t) {
     FakeGuest g;
@@ -202,6 +314,193 @@ static void TestNoTweakTouchesReadOnlyData() {
     CHECK(patcher.Apply(g.guest, t, true, g.protect).empty());
     CHECK(g.protect_calls.empty());
   }
+}
+
+// Alpha-152 on: the read-only byte is made writable, written, and made read-only again; every one of her five sites then
+// holds its patch bytes, and the stand-in record and the 24th cell hold what they held. Off: the same protection round,
+// and every site holds what it held before.
+static void TestAlphaReadOnlyByteGoesThroughProtect() {
+  FakeGuest g;
+  TweakPatcher patcher;
+  patcher.CaptureOriginals(g.guest, kNoAlloc);
+  CHECK(g.Holds(AlphaFixture(), false));
+  CHECK(g.bytes[0x821B52A7] != 0x01);  // the precondition: the switch is not on before
+  CHECK(patcher.Apply(g.guest, kAlpha152, true, g.protect).empty());
+  CHECK(g.protect_calls.size() == 2);
+  if (g.protect_calls.size() == 2) {
+    CHECK(g.protect_calls[0] == std::make_pair(uint32_t(0x821B52A7), true));
+    CHECK(g.protect_calls[1] == std::make_pair(uint32_t(0x821B52A7), false));
+  }
+  CHECK(g.faults == 0);
+  CHECK(g.writable_read_only.empty());
+  CHECK(g.bytes[0x821B52A7] == 0x01);
+  CHECK(g.writes == 57);  // 1 + 8 + 4 + 4 + 40: every byte of the five sites, once
+  CHECK(g.Holds(AlphaFixture(), true));
+  CHECK(g.Holds(kAlphaViews, true));  // the view part on its own
+  CHECK(g.Holds(StandInSite(), false) && g.Holds(RandomCellFixture(), false));  // not patches: untouched by Apply
+  CHECK(patcher.IsOn(g.guest, kAlpha152));
+  // One byte of any site missing, and it is not "on" (IsOn compares all five sites).
+  for (const auto& p : AlphaFixture()) {
+    const uint32_t last = p.address + uint32_t(p.on.size()) - 1;
+    const uint8_t keep = g.bytes[last];
+    g.bytes[last] = uint8_t(keep ^ 0x5A);
+    CHECK(!patcher.IsOn(g.guest, kAlpha152));
+    g.bytes[last] = keep;
+  }
+  CHECK(patcher.IsOn(g.guest, kAlpha152));
+  CHECK(patcher.Apply(g.guest, kAlpha152, false, g.protect).empty());
+  CHECK(g.protect_calls.size() == 4);
+  CHECK(g.faults == 0);
+  CHECK(g.writable_read_only.empty());
+  CHECK(g.Holds(AlphaFixture(), false));
+  CHECK(!patcher.IsOn(g.guest, kAlpha152));
+  CHECK(g.Holds(fx::kTagAllStages, false) && g.Holds(fx::kMpHiddenCharacters, false));  // the other tweaks' bytes: never touched
+}
+
+// All or nothing: when the read-only byte cannot be made writable, none of the five sites is written, on or off.
+static void TestAlphaFailedProtectWritesNothing() {
+  {
+    FakeGuest g;
+    g.protect_fails = true;
+    TweakPatcher patcher;
+    patcher.CaptureOriginals(g.guest, kNoAlloc);
+    const std::string error = patcher.Apply(g.guest, kAlpha152, true, g.protect);
+    CHECK(error == "could not make 0x821b52a7 writable");
+    CHECK(g.protect_calls.size() == 1);  // asked once, refused: nothing to undo
+    CHECK(g.writes == 0);
+    CHECK(g.faults == 0);
+    CHECK(g.Holds(AlphaFixture(), false));
+    CHECK(!patcher.IsOn(g.guest, kAlpha152));
+  }
+  {  // on, then the protection breaks: off writes nothing either, and she stays on in every site
+    FakeGuest g;
+    TweakPatcher patcher;
+    patcher.CaptureOriginals(g.guest, kNoAlloc);
+    CHECK(patcher.Apply(g.guest, kAlpha152, true, g.protect).empty());
+    const int writes = g.writes;
+    g.protect_fails = true;
+    CHECK(patcher.Apply(g.guest, kAlpha152, false, g.protect) == "could not make 0x821b52a7 writable");
+    CHECK(g.writes == writes);
+    CHECK(g.faults == 0);
+    CHECK(g.Holds(AlphaFixture(), true));
+    CHECK(patcher.IsOn(g.guest, kAlpha152));
+  }
+  {  // the page cannot be made read-only again: the bytes are written (she is on), and the error says so
+    FakeGuest g;
+    g.protect_fails_restore = true;
+    TweakPatcher patcher;
+    patcher.CaptureOriginals(g.guest, kNoAlloc);
+    CHECK(patcher.Apply(g.guest, kAlpha152, true, g.protect) == "wrote, but could not make 0x821b52a7 read-only again");
+    CHECK(g.faults == 0);
+    CHECK(g.Holds(AlphaFixture(), true));
+    CHECK(patcher.IsOn(g.guest, kAlpha152));
+  }
+}
+
+// The game copies the 24th cell at boot, so her tweak is applied at load or not at all: once the load is over
+// (EndLoad) neither on nor off writes a byte, whichever state she was loaded in; the five live tweaks still apply.
+static void TestAlphaAppliesOnlyAtLoad() {
+  for (const bool loaded_on : {false, true}) {
+    FakeGuest g;
+    TweakPatcher patcher;
+    patcher.CaptureOriginals(g.guest, kNoAlloc);
+    CHECK(!patcher.load_ended());
+    if (loaded_on) CHECK(patcher.Apply(g.guest, kAlpha152, true, g.protect).empty());
+    patcher.EndLoad();
+    CHECK(patcher.load_ended());
+    const int writes = g.writes;
+    const size_t protect_calls = g.protect_calls.size();
+    for (const bool on : {true, false}) {
+      CHECK(patcher.Apply(g.guest, kAlpha152, on, g.protect) == "applies at the next start");
+      CHECK(g.writes == writes);
+      CHECK(g.protect_calls.size() == protect_calls);
+      CHECK(g.Holds(AlphaFixture(), loaded_on));
+      CHECK(patcher.IsOn(g.guest, kAlpha152) == loaded_on);
+    }
+    for (const size_t t : {kTagAllStages, kMpHiddenCharacters}) {
+      CHECK(patcher.Apply(g.guest, t, true, g.protect).empty());
+      CHECK(g.Holds(FixtureFor(t), true));
+      CHECK(patcher.Apply(g.guest, t, false, g.protect).empty());
+      CHECK(g.Holds(FixtureFor(t), false));
+    }
+    CHECK(g.Holds(AlphaFixture(), loaded_on));
+  }
+}
+
+// Her Random cell (doa4_tweaks.h): the tweak leaves the stand-in record alone, and the step after the game's boot copy
+// writes Random's record into the 24th cell when, and only when, she was applied at load. A case: what the saved setting
+// asked for at load (`loaded`), whether the load could make her read-only byte writable (`protect_fails`: then nothing
+// of her was applied), and whether she was turned off again before the load ended (`off_again`).
+static void TestAlphaRandomCell() {
+  // No patch of any tweak lies in the stand-in record or in the 24th cell.
+  for (const auto& tweak : AllTweaks()) {
+    for (const auto& p : tweak.patches) {
+      for (const uint32_t site : {kSelectStandIn, kSelectLastCell}) {
+        CHECK(p.address + p.bytes.size() <= site || p.address >= site + 40);
+      }
+    }
+  }
+  // The cell's record is the patch file's Random record, byte for byte, at the 24th cell.
+  CHECK(XeniaRandom().address == kSelectStandIn && XeniaRandom().on.size() == 40);
+  CHECK(Alpha152RandomCell().address == kSelectLastCell);
+  CHECK(Alpha152RandomCell().address == 0x82F5F2C8 && kSelectStandIn == 0x82C346D0);
+  CHECK(Alpha152RandomCell().bytes == XeniaRandom().on);
+  CHECK(!IsReadOnly(kSelectLastCell) && !IsReadOnly(kSelectLastCell + 39));  // DATA: the write needs no protection change
+  struct Case {
+    bool loaded, protect_fails, off_again;
+    bool expect_on;
+  };
+  for (const Case& c : {Case{true, false, false, true}, Case{false, false, false, false}, Case{true, true, false, false},
+                        Case{true, false, true, false}}) {
+    FakeGuest g;
+    g.protect_fails = c.protect_fails;
+    TweakPatcher patcher;
+    patcher.CaptureOriginals(g.guest, kNoAlloc);
+    if (c.loaded) CHECK(patcher.Apply(g.guest, kAlpha152, true, g.protect).empty() == !c.protect_fails);
+    g.protect_fails = false;
+    if (c.off_again) CHECK(patcher.Apply(g.guest, kAlpha152, false, g.protect).empty());  // still the load: off is applied
+    patcher.EndLoad();
+    const bool applied = patcher.IsOn(g.guest, kAlpha152);
+    CHECK(applied == c.expect_on);
+    CHECK(g.Holds(StandInSite(), false));  // on or off: the stand-in is the game's
+    g.BootCopy();
+    CHECK(!g.Holds(RandomCellFixture(), true));  // the game's copy does not leave Random's record there by itself
+    std::vector<uint8_t> copied;
+    for (uint32_t i = 0; i < 40; ++i) copied.push_back(g.bytes[kSelectLastCell + i]);
+    const int writes = g.writes;
+    const size_t protect_calls = g.protect_calls.size();
+    CHECK(FillAlpha152RandomCell(g.guest, applied) == (c.expect_on ? 40u : 0u));
+    CHECK(g.writes == writes + (c.expect_on ? 40 : 0));
+    CHECK(g.protect_calls.size() == protect_calls && g.faults == 0);
+    CHECK(g.Holds(RandomCellFixture(), true) == c.expect_on);
+    std::vector<uint8_t> now;
+    for (uint32_t i = 0; i < 40; ++i) now.push_back(g.bytes[kSelectLastCell + i]);
+    CHECK((now == copied) == !c.expect_on);  // off: the cell is exactly what the game's copy left
+    if (!c.expect_on) {
+      for (uint32_t i = 0; i < 40; ++i) CHECK(g.bytes[kSelectLastCell + i] == g_original.at(kSelectStandIn + i));
+    }
+    CHECK(g.Holds(StandInSite(), false));
+    CHECK(g.Holds(AlphaFixture(), c.expect_on));
+    CHECK(patcher.IsOn(g.guest, kAlpha152) == c.expect_on);  // the cell is no part of "on"
+    // The menu's box afterwards changes nothing of it: both directions are refused, the cell and the stand-in stay.
+    for (const bool on : {true, false}) {
+      CHECK(patcher.Apply(g.guest, kAlpha152, on, g.protect) == "applies at the next start");
+      CHECK(g.Holds(RandomCellFixture(), true) == c.expect_on && g.Holds(StandInSite(), false));
+    }
+    CHECK(g.Holds(fx::kTagAllStages, false) && g.Holds(fx::kMpHiddenCharacters, false));
+  }
+}
+
+// The Extras tab's note under her box: only when the running game is known and differs from the saved setting. Before
+// the image is loaded the running state is not known (the saved setting is about to be applied): no note, whatever is saved.
+static void TestRestartNote() {
+  using N = RestartNote;
+  CHECK(RestartNoteFor(true, true) == N::kNone);
+  CHECK(RestartNoteFor(false, false) == N::kNone);
+  CHECK(RestartNoteFor(true, false) == N::kRunningWithout);  // the box was ticked while the game runs without her
+  CHECK(RestartNoteFor(false, true) == N::kRunningWith);     // the box was cleared while the game runs with her
+  CHECK(RestartNoteFor(true, std::nullopt) == N::kNone);     // saved on, the image not loaded yet: she is about to be applied
+  CHECK(RestartNoteFor(false, std::nullopt) == N::kNone);
 }
 
 static void TestOffNeedsOriginals() {
@@ -539,7 +838,12 @@ static void RunPatchTests() {
   TestListsMatchThePatchFile();
   TestReadOnlyRanges();
   TestOnThenOffRestoresEveryByte();
-  TestNoTweakTouchesReadOnlyData();
+  TestOnlyAlphaTouchesReadOnlyData();
+  TestAlphaReadOnlyByteGoesThroughProtect();
+  TestAlphaFailedProtectWritesNothing();
+  TestAlphaAppliesOnlyAtLoad();
+  TestAlphaRandomCell();
+  TestRestartNote();
   TestOffNeedsOriginals();
   TestCaptureOnlyOnce();
 }
@@ -547,17 +851,49 @@ static void RunPatchTests() {
 int main() {
   // Each original differs from its patch byte, or the on/off checks could not tell the two apart.
   UseSyntheticOriginals();
-  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters}) {
+  for (const auto* patches : {&fx::kTagAllStages, &fx::kMpHiddenCharacters, &AlphaFileAndViews(), &RandomCellFixture()}) {
     for (const auto& p : *patches) {
       for (size_t i = 0; i < p.on.size(); ++i) CHECK(g_original.at(p.address + uint32_t(i)) != p.on[i]);
     }
   }
+  // The patch file has exactly one item at the stand-in, 40 bytes; the tweak's fixture is the other five sites; and the
+  // synthetic 24th cell differs from the stand-in too, so "the game's copy" and "untouched" can be told apart.
+  CHECK(std::count_if(fx::kAlpha152.begin(), fx::kAlpha152.end(), [](const auto& p) { return p.address == kSelectStandIn; }) == 1);
+  CHECK(AlphaFileAndViews().size() == 6 && AlphaFixture().size() == 5);
+  for (uint32_t i = 0; i < 40; ++i) CHECK(g_original.at(kSelectLastCell + i) != g_original.at(kSelectStandIn + i));
   RunPatchTests();
 
   std::string why;
   const std::optional<std::vector<uint8_t>> originals = doa4_test::ReadImageSites(PatchSites(), kPatchSitesSha1, &why);
-  if (originals) {
-    UseImageOriginals(*originals);
+  const std::optional<std::vector<uint8_t>> alpha =
+      originals ? doa4_test::ReadImageSites(AlphaSites(), kAlphaSitesSha1, &why) : std::nullopt;
+  const std::optional<std::vector<uint8_t>> kasumi =
+      alpha ? doa4_test::ReadImageSites(KasumiViewSites(), kKasumiViewsSha1, &why) : std::nullopt;
+  const std::optional<std::vector<uint8_t>> cell =
+      kasumi ? doa4_test::ReadImageSites(LastCellSites(), kLastCellSha1, &why) : std::nullopt;
+  if (originals && alpha && kasumi && cell) {
+    UseImageOriginals(*originals, *alpha, *cell);
+    // The stand-in record as the image holds it: character 0xFE ("nobody"), its three flags 0, state 1. That is what a
+    // locked cell must go on reading with Alpha-152 on (Random's record there reads 0xFF, flags 1, state 0).
+    CHECK(g_original.at(kSelectStandIn) == 0xFE);
+    for (uint32_t i = 1; i < 4; ++i) CHECK(g_original.at(kSelectStandIn + i) == 0x00);
+    CHECK(g_original.at(kSelectStandIn + 36) == 0 && g_original.at(kSelectStandIn + 37) == 0 &&
+          g_original.at(kSelectStandIn + 38) == 0 && g_original.at(kSelectStandIn + 39) == 1);
+    // The 24th cell is empty in the image (the pin above is of 40 zero bytes): the game fills it at boot.
+    for (uint32_t i = 0; i < 40; ++i) CHECK(g_original.at(kSelectLastCell + i) == 0x00);
+    // The image holds none of her patch bytes where a site is a single value: the switch is off, her three view rows are
+    // not Kasumi's yet (so on and off can be told apart on the real bytes too).
+    CHECK(g_original.at(0x821B52A7) == 0x00);
+    for (const auto& p : kAlphaViews) {
+      std::vector<uint8_t> now;
+      for (size_t i = 0; i < p.on.size(); ++i) now.push_back(g_original.at(p.address + uint32_t(i)));
+      CHECK(now != p.on);
+    }
+    // Her view values are Kasumi's rows as your image holds them, byte for byte.
+    std::vector<uint8_t> views;
+    for (const auto& p : kAlphaViews) views.insert(views.end(), p.on.begin(), p.on.end());
+    CHECK(views == *kasumi);
+    std::printf("tweaks: image tier: Alpha-152's 6 sites, the 24th select cell and Kasumi's 3 view rows read from the image\n");
     RunPatchTests();
   } else if (doa4_test::ReportNoImage("tweaks: the patch tests on the image's original bytes", why)) {
     ++g_checks;

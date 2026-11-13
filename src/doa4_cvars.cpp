@@ -10,6 +10,10 @@ REXCVAR_DEFINE_BOOL(doa4_mp_hidden_characters, false, "DOA4",
 REXCVAR_DEFINE_BOOL(doa4_helena_opera, false, "DOA4", "Helena's opera dress as an extra costume");
 REXCVAR_DEFINE_BOOL(doa4_kokoro_kimonos, false, "DOA4", "Kokoro's pink and blue kimonos as extra costumes");
 REXCVAR_DEFINE_BOOL(doa4_christie_costume, false, "DOA4", "Christie's cutscene costume as an extra costume");
+// Alpha-152 playable: read once at start-up (the game copies her select cell at boot), so the menu's box only saves it and a
+// change applies at the next start. Carried into a session like every tweak: both PCs start with the host's.
+REXCVAR_DEFINE_BOOL(doa4_alpha152, false, "DOA4",
+                    "Alpha-152 playable, with a Random cell beside her (Xenia patch by ryu_highabusa); applies at the next start");
 
 // Game tab and F7: frames per second over the game. Host-only: not carried to the other player.
 REXCVAR_DEFINE_BOOL(doa4_show_fps, false, "DOA4", "Show frames per second over the game");
