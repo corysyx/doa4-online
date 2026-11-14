@@ -80,6 +80,11 @@ struct MenuHost {
   // Extras tab. `guest` is null until the XEX is loaded into guest memory.
   const GuestBytes* guest = nullptr;
   tweaks::TweakPatcher* patcher = nullptr;  // owned by the app
+  // Alpha-152 as the game started (her tweak's bytes in guest memory since the load), or nothing while the image is not
+  // loaded yet. Asked each time the tab is drawn: this menu may be built before the load, and a copy taken then would
+  // stay wrong. The saved setting is the cvar doa4_alpha152, which her box changes; while the two differ the tab says
+  // "Applies after a restart" (tweaks::RestartNoteFor). Unset reads as "not loaded yet".
+  std::function<std::optional<bool>()> running_alpha152;
   tweaks::ProtectFn protect;
   // DOAX2 swimsuits: the import's one-line status, and each suit not loaded with why.
   std::string suits_summary;

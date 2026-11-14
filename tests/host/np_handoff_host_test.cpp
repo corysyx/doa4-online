@@ -1577,6 +1577,68 @@ static void TestGuestNames() {
   g_ctx.clear();
 }
 
+// Alpha-152 playable (the sixth Extras tweak, 2026-11-12) is carried like every tweak: a session runs the HOST's value on
+// both PCs, whatever the joiner's own box says, because her select cell and her fighter are guest state. T2.2: the
+// likeliest wrong versions are a name that is defined but not carried (each PC keeps its own: a desync when the two differ),
+// a carried name in the trust class (forced off: a host with the box on gets a session without her), and a replay that
+// fills her in for a recording that never had her line.
+static std::string Without(const std::string& text, std::initializer_list<const char*> names);  // defined below
+static void TestAlphaCarried() {
+  Group("alpha-152: her cvar is a carried tweak name, after the SDK names in the tweaks' order, and no trust matter");
+  const std::vector<std::string>& names = ho::GuestSettingNames();
+  const std::string alpha = "doa4_alpha152";
+  CHECK(std::count(names.begin(), names.end(), alpha) == 1);
+  CHECK(std::string(doa4::tweaks::AllTweaks()[doa4::tweaks::kAlpha152].cvar) == alpha);
+  const size_t at = kSdkCount + doa4::tweaks::kAlpha152;
+  CHECK(at < names.size() && names[at < names.size() ? at : 0] == alpha);
+  CHECK(names.size() >= 4 && names[names.size() >= 4 ? names.size() - 4 : 0] == alpha);  // the last tweak: right before the port's three
+  CHECK(!IsTrusted(alpha));
+  bool in_module_class = false;
+  for (const ho::TrustedSetting& t : ho::TrustedSettings()) in_module_class = in_module_class || t.name == alpha;
+  CHECK(!in_module_class);
+  for (const char* n : kPortNotCarried) CHECK(alpha != n);
+
+  Group("alpha-152: the host's value reaches the joiner, on and off, whatever the joiner's own setting");
+  for (const bool host_on : {true, false}) {
+    g_ctx = host_on ? "host on, joiner off" : "host off, joiner on";
+    std::map<std::string, std::string> host = Store();
+    host[alpha] = host_on ? "true" : "false";
+    const std::string text = ho::CaptureGuestSettings([&host](const std::string& n) { return Val(host, n); });
+    CHECK(!text.empty());
+    CHECK(ho::GuestSettingValue(text, alpha) == std::optional<std::string>(host_on ? "true" : "false"));
+    std::map<std::string, std::string> joiner = Store();
+    joiner[alpha] = host_on ? "false" : "true";  // the joiner's own box says the opposite
+    CHECK(Val(joiner, alpha) != Val(host, alpha));
+    const std::string why = ho::ApplyGuestSettings(text, [&joiner](const std::string& n, const std::string& v) {
+      joiner[n] = v;
+      return true;
+    });
+    CHECK(why.empty());
+    CHECK(Val(joiner, alpha) == (host_on ? "true" : "false"));
+    CHECK(joiner == host);  // and every other carried setting with it
+  }
+  g_ctx.clear();
+
+  Group("alpha-152: a text without her line is refused as a hand-off and is not filled in for a replay (she is a tweak, not a port setting)");
+  {
+    const std::string cut = Without(GoodText(), {"doa4_alpha152"});
+    CHECK(cut.size() < GoodText().size() && !ho::GuestSettingValue(cut, alpha).has_value());
+    int sets = 0;
+    const auto count = [&sets](const std::string&, const std::string&) {
+      ++sets;
+      return true;
+    };
+    CHECK(ho::ApplyGuestSettings(cut, count) == "guest setting doa4_alpha152: missing");
+    CHECK(sets == 0);
+    std::vector<std::pair<std::string, std::string>> filled;
+    const std::string done =
+        ho::CompleteGuestText(cut, ho::TextSource::kReplay, [](const std::string&) { return std::string("false"); }, &filled);
+    CHECK(done == cut && filled.empty());
+    CHECK(ho::ApplyGuestSettings(done, count) == "guest setting doa4_alpha152: missing");
+    CHECK(sets == 0);
+  }
+}
+
 // The reader of a session's bust setting (np::SessionFullBust) takes it from the hand-off's text. T2.2: the likeliest wrong
 // versions are a prefix match, the first line whatever its name, and a value cut at the next '='.
 static void TestGuestSettingValue() {
@@ -2484,6 +2546,7 @@ int main(int argc, char** argv) {
   TestDuplicates();
   TestFuzz();
   TestGuestNames();
+  TestAlphaCarried();
   TestGuestSettingValue();
   TestGuestMetaValue();
   TestHostileLanguage();

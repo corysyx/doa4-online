@@ -134,12 +134,7 @@ jobs:
           $notes = @"
           Dead or Alive 4 Online, built from commit $env:GITHUB_SHA (SDK $($pin.repo) $($pin.commit), LLVM 23.1.4).
 
-          Both players need this same release. Download the zip (or use Check for Updates in the game's Online tab). No game data is included: you need your own Dead or Alive 4 (USA, Europe) (Rev 1) files.
-          Optional: the DOAX2 swimsuits, built on your PC from your own USA copy of Dead or Alive Xtreme 2 (on the first start, or Esc menu, Extras tab). No DOAX2 data is in this release.
-          Needs Windows 10/11 64-bit, a CPU with AVX2 and at least two cores, and the Microsoft Visual C++ 2015-2022 x64 runtime.
-          Firewall: the first time you host or join, Windows asks whether to allow the game through the firewall, on both players' PCs. Tick both Private and Public networks (Public is unticked by default, and a Public network then blocks the connection), then Allow. The prompt can hide behind the fullscreen game: press Alt+Tab. If the other player still cannot connect, turn on UPnP in the host's router, or forward UDP 7200 to the host PC.
-
-          Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate of the raised cloth budget on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc).
+          Download the zip (or use Check for Updates in the game's Online tab).
           "@
           $notes = "What's new in ${version}:`n`n$changes`n$notes"
           Set-Content notes.md $notes -Encoding utf8

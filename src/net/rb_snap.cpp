@@ -1092,15 +1092,19 @@ void FindRunningThreads(Snap& s, uint8_t* base) {
   for (auto& o : ks->object_table()->GetAllObjects()) {
     if (!o || o->type() != rex::system::XObject::Type::Thread) continue;
     auto* t = static_cast<rex::system::XThread*>(o.get());
-    if (!t->is_guest_thread() || !t->pcr_ptr() || t == me) continue;
+    // round 26: host threads too (tid 2, the audio thread, runs the game's sound callback with its own PCR)
+    if (!t->pcr_ptr() || t == me) continue;
     bool back = false;
     for (const auto& st : rewound) back = back || st.thread == t;
     if (back) continue;
     s.thread_keeps.push_back(Keep{t->pcr_ptr(), t->pcr_ptr() + 0x2D8});
     if (t->guest_object()) s.thread_keeps.push_back(Keep{t->guest_object(), t->guest_object() + 0xAB0});
-    if (++n <= 12) text += fmt::format(" {}({:08X})", t->thread_id(), t->creation_params()->start_address);
+    if (++n <= 12) {
+      text += t->is_guest_thread() ? fmt::format(" {}({:08X})", t->thread_id(), t->creation_params()->start_address)
+                                   : fmt::format(" {}(host)", t->thread_id());
+    }
   }
-  if (!s.tests_done) Out(fmt::format("guest threads left running (their PCR and thread object stay live): {}{}", n,
+  if (!s.tests_done) Out(fmt::format("threads left running (their PCR and thread object stay live): {}{}", n,
                                      n ? ":" + text : std::string()));
 }
 

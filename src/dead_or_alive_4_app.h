@@ -54,6 +54,8 @@
 #include "doa4_lagtrace.h"
 #include "doa4_language.h"
 #include "doa4_lowmem.h"
+#include "doa4_alpha_select.h"
+#include "doa4_move_guard.h"
 #include "doa4_net_overlay.h"
 #include "doa4_online_view.h"
 #include "doa4_photo_hook.h"
@@ -1877,6 +1879,10 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.photo_default_dir = doa4::photo::DefaultPhotoDir();
     if (host.photo_default_dir.empty()) host.photo_default_dir = UserData() / "photos";
     host.guest = guest_ready_ ? &guest_ : nullptr;
+    host.running_alpha152 = [this]() -> std::optional<bool> {  // read when drawn: this menu may be built before the load
+      const int running = running_alpha152_.load(std::memory_order_acquire);
+      return running < 0 ? std::nullopt : std::optional<bool>(running != 0);
+    };
     host.patcher = &patcher_;
     host.protect = protect_;
     host.suits_summary = suits_status_.Summary();
@@ -2076,6 +2082,9 @@ class DeadOrAlive4App : public rex::ReXApp {
   doa4::GuestBytes guest_;
   std::string title_word_line_ = doa4::title_word::FilesLine(nullptr);  // np_files' extra line: doa4_title_word.h
   bool guest_ready_ = false;
+  // Alpha-152's bytes are in guest memory since the load: 1 or 0, and -1 until the load is over (not known yet). The saved
+  // setting is the cvar. Written once by the load, read by the menu's draw (another thread).
+  std::atomic<int> running_alpha152_{-1};
   doa4::tweaks::TweakPatcher patcher_;
   doa4::suits::ImportStatus suits_status_;  // DOAX2 swimsuits (SetUpSuits)
   // Set by the first-run setup screen (Task 5, OnFinalizePaths) before SetUpSuits runs.
@@ -2325,6 +2334,11 @@ class DeadOrAlive4App : public rex::ReXApp {
       return heap && heap->Protect(address, size, access);
     };
     patcher_.CaptureOriginals(guest_, [memory](uint32_t size) { return memory->SystemHeapAlloc(size); });
+    {  // The move-record lookup guard's empty record (doa4_move_guard.h, issue #9).
+      const uint32_t block = memory->SystemHeapAlloc(doa4::move_guard::kEmptyBlockSize);
+      if (block) doa4::move_guard::FillEmptyRecord(block, [this](uint32_t a, uint8_t v) { guest_.Write(a, v); });
+      doa4::move_guard::Install(block);
+    }
     guest_ready_ = true;
     const auto& tweaks = doa4::tweaks::AllTweaks();
     for (size_t i = 0; i < tweaks.size(); ++i) {
@@ -2338,6 +2352,12 @@ class DeadOrAlive4App : public rex::ReXApp {
                      error.empty() ? "no error" : error, in_memory);
       }
     }
+    // The load is over: the at-load-only tweak (Alpha-152) is refused from here on, in both directions, so nothing of it is
+    // patched while the game runs. Her select model follows the bytes in memory, not the cvar (which the menu may change).
+    patcher_.EndLoad();
+    const bool running_alpha152 = patcher_.IsOn(guest_, doa4::tweaks::kAlpha152);
+    doa4::alpha_select::Enable(running_alpha152);  // before any guest code: the boot copy's hook reads it
+    running_alpha152_.store(running_alpha152 ? 1 : 0, std::memory_order_release);
     StartExtrasTestWatcher();
   }
 

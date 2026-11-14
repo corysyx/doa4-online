@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.129 (2026-11-14)
+
+corysyx rollback research build, merged with dwreckgg's 0.3.4 (Alpha-152 playable, the throw finisher crash, the
+pause streaks: see 0.3.4 below).
+
+- SnapTest: host threads that keep running across a load keep their own PCR and thread object too. Round 26 found
+  0.3.128 left none live: the sound thread (tid 2) is the SDK's audio thread, a host thread running the game's sound
+  callback, so its IRQL from the save still went back and new voices still did not start in the replay.
+
 ## 0.3.128 (2026-11-14)
 
 corysyx rollback research build (otherwise the same as 0.3.127).
@@ -249,6 +258,22 @@ corysyx build: dwreckgg's 0.3.1 and 0.3.2 merged into this fork's lobby, quality
 - DOA4 Lobby launcher support: host and join automatically from the lobby (`netplay_autohost`, `netplay_autojoin`).
 - Skip the intro is on by default (it now uses dwreckgg's Game tab setting).
 - Rollback research builds: the one-PC snapshot test (`DOA4-SnapTest.zip`); not used in normal play.
+## 0.3.4 (2026-11-12)
+
+### New
+- **Alpha-152 is playable.** Tick "Alpha-152 playable" in the Esc menu's Extras tab, then restart the game (the
+  "Restart now" button beside it does that). It is off by default. Online, the host's setting is used for both players.
+  - She takes the old RANDOM cell on character select. RANDOM moves to a new last cell, and it can now pick her.
+  - She has one costume.
+  - Her model is not shown on character select in an online match where the two players' DOAX2 swimsuit imports
+    differ, or in Tag's second-fighter panel. She is still playable there.
+  - In Team Battle her icon in the team list shows "?".
+
+### Fixed
+- Fixed a crash when a throw is the final hit (seen at the end of Ayane's story against Alpha-152).
+- Pressing START and BACK together in Sparring no longer leaves streaks on the paused picture (the pause now opens one
+  frame after the position reset).
+
 ## 0.3.3 (2026-11-12)
 
 ### New
