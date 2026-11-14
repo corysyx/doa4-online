@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.127 (2026-11-14)
+
+corysyx rollback research build (otherwise the same as 0.3.126).
+
+- SnapTest: the SDK's handle stash in guest event headers ("REX" and the handle) is left out of the hashes and word
+  lists. The load clears a stash whose handle now names another object, and the game's next use makes it again with
+  a new handle, so these words differed without the game's state differing (DOA4_NP_SNAPTEST_STASHES=hash: hashed).
+- SnapTest: at the end of each replay the heap page tables are compared with the end of the first pass, to show
+  whether an allocation went another way (or failed) in the replay.
+
 ## 0.3.126 (2026-11-14)
 
 corysyx rollback research build (otherwise the same as 0.3.125).

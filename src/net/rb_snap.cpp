@@ -288,6 +288,8 @@ struct Snap {
     uint32_t unreserved = 0;
   };
   std::vector<HeapTable> heaps;
+  std::vector<HeapTable> heaps_end;  // the same tables at the end of the first pass (against the replay's end)
+  bool mask_stashes = true;        // DOA4_NP_SNAPTEST_STASHES=hash: the SDK's handle stashes are hashed as they are
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   uint32_t diff_at = 1;            // DOA4_NP_SNAPTEST_DIFFAT: the boundary whose differing words are listed (1-based)
   std::vector<Chunk> b1_chunks;    // the first pass at boundary diff_at (1: the earliest point a difference can show)
@@ -417,10 +419,32 @@ size_t Capture(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chun
   return bytes;
 }
 
+// The SDK's handle stash in a guest dispatcher header ("REX\0" then the host handle, xobject.cpp StashHandle) is only
+// read by the SDK. A stash the load had to clear (its handle now names another object) is made again with a new
+// handle at the object's next use, so the hash and the word lists see the signature and the word after it as zero
+// (round 25; DOA4_NP_SNAPTEST_STASHES=hash: as they are).
+bool IsStashSig(const uint8_t* p) { return p[0] == 0x52 && p[1] == 0x45 && p[2] == 0x58 && p[3] == 0x00; }
+
 uint64_t Hash(const Snap& s, uint8_t* base) {
   uint64_t h = 0;
+  thread_local std::vector<uint8_t> scratch;
   for (const Chunk& c : s.chunks) {
-    ForUnkept(s, c.addr, c.len, [&](uint32_t a, uint32_t n) { h = XXH3_64bits_withSeed(base + a, n, h); });
+    ForUnkept(s, c.addr, c.len, [&](uint32_t a, uint32_t n) {
+      const uint8_t* p = base + a;
+      if (s.mask_stashes) {
+        bool any = false;
+        for (uint32_t o = 0; o + 4 <= n && !any; o += 4) any = IsStashSig(p + o);
+        if (any) {
+          scratch.assign(p, p + n);
+          for (uint32_t o = 0; o + 4 <= n; o += 4) {
+            if (!IsStashSig(p + o)) continue;
+            std::memset(scratch.data() + o, 0, std::min<uint32_t>(8, n - o));
+          }
+          p = scratch.data();
+        }
+      }
+      h = XXH3_64bits_withSeed(p, n, h);
+    });
   }
   return h;
 }
@@ -436,6 +460,10 @@ std::vector<uint32_t> ChangedWords(const Snap& s, uint8_t* base, const std::vect
       if (std::memcmp(was, now, kPage) == 0) continue;
       for (uint32_t w = 0; w < kPage; w += 4) {
         if (std::memcmp(was + w, now + w, 4) == 0) continue;
+        if (s.mask_stashes) {
+          if (IsStashSig(was + w) || IsStashSig(now + w)) continue;
+          if (o + w >= 4 && (IsStashSig(was + w - 4) || IsStashSig(now + w - 4))) continue;
+        }
         const uint32_t addr = c.addr + o + w;
         if (skip_kept && Kept(s, addr)) continue;
         out.push_back(addr);
@@ -1043,6 +1071,8 @@ void RepairStashes(Snap& s, uint8_t* base) {
 
 void SaveHeaps(Snap& s);
 void LoadHeaps(Snap& s);
+void TakeHeaps(std::vector<Snap::HeapTable>* out);
+void CompareHeaps(const Snap& s);
 
 void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
@@ -1126,6 +1156,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
 }
 
 void EndFirstPass(Snap& s, uint8_t* base) {
+  TakeHeaps(&s.heaps_end);
   // the pages the first pass wrote outside the snapshot (in the areas it covers): the snapshot cannot put them back
   CaptureTestPages(s, base, &s.end_chunks, &s.end_buf, &s.outside);
   if (s.outside) {
@@ -1442,6 +1473,8 @@ bool SnapActive() {
     s.regs_fix = !(regs && std::string(regs) == "leave");
     const char* heaps = std::getenv("DOA4_NP_SNAPTEST_HEAPS");
     s.heaps_fix = !(heaps && std::string(heaps) == "leave");
+    const char* stash = std::getenv("DOA4_NP_SNAPTEST_STASHES");
+    s.mask_stashes = !(stash && std::string(stash) == "hash");
     if (const char* d = std::getenv("DOA4_NP_SNAPTEST_DIFFAT")) {
       const unsigned long v = std::strtoul(d, nullptr, 10);
       if (v >= 1 && v <= c.frames) s.diff_at = uint32_t(v);
@@ -1494,8 +1527,10 @@ rex::memory::BaseHeap* SnapHeap(uint32_t addr, bool physical_parent) {
   return static_cast<rex::memory::BaseHeap*>(ph->*PhysPeek::kParent);
 }
 
-void SaveHeaps(Snap& s) {
-  s.heaps.clear();
+void SaveHeaps(Snap& s) { TakeHeaps(&s.heaps); }
+
+void TakeHeaps(std::vector<Snap::HeapTable>* out) {
+  out->clear();
   auto keep = [&](uint32_t addr, bool parent) {
     rex::memory::BaseHeap* h = SnapHeap(addr, parent);
     if (!h) return;
@@ -1506,7 +1541,7 @@ void SaveHeaps(Snap& s) {
     t.table.resize(table.size());
     for (size_t i = 0; i < table.size(); ++i) t.table[i] = table[i].qword;
     t.unreserved = h->*HeapPeek::kUnreserved;
-    s.heaps.push_back(std::move(t));
+    out->push_back(std::move(t));
   };
   keep(0, true);
   for (uint32_t a : kRestoredHeaps) keep(a, false);
@@ -1564,6 +1599,42 @@ void LoadHeaps(Snap& s) {
   }
   Out(fmt::format("heap page tables since the save: {}{}", text.empty() ? std::string("no change") : text,
                   !s.heaps_fix ? " (DOA4_NP_SNAPTEST_HEAPS=leave: none put back)" : ""));
+}
+
+// The end of the replay against the end of the first pass (round 25): a page one pass allocated and the other did not
+// shows an allocation that went another way in the replay (or failed).
+void CompareHeaps(const Snap& s) {
+  std::string text;
+  for (const Snap::HeapTable& t : s.heaps_end) {
+    const bool parent = t.addr == 0;
+    rex::memory::BaseHeap* h = SnapHeap(t.addr, parent);
+    if (!h) continue;
+    std::lock_guard<std::recursive_mutex> lock(h->*HeapPeek::kMutex);
+    const auto& table = h->*HeapPeek::kTable;
+    if (table.size() != t.table.size()) continue;
+    const uint32_t shift = h->*HeapPeek::kShift;
+    const uint32_t hb = parent ? 0u : h->heap_base();
+    size_t only1 = 0, only2 = 0, other = 0;
+    std::string eg;
+    int shown = 0;
+    for (size_t i = 0; i < table.size(); ++i) {
+      rex::memory::PageEntry w, n;
+      w.qword = t.table[i];
+      n.qword = table[i].qword;
+      if (w.qword == n.qword) continue;
+      const char* what = "changed";
+      if (w.state && !n.state) { ++only1; what = "first pass only"; }
+      else if (!w.state && n.state) { ++only2; what = "replay only"; }
+      else ++other;
+      if (shown++ < 8) eg += fmt::format(" {:08X} {}", hb + (uint32_t(i) << shift), what);
+    }
+    if (only1 + only2 + other) {
+      text += fmt::format("{}{}: {} pages allocated in the first pass only, {} in the replay only, {} otherwise changed (e.g.{})",
+                          text.empty() ? "" : "; ", parent ? std::string("physical") : fmt::format("{:08X}", h->heap_base()),
+                          only1, only2, other, eg);
+    }
+  }
+  Out("heap page tables at the end of the replay against the first pass: " + (text.empty() ? std::string("the same") : text));
 }
 
 }  // namespace
@@ -1655,6 +1726,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
       ++s.i;
       return step;
     }
+    CompareHeaps(s);
     Report(s, base);
     ++s.tests_done;
     s.phase = 0;
