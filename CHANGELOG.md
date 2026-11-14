@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.132 (2026-11-14)
+
+corysyx rollback research build (otherwise the same as 0.3.131).
+
+- Rollback: a parked fiber's host stack goes back with the snapshot. Round 30 passed 12 of 12 twice; round 31's soak
+  (54 rewinds of 8 frames, 29 of 15) crashed at the end of round 1: the round-end script fiber had moved from its
+  first wait loop to its second during the first pass, and after the load it went on from the second loop's place in
+  the recompiled code with the first loop's memory. Each guest fiber runs on a Win32 fiber, and where it called the
+  swap lives on that host stack, which guest memory going back does not move. Now every park captures the host
+  registers, a save copies each parked fiber's host stack, and after a load a fiber that parked again since puts
+  its copy back when it is next switched to and continues from the park of the save. A host fiber that FIX 7
+  re-made since the save is swapped back for the old one; a fiber made since is removed.
+  `DOA4_NP_SNAPTEST_FIBERS=leave` switches it off.
+- SnapTest: the timebase samples left out of the comparison run on to 8357A960 (they were most of round 31's
+  failures); the sound mix page is compared again (round 31's third run showed no difference in it).
+
 ## 0.3.131 (2026-11-14)
 
 corysyx rollback research build (otherwise the same as 0.3.130).

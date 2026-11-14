@@ -6,12 +6,14 @@
 //
 // Each hook is annotated with what it does and *why* it is necessary.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -256,6 +258,7 @@ REX_HOOK_RAW(sub_828980E0) {
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <malloc.h>
 
 #include <mutex>
 #include <unordered_map>
@@ -281,10 +284,44 @@ struct GuestFiber {
                                // guest reusing a save-buffer for a *fresh*
                                // fiber while our host fiber is still parked in
                                // the previous execution (see FIX 7).
+
+  // Rollback (net/rb_snap.cpp, 0.3.132). A parked fiber's continuation is its HOST stack: where in the recompiled
+  // code it called the swap, and the frames above that. Guest memory going back to a snapshot does not move it, so
+  // a fiber that parked somewhere else since the save would resume after the wrong call (round 31: the round-end
+  // script fiber went on from its second wait loop with the first loop's memory, and crashed). So each park
+  // captures the host registers, a save copies the parked host stack [park_ctx.Rsp, stack_top), and a load hands
+  // the copy back: the fiber puts it in place itself when it is next switched to, and jumps to the captured
+  // registers (FiberRestoreJump).
+  CONTEXT park_ctx;                 // host registers at the last park (RtlCaptureContext)
+  bool park_valid = false;
+  bool running = false;             // on a host thread right now (its stack is live, not a parked image)
+  uintptr_t stack_top = 0;          // the host stack's base (highest address), read on the fiber itself
+  uint64_t park_seq = 0;            // g_park_seq at the last park (or at the body's end)
+  bool restore_pending = false;     // a load left a host stack to put back at the next switch-in
+  volatile bool restore_jump = false;  // set for RtlCaptureContext's second return
+  std::vector<uint8_t> restore_image;
+  uintptr_t restore_low = 0;
+  CONTEXT restore_ctx;
+};
+
+// One fiber in a rollback snapshot.
+struct FiberSnap {
+  uint32_t buf = 0;
+  void* host_fiber = nullptr;
+  bool dispatched = false, has_image = false;
+  uint32_t parked_lr = 0, parked_r1 = 0, generation = 0;
+  uint64_t park_seq = 0;
+  uintptr_t low = 0;
+  CONTEXT ctx;
+  std::vector<uint8_t> image;
 };
 
 std::mutex g_fiber_mu;
 std::unordered_map<uint32_t, std::unique_ptr<GuestFiber>> g_fibers;
+uint64_t g_park_seq = 0;                 // counts parks (g_fiber_mu not needed: the fibers of one host thread)
+bool g_fiber_snaps_used = false;         // a snapshot was taken: host fibers FIX 7 retires are kept for a load
+std::vector<void*> g_fiber_graveyard;    // host fibers retired since the last save (g_fiber_mu)
+std::vector<FiberSnap> g_fiber_snap;     // the last save (g_fiber_mu)
 
 }  // namespace
 
@@ -343,9 +380,18 @@ void RecreateHostFiber(GuestFiber* fs) {
     return;
   }
   fs->host_fiber = fresh;
+  fs->park_valid = false;
+  fs->running = false;
+  fs->restore_pending = false;
+  fs->park_seq = ++g_park_seq;
   fs->dispatched = false;
   ++fs->generation;
-  if (old) DeleteFiber(old);  // old is parked (not current/running) -> safe
+  // old is parked (not current/running) -> safe to delete; with a rollback snapshot about, a load may need it
+  // back (the snapshot's fiber was parked on it), so it is kept until the next save.
+  if (old) {
+    if (g_fiber_snaps_used) g_fiber_graveyard.push_back(old);
+    else DeleteFiber(old);
+  }
   static std::atomic<uint64_t> s_n{0};
   uint64_t n = s_n.fetch_add(1, std::memory_order_relaxed);
   if (n < 40 || (n % 200) == 0) {
@@ -377,10 +423,59 @@ void EnsureInitialFiber(uint32_t out_buf, uint8_t* base) {
       p->buf = out_buf;
       p->base = base;
       p->is_initial = true;
+      p->running = true;
       p->host_fiber = tls_initial_fiber;
       g_fibers.emplace(out_buf, std::move(p));
     }
   }
+}
+
+// Puts the host stack of a load back and continues at the park it was saved at. Runs on the fiber's own stack, at
+// its current (later) park. FiberRestoreJump first moves the stack pointer below the range the copy overwrites and
+// only then calls FiberRestoreBelow, so the frames still in use (FiberRestoreBelow's, memcpy's and
+// RtlRestoreContext's) are all under it: its own frame may lie inside the range, and is not used after the call.
+[[noreturn]] __declspec(noinline) void FiberRestoreBelow(GuestFiber* self) {
+  self->restore_pending = false;
+  self->restore_jump = true;
+  self->running = true;
+  std::memcpy(reinterpret_cast<void*>(self->restore_low), self->restore_image.data(), self->restore_image.size());
+  self->park_ctx = self->restore_ctx;
+  RtlRestoreContext(&self->restore_ctx, nullptr);
+  std::abort();
+}
+void (*volatile g_fiber_restore_below)(GuestFiber*) = nullptr;
+
+[[noreturn]] __declspec(noinline) __attribute__((disable_tail_calls)) void FiberRestoreJump(GuestFiber* self) {
+  char here = 0;
+  const uintptr_t sp = reinterpret_cast<uintptr_t>(&here);
+  const uintptr_t want = self->restore_low - 16384;
+  volatile char* pad = static_cast<volatile char*>(_alloca(sp > want ? sp - want : 16));
+  pad[0] = here;
+  g_fiber_restore_below = &FiberRestoreBelow;
+  g_fiber_restore_below(self);  // through a volatile pointer: a real call, made with the pad in place
+  pad[1] = 0;
+  std::abort();
+}
+
+// The host switch of DoFiberSwap, from the fiber `self` (null: unknown, a plain switch) to dst.
+__declspec(noinline) void ParkAndSwitch(GuestFiber* self, GuestFiber* dst) {
+  if (!self) {
+    SwitchToFiber(dst->host_fiber);
+    return;
+  }
+  if (!self->stack_top) self->stack_top = reinterpret_cast<uintptr_t>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
+  self->park_seq = ++g_park_seq;
+  RtlCaptureContext(&self->park_ctx);
+  // A load's FiberRestoreJump returns here a second time, on the stack as it was at this park.
+  if (self->restore_jump) {
+    self->restore_jump = false;
+    return;
+  }
+  self->park_valid = true;
+  self->running = false;
+  SwitchToFiber(dst->host_fiber);
+  if (self->restore_pending) FiberRestoreJump(self);
+  self->running = true;
 }
 
 void DoFiberSwap(PPCContext& ctx, uint8_t* base) {
@@ -401,12 +496,14 @@ void DoFiberSwap(PPCContext& ctx, uint8_t* base) {
   // Record the outgoing fiber's last guest state BEFORE the swap overwrites
   // ctx — this is what powers the freeze-dump / per-fiber gap diagnostics.
   uint32_t host_tid = Tid();
+  GuestFiber* self = nullptr;
   if (out_buf) {
     doa4_record_fiber_swap_out(out_buf, (uint32_t)ctx.lr, ctx.r1.u32, ctx.r3.u32, host_tid);
     std::lock_guard<std::mutex> lk(g_fiber_mu);
     if (auto it = g_fibers.find(out_buf); it != g_fibers.end()) {
       it->second->parked_lr = (uint32_t)ctx.lr;
       it->second->parked_r1 = ctx.r1.u32;
+      if (it->second->host_fiber == GetCurrentFiber()) self = it->second.get();
     }
   }
 
@@ -437,13 +534,14 @@ void DoFiberSwap(PPCContext& ctx, uint8_t* base) {
   // Actually transfer host execution to the destination fiber's stack.
   // When some other fiber later switches back to us, SwitchToFiber resumes
   // here with ctx already loaded by that swapper to our state.
-  SwitchToFiber(dst->host_fiber);
+  ParkAndSwitch(self, dst);
 }
 
 static void WINAPI GuestFiberProc(void* param) {
   GuestFiber* fs = (GuestFiber*)param;
   PPCContext& ctx = *rex::runtime::current_ppc_context();
   uint8_t* base = fs->base;
+  fs->running = true;
 
   REXLOG_DEBUG("[doa4][Fiber] proc start buf={:#x} lr={:#x} r1={:#x} r3={:#x} r31={:#x}",
                fs->buf, (uint32_t)ctx.lr, ctx.r1.u32, ctx.r3.u32, ctx.r31.u32);
@@ -476,10 +574,15 @@ static void WINAPI GuestFiberProc(void* param) {
   }
 
   // Fibers MUST NOT let their proc return. Park forever, yielding to the
-  // initial fiber so the rest of the title can keep running.
+  // initial fiber so the rest of the title can keep running. (A rollback load to before the body's end hands
+  // this host fiber its earlier stack back: the park count moves so that the load sees it.)
+  fs->park_seq = ++g_park_seq;
+  fs->park_valid = false;
+  fs->running = false;
   while (true) {
     if (tls_initial_fiber && tls_initial_fiber != GetCurrentFiber()) {
       SwitchToFiber(tls_initial_fiber);
+      if (fs->restore_pending) FiberRestoreJump(fs);
     } else {
       Sleep(1000);
     }
@@ -505,6 +608,127 @@ extern "C" size_t doa4_fiber_table(uint32_t* out, size_t max) {
     ++n;
   }
   return n;
+}
+
+// Rollback save (net/rb_snap.cpp): every parked fiber's host stack and registers. out: [0] fibers, [1] with a host
+// stack copy, [2] bytes copied, [3] running (this one included). Called on the main thread at a frame boundary.
+extern "C" void doa4_fibers_save(uint32_t* out) {
+  std::lock_guard<std::mutex> lk(g_fiber_mu);
+  g_fiber_snaps_used = true;
+  for (void* h : g_fiber_graveyard) DeleteFiber(h);  // retired before this save: no load can want them
+  g_fiber_graveyard.clear();
+  g_fiber_snap.clear();
+  uint32_t images = 0, bytes = 0, running = 0;
+  void* me = GetCurrentFiber();
+  for (const auto& [buf, f] : g_fibers) {
+    FiberSnap fsn;
+    fsn.buf = buf;
+    fsn.host_fiber = f->host_fiber;
+    fsn.dispatched = f->dispatched;
+    fsn.parked_lr = f->parked_lr;
+    fsn.parked_r1 = f->parked_r1;
+    fsn.generation = f->generation;
+    fsn.park_seq = f->park_seq;
+    const bool live = f->running || f->host_fiber == me;
+    if (live) ++running;
+    if (!live && f->restore_pending) {
+      // not run since a load handed it a host stack: that copy is its stack, not what is in place
+      fsn.has_image = true;
+      fsn.low = f->restore_low;
+      fsn.ctx = f->restore_ctx;
+      fsn.image = f->restore_image;
+      ++images;
+      bytes += uint32_t(fsn.image.size());
+    } else if (!live && f->park_valid && f->stack_top && f->park_ctx.Rsp && f->park_ctx.Rsp < f->stack_top &&
+        f->stack_top - f->park_ctx.Rsp <= (8u << 20)) {
+      fsn.has_image = true;
+      fsn.low = f->park_ctx.Rsp;
+      fsn.ctx = f->park_ctx;
+      const auto* p = reinterpret_cast<const uint8_t*>(fsn.low);
+      fsn.image.assign(p, p + (f->stack_top - fsn.low));
+      ++images;
+      bytes += uint32_t(fsn.image.size());
+    }
+    g_fiber_snap.push_back(std::move(fsn));
+  }
+  if (out) {
+    out[0] = uint32_t(g_fibers.size());
+    out[1] = images;
+    out[2] = bytes;
+    out[3] = running;
+  }
+}
+
+// Rollback load: the fibers go back to the last save. A fiber that parked again since gets its saved host stack at
+// its next switch-in; one whose host fiber FIX 7 re-made gets the old host fiber back; one made since goes.
+// out: [0] parked again (host stack handed back), [1] old host fiber back, [2] made since (removed),
+// [3] parked at the save but running now (cannot go back), [4] in the save but gone.
+extern "C" void doa4_fibers_load(uint32_t* out) {
+  std::lock_guard<std::mutex> lk(g_fiber_mu);
+  uint32_t again = 0, remade = 0, removed = 0, stuck = 0, gone = 0;
+  void* me = GetCurrentFiber();
+  for (FiberSnap& sn : g_fiber_snap) {
+    auto it = g_fibers.find(sn.buf);
+    if (it == g_fibers.end()) {
+      ++gone;
+      continue;
+    }
+    GuestFiber* f = it->second.get();
+    const bool live = f->running || f->host_fiber == me;
+    bool host_back = false;
+    if (f->host_fiber != sn.host_fiber) {
+      auto g = std::find(g_fiber_graveyard.begin(), g_fiber_graveyard.end(), sn.host_fiber);
+      if (g == g_fiber_graveyard.end() || live) {
+        ++stuck;
+        continue;
+      }
+      g_fiber_graveyard.erase(g);
+      DeleteFiber(f->host_fiber);  // the one made since the save: parked or never run
+      f->host_fiber = sn.host_fiber;
+      host_back = true;
+      ++remade;
+    }
+    f->dispatched = sn.dispatched;
+    f->parked_lr = sn.parked_lr;
+    f->parked_r1 = sn.parked_r1;
+    f->generation = sn.generation;
+    if (!sn.has_image) continue;  // it was running at the save (the fiber of the frame boundary)
+    if (live && !host_back) {
+      if (f->host_fiber != me) ++stuck;
+      continue;
+    }
+    if (f->park_seq == sn.park_seq && !host_back) continue;  // still parked where the save saw it
+    // (The old host fiber of a re-made one is still parked where the save saw it, but the park bookkeeping below
+    // is the new one's: hand the copy back all the same - it is what is there already.)
+    f->restore_image = sn.image;
+    f->restore_low = sn.low;
+    f->restore_ctx = sn.ctx;
+    f->restore_pending = true;
+    f->park_valid = true;
+    f->park_ctx = sn.ctx;
+    f->park_seq = sn.park_seq;
+    f->running = false;
+    ++again;
+  }
+  for (auto it = g_fibers.begin(); it != g_fibers.end();) {
+    GuestFiber* f = it->second.get();
+    const bool in_save = std::any_of(g_fiber_snap.begin(), g_fiber_snap.end(),
+                                     [&](const FiberSnap& sn) { return sn.buf == f->buf; });
+    if (in_save || f->is_initial || f->running || f->host_fiber == me) {
+      ++it;
+      continue;
+    }
+    if (f->host_fiber) DeleteFiber(f->host_fiber);
+    it = g_fibers.erase(it);
+    ++removed;
+  }
+  if (out) {
+    out[0] = again;
+    out[1] = remade;
+    out[2] = removed;
+    out[3] = stuck;
+    out[4] = gone;
+  }
 }
 
 // ===========================================================================

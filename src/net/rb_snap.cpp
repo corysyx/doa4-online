@@ -136,6 +136,8 @@ std::string EqualText(const std::vector<bool>& equal) {
 #ifndef DOA4_RB_HOST_TEST
 
 extern "C" size_t doa4_fiber_table(uint32_t* out, size_t max);  // doa4_app_hooks.cpp
+extern "C" void doa4_fibers_save(uint32_t* out);  // the parked fibers' host stacks (0.3.132)
+extern "C" void doa4_fibers_load(uint32_t* out);
 
 namespace {
 
@@ -276,6 +278,7 @@ struct Snap {
     std::vector<uint8_t> bytes;
   };
   std::vector<FiberStack> fiber_stacks;  // the stacks no thread owns (MmCreateKernelStack: the game's fibers)
+  bool host_fibers_said = false;
   bool fibers_fix = true;                // DOA4_NP_SNAPTEST_FIBERS=leave: they are not put back
   std::vector<Held> held;          // the other guest threads, held during a save / load
   bool hold = true;                // DOA4_NP_SNAPTEST_HOLD=off: leave the other threads running
@@ -1264,6 +1267,15 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   SaveFiberStacks(s, base);
   std::memset(s.test, 0, sizeof s.test);
   s.fib_save = Fibers();
+  if (s.fibers_fix) {
+    uint32_t fo[4] = {};
+    doa4_fibers_save(fo);
+    if (!s.host_fibers_said) {
+      s.host_fibers_said = true;
+      Out(fmt::format("host fibers saved with the snapshot: {} fibers, {} parked with a host stack copy ({} KB), {} "
+                      "running", fo[0], fo[1], fo[2] / 1024, fo[3]));
+    }
+  }
   s.h1.assign(1, Hash(s, base));
   s.h2.clear();
   s.inputs.clear();
@@ -1308,6 +1320,13 @@ void Load(Snap& s, uint8_t* base) {
   s.fib_end1 = Fibers();
   uint32_t moved_fibers = 0;
   Out("fibers at the load against the save: " + FiberText(s.fib_save, s.fib_end1, &moved_fibers));
+  if (s.fibers_fix) {
+    uint32_t fo[5] = {};
+    doa4_fibers_load(fo);
+    Out(fmt::format("host fibers since the save: {} parked again (their host stacks go back when they next run), {} "
+                    "re-made (the old one is back), {} made since (removed), {} cannot go back, {} gone",
+                    fo[0], fo[1], fo[2], fo[3], fo[4]));
+  }
   if (s.full) {
     // pages that changed since the save although the game's code did not write them (file reads, sound, the GPU)
     const std::vector<uint32_t> words = ChangedWords(s, base, s.chunks, s.buf, true);
@@ -1544,11 +1563,11 @@ bool SnapActive() {
     s.next_at = c.at;
     {
       // Round 21's store watch: words that follow the wall clock or the GPU ring, not the game. 82F6C9D0/D4: loop
-      // counts of guest threads 9 and 11 (sub_829BC8F8, sub_829BC458), which wake on time; 8357A500-8357A900: the
+      // counts of guest threads 9 and 11 (sub_829BC8F8, sub_829BC458), which wake on time; 8357A500-8357A960 (round 31: it runs on past A900): the
       // timebase (mftb) samples of sub_82765540; 8357C190: the main thread's pointer into the GPU command stream
       // (sub_82770488), which follows the live ring. "off": none.
       const char* nv = std::getenv("DOA4_NP_SNAPTEST_NOISE");
-      const std::string spec = nv && *nv ? nv : "82F6C9D0-82F6C9D8,8357A500-8357A900,8357C190-8357C194";
+      const std::string spec = nv && *nv ? nv : "82F6C9D0-82F6C9D8,8357A500-8357A960,8357C190-8357C194";
       std::string shown;
       if (spec != "off") {
         size_t i = 0;
