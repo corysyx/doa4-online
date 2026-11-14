@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.126 (2026-11-14)
+
+corysyx rollback research build (otherwise the same as 0.3.125).
+
+### Fixed
+- SnapTest now saves the page tables of the physical memory heaps (the 0xA0000000, 0xC0000000 and 0xE0000000 views
+  and the physical heap behind them) with the snapshot and puts them back at a load (DOA4_NP_SNAPTEST_HEAPS=leave:
+  only compared). The SDK keeps MmAllocatePhysicalMemoryEx's allocator state in the host, so a load did not undo the
+  first pass's allocations. Round 23's store watch: a sound voice started at frame 4344 got its buffer at FFBF7000 in
+  the first pass and at FFBEF000 in the replay, and then played differently (the remaining after-8-frames
+  differences, from frames 4344, 4840 and 5336). Each rewind also leaked what the first pass had allocated. The
+  virtual heaps' changes are listed, not put back.
+
+### Changed
+- SnapTest lists the differing words at the boundary DOA4_NP_SNAPTEST_DIFFAT (1-based, default 1), and right after
+  the load when that hash differs from the save's.
+- SnapTest round 24 runner: lists the words at boundary 3, the one that still differs in every test now that
+  boundary 1 matches (round 23: the main thread's registers put back made the first replayed frame match).
+
 ## 0.3.125 (2026-11-13)
 
 corysyx rollback research build (otherwise the same as 0.3.124).

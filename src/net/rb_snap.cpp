@@ -17,6 +17,7 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xevent.h>
 #include <rex/system/xobject.h>
+#include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 
 #include <map>
@@ -280,8 +281,16 @@ struct Snap {
   bool stacks_fix = true;          // DOA4_NP_SNAPTEST_STACKS=leave: only report the stacks, put none back
   bool regs_fix = true;            // DOA4_NP_SNAPTEST_REGS=leave: the main thread's registers are not put back
   std::vector<uint8_t> regs;       // the main thread's PPCContext at the save (sizeof(::PPCContext) bytes)
+  bool heaps_fix = true;           // DOA4_NP_SNAPTEST_HEAPS=leave: the physical heaps' page tables are not put back
+  struct HeapTable {
+    uint32_t addr = 0;             // an address in the heap (LookupHeap), 0 for the physical heap itself
+    std::vector<uint64_t> table;   // its page table at the save
+    uint32_t unreserved = 0;
+  };
+  std::vector<HeapTable> heaps;
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
-  std::vector<Chunk> b1_chunks;    // the first pass after its first frame (the earliest point a difference can show)
+  uint32_t diff_at = 1;            // DOA4_NP_SNAPTEST_DIFFAT: the boundary whose differing words are listed (1-based)
+  std::vector<Chunk> b1_chunks;    // the first pass at boundary diff_at (1: the earliest point a difference can show)
   std::vector<uint8_t> b1_buf;
 };
 
@@ -1032,6 +1041,9 @@ void RepairStashes(Snap& s, uint8_t* base) {
                   stale && s.kobj_fix ? " (cleared)" : ""));
 }
 
+void SaveHeaps(Snap& s);
+void LoadHeaps(Snap& s);
+
 void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
@@ -1108,6 +1120,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                   !s.fence_rewind  ? std::string()
                   : gpu_ms < 0     ? std::string("; the GPU was still busy after 100 ms")
                                    : fmt::format("; waited {:.1f} ms for the GPU", gpu_ms)));
+  SaveHeaps(s);
   ReleaseOthers(s);
   if (s.tests_done + 1 == g_watch_test) WatchArm(1, base);
 }
@@ -1128,6 +1141,7 @@ void EndFirstPass(Snap& s, uint8_t* base) {
 void Load(Snap& s, uint8_t* base) {
   if (s.tests_done + 1 == g_watch_test) WatchArm(2, base);
   HoldOthers(s, "load");
+  LoadHeaps(s);
   // the fibers: a fiber parked somewhere else than at the save resumes its host stack where it is now, with the
   // guest state of the save (rb_snap.h)
   s.fib_end1 = Fibers();
@@ -1426,6 +1440,12 @@ bool SnapActive() {
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     const char* regs = std::getenv("DOA4_NP_SNAPTEST_REGS");
     s.regs_fix = !(regs && std::string(regs) == "leave");
+    const char* heaps = std::getenv("DOA4_NP_SNAPTEST_HEAPS");
+    s.heaps_fix = !(heaps && std::string(heaps) == "leave");
+    if (const char* d = std::getenv("DOA4_NP_SNAPTEST_DIFFAT")) {
+      const unsigned long v = std::strtoul(d, nullptr, 10);
+      if (v >= 1 && v <= c.frames) s.diff_at = uint32_t(v);
+    }
     std::memset(doa4_wmap, 0, sizeof doa4_wmap);  // what boot wrote before the session is not known page by page
     WatchSetup();
     np::LogLine(fmt::format("[doa4][RB] snaptest: on - {} tests of {} frames, the first entering frame {}, then every {} "
@@ -1436,6 +1456,117 @@ bool SnapActive() {
   }();
   return on;
 }
+
+// The heaps' page tables (round 23): MmAllocatePhysicalMemoryEx and MmFreePhysicalMemory are the SDK's, and its
+// allocator state lives in the host (BaseHeap::page_table_), outside guest memory. A sound voice started during the
+// first pass took a buffer (FFBF7000 in round 23's test from frame 4344); after the load the guest no longer knew of
+// it but the heap still did, so the replay's voice got another one (FFBEF000) and played differently, and every
+// rewind leaked what the first pass had allocated. The save keeps the page tables of the physical memory views
+// (0xA0000000, 0xC0000000, 0xE0000000) and of the physical heap behind them; the load puts them back. The virtual
+// heaps are compared only (the SDK allocates its own objects there).
+namespace {
+
+struct HeapPeek : rex::memory::BaseHeap {
+  static constexpr auto kTable = &HeapPeek::page_table_;
+  static constexpr auto kUnreserved = &HeapPeek::unreserved_page_count_;
+  static constexpr auto kMutex = &HeapPeek::heap_mutex_;
+  static constexpr auto kShift = &HeapPeek::page_size_shift_;
+};
+struct PhysPeek : rex::memory::PhysicalHeap {
+  static constexpr auto kParent = &PhysPeek::parent_heap_;
+};
+
+rex::memory::Memory* SnapMem() {
+  auto* ks = rex::system::kernel_state();
+  return ks ? ks->memory() : nullptr;
+}
+
+constexpr uint32_t kRestoredHeaps[] = {0xA0000000u, 0xC0000000u, 0xE0000000u};
+constexpr uint32_t kComparedHeaps[] = {0x00010000u, 0x40000000u, 0x80000000u, 0x90000000u};
+
+rex::memory::BaseHeap* SnapHeap(uint32_t addr, bool physical_parent) {
+  rex::memory::Memory* mem = SnapMem();
+  if (!mem) return nullptr;
+  rex::memory::BaseHeap* h = mem->LookupHeap(physical_parent ? 0xA0000000u : addr);
+  if (!h || !physical_parent) return h;
+  if (h->heap_base() != 0xA0000000u) return nullptr;  // the 0xA0000000 view is a PhysicalHeap (xmemory.cpp)
+  auto* ph = static_cast<rex::memory::PhysicalHeap*>(h);
+  return static_cast<rex::memory::BaseHeap*>(ph->*PhysPeek::kParent);
+}
+
+void SaveHeaps(Snap& s) {
+  s.heaps.clear();
+  auto keep = [&](uint32_t addr, bool parent) {
+    rex::memory::BaseHeap* h = SnapHeap(addr, parent);
+    if (!h) return;
+    std::lock_guard<std::recursive_mutex> lock(h->*HeapPeek::kMutex);
+    Snap::HeapTable t;
+    t.addr = parent ? 0u : addr;
+    const auto& table = h->*HeapPeek::kTable;
+    t.table.resize(table.size());
+    for (size_t i = 0; i < table.size(); ++i) t.table[i] = table[i].qword;
+    t.unreserved = h->*HeapPeek::kUnreserved;
+    s.heaps.push_back(std::move(t));
+  };
+  keep(0, true);
+  for (uint32_t a : kRestoredHeaps) keep(a, false);
+  for (uint32_t a : kComparedHeaps) keep(a, false);
+}
+
+void LoadHeaps(Snap& s) {
+  std::string text;
+  size_t put_back = 0;
+  auto global = rex::thread::global_critical_region::AcquireDirect();
+  for (const Snap::HeapTable& t : s.heaps) {
+    const bool parent = t.addr == 0;
+    rex::memory::BaseHeap* h = SnapHeap(t.addr, parent);
+    if (!h) continue;
+    bool restore = s.heaps_fix && parent;
+    for (uint32_t a : kRestoredHeaps) restore = restore || (s.heaps_fix && t.addr == a);
+    std::lock_guard<std::recursive_mutex> lock(h->*HeapPeek::kMutex);
+    auto& table = h->*HeapPeek::kTable;
+    if (table.size() != t.table.size()) continue;
+    size_t taken = 0, given = 0, other = 0;  // pages allocated since the save, freed since, changed otherwise
+    for (size_t i = 0; i < table.size(); ++i) {
+      const uint64_t was = t.table[i], now = table[i].qword;
+      if (was == now) continue;
+      rex::memory::PageEntry w;
+      w.qword = was;
+      rex::memory::PageEntry n;
+      n.qword = now;
+      if (!w.state && n.state) ++taken;
+      else if (w.state && !n.state) ++given;
+      else ++other;
+      if (!restore) continue;
+      table[i].qword = was;
+      if (w.state & rex::memory::kMemoryAllocationCommit) {
+        // the host side of a page given back during the first pass may have been protected (protect_on_release)
+        rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
+        if ((w.current_protect & rex::memory::kMemoryProtectRead) &&
+            (w.current_protect & rex::memory::kMemoryProtectWrite)) {
+          access = rex::memory::PageAccess::kReadWrite;
+        } else if (w.current_protect & rex::memory::kMemoryProtectRead) {
+          access = rex::memory::PageAccess::kReadOnly;
+        }
+        const uint32_t shift = h->*HeapPeek::kShift;
+        rex::memory::Protect(h->TranslateRelative(size_t(i) << shift), h->page_size(), access, nullptr);
+      }
+    }
+    if (restore) {
+      h->*HeapPeek::kUnreserved = t.unreserved;
+      put_back += taken + given + other;
+    }
+    if (taken + given + other) {
+      text += fmt::format("{}{} ({} KB pages): {} allocated, {} freed, {} changed{}", text.empty() ? "" : "; ",
+                          parent ? std::string("physical") : fmt::format("{:08X}", h->heap_base()),
+                          h->page_size() / 1024, taken, given, other, restore ? ", put back" : "");
+    }
+  }
+  Out(fmt::format("heap page tables since the save: {}{}", text.empty() ? std::string("no change") : text,
+                  !s.heaps_fix ? " (DOA4_NP_SNAPTEST_HEAPS=leave: none put back)" : ""));
+}
+
+}  // namespace
 
 // The main thread's registers (round 22): the frame hook runs inside the game's loop, so values left in its registers
 // at the boundary (VMX registers holding last frame's camera, which a fiber switch then saves to memory) come along
@@ -1487,7 +1618,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
   if (s.phase == 1) {
     s.h1.push_back(Hash(s, base));
     if (s.i == (g_watch_all ? s.cfg.frames : 1)) WatchReport(base, fmt::format("first pass, frame {}{}", s.at, g_watch_all ? fmt::format("-{}", s.at + s.cfg.frames - 1) : std::string()).c_str());
-    if (s.i == 1 && s.cfg.frames > 1) CaptureTestPages(s, base, &s.b1_chunks, &s.b1_buf, nullptr);
+    if (s.i == s.diff_at && s.cfg.frames > 1) CaptureTestPages(s, base, &s.b1_chunks, &s.b1_buf, nullptr);
     if (s.i < s.cfg.frames) {
       ++s.i;
       step.record = true;
@@ -1498,6 +1629,9 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
     Load(s, base);
     LoadRegs(s, ctx);
     s.h2.assign(1, Hash(s, base));
+    if (!s.h1.empty() && s.h2[0] != s.h1[0]) {
+      Differences(s, base, s.chunks, s.buf, fmt::format("test {}, right after the load (frame {})", s.tests_done + 1, s.at));
+    }
     s.phase = 2;
     s.i = 1;
     step.rewind = true;
@@ -1509,9 +1643,11 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
   if (s.phase == 2) {
     s.h2.push_back(Hash(s, base));
     if (s.i == (g_watch_all ? s.cfg.frames : 1)) WatchReport(base, fmt::format("replay (and the load), frame {}{}", s.at, g_watch_all ? fmt::format("-{}", s.at + s.cfg.frames - 1) : std::string()).c_str());
-    if (s.i == 1 && s.cfg.frames > 1) {
+    if (s.i == s.diff_at && s.cfg.frames > 1) {
       Differences(s, base, s.b1_chunks, s.b1_buf,
-                  fmt::format("test {}, after the first replayed frame (frame {})", s.tests_done + 1, s.at));
+                  s.diff_at == 1 ? fmt::format("test {}, after the first replayed frame (frame {})", s.tests_done + 1, s.at)
+                                 : fmt::format("test {}, after {} replayed frames (frames {}-{})", s.tests_done + 1,
+                                               s.diff_at, s.at, s.at + s.diff_at - 1));
     }
     if (s.i < s.cfg.frames) {
       step.replay = true;
