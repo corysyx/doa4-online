@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.131 (2026-11-14)
+
+corysyx rollback research build (otherwise the same as 0.3.130).
+
+- SnapTest: the game's fiber stacks go back with the snapshot. Round 28 passed 10 of 12 and 9 of 12 (the sound mix
+  page left out); round 29's store watch traced the last two differences to the fiber switch (sub_82793F80): the main
+  thread runs the game's tasks as fibers on stacks from MmCreateKernelStack, which belong to no thread and so were
+  not saved. `DOA4_NP_SNAPTEST_FIBERS=leave` switches it off.
+
 ## 0.3.130 (2026-11-14)
 
 corysyx rollback research build (otherwise the same as 0.3.129).

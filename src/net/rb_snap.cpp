@@ -271,6 +271,12 @@ struct Snap {
   bool dev_listed = false;         // the full list of changed device words was logged once
   std::map<uint32_t, struct KObj> kobj_save;  // the kernel's objects at the save, by handle
   std::vector<StackSave> stacks;  // the thread stacks at the save
+  struct FiberStack {
+    uint32_t low = 0, size = 0;
+    std::vector<uint8_t> bytes;
+  };
+  std::vector<FiberStack> fiber_stacks;  // the stacks no thread owns (MmCreateKernelStack: the game's fibers)
+  bool fibers_fix = true;                // DOA4_NP_SNAPTEST_FIBERS=leave: they are not put back
   std::vector<Held> held;          // the other guest threads, held during a save / load
   bool hold = true;                // DOA4_NP_SNAPTEST_HOLD=off: leave the other threads running
   unsigned char phys_map[kPages] = {};  // physical pages (0xA0000000-0xFFFFFFFF) the game's code wrote, at the save
@@ -963,6 +969,94 @@ void LoadStacks(Snap& s, uint8_t* base) {
                   text.empty() ? "" : ":", text, put_back ? fmt::format("; {} put back", put_back) : std::string()));
 }
 
+// Round 29: the main thread runs the game's tasks as fibers (sub_82793F80 switches, the scheduler loop at 82424504),
+// each on a stack of its own from MmCreateKernelStack. Those stacks belong to no thread, so the save left them out
+// and a load left what the first pass put there: a callee-saved vector register a task restored from its frame came
+// back with the first pass's value (401CB094, one boundary), and a 3D sound's channel volume differed (400EAB50).
+// A thread's stack allocation starts with a no-access guard page (XThread::AllocateStack); these do not.
+std::vector<Snap::FiberStack> FiberStackRanges() {
+  std::vector<Snap::FiberStack> out;
+  auto* ks = rex::system::kernel_state();
+  if (!ks || !ks->memory()) return out;
+  rex::memory::BaseHeap* heap = ks->memory()->LookupHeap(0x70000000u);
+  if (!heap) return out;
+  uint32_t a = 0x70000000u;
+  while (a < 0x7F000000u) {
+    rex::memory::HeapAllocationInfo info{};
+    if (!heap->QueryRegionInfo(a, &info)) break;
+    if (!info.state) {
+      if (!info.region_size) break;
+      a += info.region_size;
+      continue;
+    }
+    const uint32_t lo = info.allocation_base, size = info.allocation_size;
+    if (!size || lo + size <= a) break;
+    rex::memory::HeapAllocationInfo first{};
+    const bool whole = heap->QueryRegionInfo(lo, &first) && (first.state & rex::memory::kMemoryAllocationCommit) &&
+                       first.protect == (rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite) &&
+                       first.region_size >= size;
+    if (whole && size <= (4u << 20) && lo + size <= 0x7F000000u) {
+      Snap::FiberStack f;
+      f.low = lo;
+      f.size = size;
+      out.push_back(std::move(f));
+    }
+    a = lo + size;
+  }
+  return out;
+}
+
+void SaveFiberStacks(Snap& s, uint8_t* base) {
+  s.fiber_stacks = FiberStackRanges();
+  size_t bytes = 0;
+  for (auto& f : s.fiber_stacks) {
+    f.bytes.assign(base + f.low, base + f.low + f.size);
+    bytes += f.size;
+  }
+  if (s.tests_done == 0) {
+    std::string text;
+    for (size_t i = 0; i < s.fiber_stacks.size() && i < 12; ++i)
+      text += fmt::format(" {:08X}+{}K", s.fiber_stacks[i].low, s.fiber_stacks[i].size >> 10);
+    Out(fmt::format("fiber stacks (no thread owns them) saved with the snapshot: {}, {} KB:{}", s.fiber_stacks.size(),
+                    bytes >> 10, text));
+  }
+}
+
+void LoadFiberStacks(Snap& s, uint8_t* base) {
+  if (s.fiber_stacks.empty()) return;
+  const std::vector<Snap::FiberStack> now = FiberStackRanges();
+  uint32_t changed_stacks = 0, words = 0, put_back = 0, gone = 0;
+  std::string text;
+  for (const auto& f : s.fiber_stacks) {
+    bool there = false;
+    for (const auto& n : now) there = there || (n.low == f.low && n.size == f.size);
+    if (!there) {
+      ++gone;
+      continue;
+    }
+    uint32_t changed = 0, first = 0, last = 0;
+    for (uint32_t o = 0; o + 4 <= f.bytes.size(); o += 4) {
+      if (std::memcmp(base + f.low + o, f.bytes.data() + o, 4) == 0) continue;
+      if (!changed) first = f.low + o;
+      last = f.low + o;
+      ++changed;
+    }
+    if (changed) {
+      ++changed_stacks;
+      words += changed;
+      if (changed_stacks <= 8) text += fmt::format(" {:08X} {} words {:08X}-{:08X}", f.low, changed, first, last);
+    }
+    if (!s.fibers_fix) continue;
+    std::memcpy(base + f.low, f.bytes.data(), f.bytes.size());
+    ++put_back;
+  }
+  Out(fmt::format("fiber stacks since the save: {} of {} changed, {} words{}{}{}{}", changed_stacks,
+                  s.fiber_stacks.size(), words, text.empty() ? "" : ":", text,
+                  gone ? fmt::format("; {} gone", gone) : std::string(),
+                  s.fibers_fix ? fmt::format("; {} put back", put_back)
+                               : std::string("; left (DOA4_NP_SNAPTEST_FIBERS=leave)")));
+}
+
 const char* KTypeName(uint32_t t) {
   using T = rex::system::XObject::Type;
   switch (T(t)) {
@@ -1167,6 +1261,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   s.xma_saved = s.xma_rewind && SaveXma(base);
   s.kobj_save = KernelObjects();
   SaveStacks(s, base);
+  SaveFiberStacks(s, base);
   std::memset(s.test, 0, sizeof s.test);
   s.fib_save = Fibers();
   s.h1.assign(1, Hash(s, base));
@@ -1343,6 +1438,7 @@ void Load(Snap& s, uint8_t* base) {
   const double ms = MsSince(t0);
   RepairStashes(s, base);
   LoadStacks(s, base);
+  LoadFiberStacks(s, base);
   Sleep(kSettleMs);
   const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
   if (s.phys_restore) {
@@ -1506,6 +1602,8 @@ bool SnapActive() {
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     const char* regs = std::getenv("DOA4_NP_SNAPTEST_REGS");
     s.regs_fix = !(regs && std::string(regs) == "leave");
+    const char* fib = std::getenv("DOA4_NP_SNAPTEST_FIBERS");
+    s.fibers_fix = !(fib && std::string(fib) == "leave");
     const char* heaps = std::getenv("DOA4_NP_SNAPTEST_HEAPS");
     s.heaps_fix = !(heaps && std::string(heaps) == "leave");
     const char* stash = std::getenv("DOA4_NP_SNAPTEST_STASHES");
