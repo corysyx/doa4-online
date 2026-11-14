@@ -44,6 +44,7 @@
 #include <rex/system/xthread.h>
 
 #include "doa4_config.h"
+#include "doa4_cpu_info.h"
 #include "doa4_diag_overlay.h"
 #include "doa4_discord.h"
 #include "doa4_extras.h"
@@ -469,6 +470,8 @@ class DeadOrAlive4App : public rex::ReXApp {
     // The netplay release identity (CMakeLists.txt: DOA4_RELEASE_*; "dev" for local builds). A [LIFE] line, so an
     // offline run still has no [NET]/[NP] line (gate S9); plan 1b reads it.
     REXLOG_INFO("[doa4][LIFE] version {} ({} releases of {})", DOA4_RELEASE_TAG, DOA4_RELEASE_CHANNEL, DOA4_RELEASE_REPO);
+    // The machine's processor and memory (the GPU has its own "DXGI adapter" lines): a slowdown report needs both.
+    REXLOG_INFO("[doa4][LIFE] cpu: {}", doa4::cpu_info::LogLine(doa4::cpu_info::Read()));
     // Task 12 review A Minor 1 (spec G1, "the log names the value it ignored"): a doa4_language / doa4_subtitles value in the
     // settings file the SDK did not take as written ("fr", 2.5, true). The SDK loaded this file (ConfigPath() = its
     // config_path) before logging started, so its own WARN never reached the log.
