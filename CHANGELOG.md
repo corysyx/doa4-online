@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.128 (2026-11-14)
+
+corysyx rollback research build (otherwise the same as 0.3.127).
+
+- SnapTest: the guest threads that keep running across a load (not the main thread, not held, not a worker whose
+  stack goes back; the sound thread) keep their own PCR and thread object as they are. The load used to put back
+  the sound thread's IRQL from the save (taken while it was inside a spin lock), so in the replay the sound code ran
+  raised and new sound voices never started (DOA4_NP_SNAPTEST_THREADS=restore: put back as before).
+
 ## 0.3.127 (2026-11-14)
 
 corysyx rollback research build (otherwise the same as 0.3.126).

@@ -245,6 +245,8 @@ struct Snap {
   uint32_t i = 0;  // boundaries since `at` in this pass
   uint32_t dev = 0, dev_end = 0;   // the D3D device's bytes (its heap block)
   std::vector<uint32_t> live;      // words seen changing while the game stood at a boundary (sorted, unique)
+  std::vector<Keep> thread_keeps;  // the PCR and thread object of each guest thread left running (round 26)
+  bool threads_fix = true;         // DOA4_NP_SNAPTEST_THREADS=restore: they go back with the snapshot as before
   std::vector<Keep> noise;         // DOA4_NP_SNAPTEST_NOISE: ranges left live and out of the comparison (round 21)
   std::vector<uint32_t> live_new;  // found at a load: used from the next test on
   std::vector<Keep> keeps;         // this test's kept bytes: the device and the live words
@@ -376,6 +378,7 @@ void BuildKeeps(Snap& s) {
   if (s.dev_end > s.dev) s.keeps.push_back(Keep{s.dev, s.dev_end});  // restore mode writes it back after the load
   for (uint32_t w : s.live) s.keeps.push_back(Keep{w, w + 4});
   for (const Keep& k : s.noise) s.keeps.push_back(k);
+  for (const Keep& k : s.thread_keeps) s.keeps.push_back(k);
   std::sort(s.keeps.begin(), s.keeps.end(), [](const Keep& a, const Keep& b) { return a.lo < b.lo; });
   std::vector<Keep> merged;
   for (const Keep& k : s.keeps) {
@@ -1074,6 +1077,33 @@ void LoadHeaps(Snap& s);
 void TakeHeaps(std::vector<Snap::HeapTable>* out);
 void CompareHeaps(const Snap& s);
 
+// Round 26: a guest thread that is neither the main thread nor held nor a worker whose stack and registers go back
+// (the sound thread, tid 2) keeps running across the load. Its PCR (current IRQL, ...) and its thread object are
+// its own live state: putting back the copy of the save gave it the IRQL it had then (DISPATCH, inside a spin lock),
+// so the sound code then ran as if raised and started no new voice. They are left as they are now.
+void FindRunningThreads(Snap& s, uint8_t* base) {
+  s.thread_keeps.clear();
+  auto* ks = rex::system::kernel_state();
+  if (!ks || !s.threads_fix) return;
+  const std::vector<StackSave> rewound = GuestStacks(s, base);
+  auto* me = rex::system::XThread::GetCurrentThread();
+  std::string text;
+  int n = 0;
+  for (auto& o : ks->object_table()->GetAllObjects()) {
+    if (!o || o->type() != rex::system::XObject::Type::Thread) continue;
+    auto* t = static_cast<rex::system::XThread*>(o.get());
+    if (!t->is_guest_thread() || !t->pcr_ptr() || t == me) continue;
+    bool back = false;
+    for (const auto& st : rewound) back = back || st.thread == t;
+    if (back) continue;
+    s.thread_keeps.push_back(Keep{t->pcr_ptr(), t->pcr_ptr() + 0x2D8});
+    if (t->guest_object()) s.thread_keeps.push_back(Keep{t->guest_object(), t->guest_object() + 0xAB0});
+    if (++n <= 12) text += fmt::format(" {}({:08X})", t->thread_id(), t->creation_params()->start_address);
+  }
+  if (!s.tests_done) Out(fmt::format("guest threads left running (their PCR and thread object stay live): {}{}", n,
+                                     n ? ":" + text : std::string()));
+}
+
 void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
@@ -1081,6 +1111,7 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   const auto t0 = std::chrono::steady_clock::now();
   AddLive(&s.live, s.live_new);
   s.live_new.clear();
+  FindRunningThreads(s, base);
   BuildKeeps(s);
   uint32_t pages = 0;
   if (s.full) {
@@ -1475,6 +1506,8 @@ bool SnapActive() {
     s.heaps_fix = !(heaps && std::string(heaps) == "leave");
     const char* stash = std::getenv("DOA4_NP_SNAPTEST_STASHES");
     s.mask_stashes = !(stash && std::string(stash) == "hash");
+    const char* thr = std::getenv("DOA4_NP_SNAPTEST_THREADS");
+    s.threads_fix = !(thr && std::string(thr) == "restore");
     if (const char* d = std::getenv("DOA4_NP_SNAPTEST_DIFFAT")) {
       const unsigned long v = std::strtoul(d, nullptr, 10);
       if (v >= 1 && v <= c.frames) s.diff_at = uint32_t(v);
