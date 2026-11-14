@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.130 (2026-11-14)
+
+corysyx rollback research build (otherwise the same as 0.3.129).
+
+- SnapTest: the 64 bytes of an XMA context that is free at the save go back with the snapshot too. Round 27 (first
+  passes: 6 of 12 with the sound mix page left out) showed every remaining failure was a voice started after the
+  save: its new context still held the first pass's data, so in the replay the game's sound code found input buffer 0
+  valid, queued the packet as buffer 1 and the voice never started.
+
 ## 0.3.129 (2026-11-14)
 
 corysyx rollback research build, merged with dwreckgg's 0.3.4 (Alpha-152 playable, the throw finisher crash, the

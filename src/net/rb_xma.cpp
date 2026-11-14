@@ -164,6 +164,14 @@ bool SaveXma(uint8_t* base) {
       st.input_ptr[b] = 0;
       st.inputs[b].clear();
     }
+    // Round 27: a context that is free at the save keeps its 64 bytes too. A voice started after the save takes a free
+    // context and fills it; the load used to leave those bytes, so in the replay the game's sound code
+    // (sub_82975D48) found input buffer 0 still valid in its new context, queued the packet as buffer 1 and the voice
+    // never started.
+    if (!st.allocated && st.guest_ptr && base && Mem()) {
+      const uint8_t* ctx_data = Virt(st.guest_ptr);
+      st.data.assign(ctx_data, ctx_data + 64);
+    }
     if (st.allocated && st.guest_ptr && base && Mem()) {
       const uint8_t* ctx_data = Virt(st.guest_ptr);
       st.data.assign(ctx_data, ctx_data + 64);
