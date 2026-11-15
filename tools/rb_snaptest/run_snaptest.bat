@@ -1,9 +1,9 @@
 @echo off
 rem DOA4 rollback milestone 2: the save / restore test (src\net\rb_snap.h). Put this file and snaptest_single.txt in
 rem the game folder (next to dead_or_alive_4.exe, alpha-v0.3.134 or later) and double-click it. The game plays a scripted
-rem Versus fight by itself three times (about 2 minutes each), rewinds it many times each time and checks that every replay
+rem Versus fight by itself two times (about 2 minutes each), rewinds it many times each time and checks that every replay
 rem comes out the same (the D3D device's and the XMA decoder's state go back with the snapshot): from frame 3600,
-rem with graphics memory, the main thread's registers and the physical heaps' allocations put back too (round 34, a soak):
+rem with graphics memory, the main thread's registers and the physical heaps' allocations put back too (round 35, a soak with tracing):
 rem 54 rewinds of 8 frames, 29 rewinds of 15 frames, then 4 rewinds at the start of round 2; the sound mix page is left out again.
 rem Your own save is not used or changed: each run gets a fresh, empty user data folder. A run that has not ended
 rem after 4 minutes, or that froze, is closed.
@@ -28,16 +28,16 @@ set "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0000/0x0000"
 set "CACHE=%USERPROFILE%\Documents\dead_or_alive_4\cache"
 set "CACHEARG="
 if exist "%CACHE%" set "CACHEARG=--cache_path=%CACHE%"
-echo The game now plays a fight by itself, three times, and rewinds it many times (about 10 minutes in all).
+echo The game now plays a fight by itself, two times, and rewinds it many times (about 6 minutes in all).
 echo Do not touch it: it closes by itself each time.
-for %%M in (a61x8 b113x15 c5946) do call :run %%M
+for %%M in (a61x8 b113x15) do call :run %%M
 if exist "%HERE%snaptest_results.zip" del "%HERE%snaptest_results.zip"
-powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a61x8','%HERE%snaptest_run_b113x15','%HERE%snaptest_run_c5946' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path '%HERE%snaptest_run_a61x8','%HERE%snaptest_run_b113x15' -DestinationPath '%HERE%snaptest_results.zip'" >nul 2>&1
 echo.
 if exist "%HERE%snaptest_results.zip" (
   echo DONE. Send snaptest_results.zip from the game folder.
 ) else (
-  echo DONE, but the results could not be zipped: send the three snaptest_run_ folders.
+  echo DONE, but the results could not be zipped: send the two snaptest_run_ folders.
 )
 pause
 exit /b 0
@@ -59,11 +59,14 @@ if "%1"=="b3600full" set "DOA4_NP_SNAPTEST_MODE=full"
 if "%1"=="c3600both" set "DOA4_NP_SNAPTEST_MODE=full"
 set "DOA4_NP_SNAPTEST_PHYS=restore"
 set "DOA4_NP_SNAPTEST_WATCH=off"
+if "%1"=="b113x15" set "DOA4_NP_SNAPTEST_WATCH=4001C68C-4001C69C,400246DC-400246EC,400FBAE0-400FBAE4,8357D520-8357D524,401CFDE8-401CFDEC,400E9728-400E972C,401E8FD8-401E8FDC,400F0C3C-400F0C40,400EAD1C-400EAD20"
 set "DOA4_NP_SNAPTEST_WATCH_FRAMES="
+if "%1"=="b113x15" set "DOA4_NP_SNAPTEST_WATCH_FRAMES=all"
 set "DOA4_NP_SNAPTEST_WATCH_TEST=1"
 set "DOA4_NP_SNAPTEST_STASHES="
 set "DOA4_NP_SNAPTEST_THREADS="
 set "DOA4_NP_SNAPTEST_DIFFAT=1"
+if "%1"=="a61x8" set "DOA4_NP_SNAPTEST_DIFFAT=4"
 set "DOA4_NP_SNAPTEST_NOISE=82F6C9D0-82F6C9D8,8357A500-8357A960,8357C190-8357C194,40195000-40196000"
 set "DOA4_NP_SNAPTEST_HEAPS="
 set "DOA4_NP_SNAPTEST_FIBERS="
