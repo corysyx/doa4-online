@@ -148,6 +148,10 @@ constexpr int kSettleMs = 20;  // how long a save / load watches the stopped gam
 // the value into the resources it touches); +10384 points at the word the GPU writes each finished fence to.
 constexpr uint32_t kDeviceSize = 20608;
 constexpr uint32_t kDevStateBegin = 12, kDevStateEnd = 10380;  // the shader constants and render state (rounds 4-6)
+// The front buffer the device holds a reference on (sub_8275AEE0, at the swap: +0x80000 on the new one's header,
+// -0x80000 on this one). Round 33: left live, an odd number of rewound frames left it on the other buffer of the
+// pair, and the replay's first swap took the reference off the wrong one.
+constexpr uint32_t kDevFrontBuffer = 13976;
 constexpr uint32_t kFenceCounter = 10396;
 constexpr uint32_t kFenceWriteback = 10384;
 
@@ -279,6 +283,8 @@ struct Snap {
   };
   std::vector<FiberStack> fiber_stacks;  // the stacks no thread owns (MmCreateKernelStack: the game's fibers)
   bool host_fibers_said = false;
+  bool dev_refs_fix = true;        // DOA4_NP_SNAPTEST_DEVREFS=leave
+  std::vector<uint32_t> dev_refs;  // device words beyond the render state that go back: references on bound objects
   bool fibers_fix = true;                // DOA4_NP_SNAPTEST_FIBERS=leave: they are not put back
   std::vector<Held> held;          // the other guest threads, held during a save / load
   bool hold = true;                // DOA4_NP_SNAPTEST_HOLD=off: leave the other threads running
@@ -697,13 +703,23 @@ void FindDevice(Snap& s, uint8_t* base) {
 // DOA4_NP_SNAPTEST_DEVLIVE. A ring address looks like a small negative float (0xBE...), so the value alone cannot tell.
 void ClassifyDeviceLive(Snap& s, uint8_t* base) {
   s.dev_live.clear();
+  s.dev_refs.clear();
   if (!s.dev || !s.dev_restore || s.dev_save.size() != kDeviceSize) return;
   const uint32_t delta = Be32(base + s.dev) - Be32(s.dev_save.data());
   for (uint32_t o = 0; o + 4 <= kDeviceSize; o += 4) {
     const uint32_t was = Be32(s.dev_save.data() + o), now = Be32(base + s.dev + o);
     const int32_t off = int32_t(now - was - delta);
     const bool moved = was != now && delta != 0 && off > -(1 << 20) && off < (1 << 20);
-    const bool outside_state = s.dev_state_only && (o < kDevStateBegin || o >= kDevStateEnd);
+    // Round 33: beyond the render state the device holds references on what is bound (the front buffer at
+    // +13976, the shaders at +20456...). Left live, the replay's first set call released the object the FIRST
+    // pass had bound last instead of the one the restored memory counts a reference for: its count reached 0,
+    // it was freed while in use, and the game crashed (frames 5264 and 5946, where the bound objects change).
+    // So a word there that held a game-heap pointer (or null) at the save and holds another now goes back too.
+    // Ring addresses are 0xA/0xB/0xC ones and counters are small, so neither is taken for one.
+    const auto heap_ref = [](uint32_t v) { return v == 0 || (v >= 0x40000000u && v < 0x50000000u && !(v & 3)); };
+    const bool ref_slot = s.dev_refs_fix && o > 8 && was != now && heap_ref(was) && heap_ref(now);
+    if (ref_slot && s.dev_state_only && (o < kDevStateBegin || o >= kDevStateEnd)) s.dev_refs.push_back(o);
+    const bool outside_state = s.dev_state_only && (o < kDevStateBegin || o >= kDevStateEnd) && o != kDevFrontBuffer && !ref_slot;
     if (o <= 8 || (!s.dev_state_only && moved) || outside_state || std::find(s.dev_extra.begin(), s.dev_extra.end(), o) != s.dev_extra.end()) {
       s.dev_live.push_back(o);
     }
@@ -1352,6 +1368,15 @@ void Load(Snap& s, uint8_t* base) {
   }
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
   ClassifyDeviceLive(s, base);
+  if (s.dev_restore && s.dev_state_only) {
+    std::string t;
+    for (size_t i = 0; i < s.dev_refs.size() && i < 16; ++i) {
+      const uint32_t o = s.dev_refs[i];
+      t += fmt::format(" +{} {:08X}->{:08X}", o, Be32(base + s.dev + o), Be32(s.dev_save.data() + o));
+    }
+    Out(fmt::format("device references on bound objects since the save (beyond the render state; put back): {}:{}{}",
+                    s.dev_refs.size(), t, s.dev_refs.size() > 16 ? " ..." : ""));
+  }
   if (s.dev_restore && !s.dev_state_only) {
     Out(fmt::format("device words left as they are (they moved with the ring, or DOA4_NP_SNAPTEST_DEVLIVE): {}:{}",
                     s.dev_live.size(), DevLiveText(s, base)));
@@ -1567,7 +1592,7 @@ bool SnapActive() {
       // timebase (mftb) samples of sub_82765540; 8357C190: the main thread's pointer into the GPU command stream
       // (sub_82770488), which follows the live ring. "off": none.
       const char* nv = std::getenv("DOA4_NP_SNAPTEST_NOISE");
-      const std::string spec = nv && *nv ? nv : "82F6C9D0-82F6C9D8,8357A500-8357A960,8357C190-8357C194";
+      const std::string spec = nv && *nv ? nv : "82F6C9D0-82F6C9D8,8357A500-8357A960,8357C190-8357C194,40195000-40196000";
       std::string shown;
       if (spec != "off") {
         size_t i = 0;
@@ -1621,6 +1646,8 @@ bool SnapActive() {
     s.stacks_fix = !(stk && std::string(stk) == "leave");
     const char* regs = std::getenv("DOA4_NP_SNAPTEST_REGS");
     s.regs_fix = !(regs && std::string(regs) == "leave");
+    const char* drf = std::getenv("DOA4_NP_SNAPTEST_DEVREFS");
+    s.dev_refs_fix = !(drf && std::string(drf) == "leave");
     const char* fib = std::getenv("DOA4_NP_SNAPTEST_FIBERS");
     s.fibers_fix = !(fib && std::string(fib) == "leave");
     const char* heaps = std::getenv("DOA4_NP_SNAPTEST_HEAPS");

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.134 (2026-11-15)
+
+corysyx rollback research build (otherwise the same as 0.3.133).
+
+- SnapTest: the D3D device's references on bound objects go back with the snapshot. Round 33 (0.3.133: the host
+  fiber stacks work, 12 fibers go back at every load) still crashed at frames 5264 and 5946, where the bound
+  shaders change: the device words beyond the render state were left live, so the replay's first set call released
+  the object the first pass had bound last, its count reached 0 and it was freed while in use. The same for the
+  front buffer (+13976): after an odd number of frames the swap took its reference off the wrong buffer of the
+  pair (every 15-frame test). A device word there that held a game-heap pointer or null at the save and holds
+  another now goes back. `DOA4_NP_SNAPTEST_DEVREFS=leave` switches it off.
+- SnapTest: the sound mix page is left out of the comparison again: it differed for one boundary in the middle of
+  most 8-frame tests (the sound thread's timing) and was equal again at the end.
+
 ## 0.3.133 (2026-11-15)
 
 corysyx rollback research build (otherwise the same as 0.3.132).
