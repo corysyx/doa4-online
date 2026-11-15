@@ -1989,12 +1989,16 @@ void Shutdown() {
 
 // ---- Hooks ----
 
+extern "C" void doa4_fiber_prof_frame(uint8_t* base, uint32_t np_frame, uint32_t fight_state);
+
 REX_HOOK_RAW(sub_824F4498) {
   if (doa4::lagtrace::On()) {  // the latency trace (doa4_lagtrace.h): the frame's start
     doa4::lagtrace::OnFrameStart(base[doa4::np::kFightState], doa4::np::Active(),
                                  doa4::np::det::On(doa4::np::det::kAudio));
   }
   doa4::intro_skip::CountFrame();  // the movie log's frame clock (doa4_intro_skip.h), host-only
+  doa4_fiber_prof_frame(base, doa4::np::Active() ? uint32_t(doa4::np::CurrentFrame()) : 0,
+                        base[doa4::np::kFightState]);  // DOA4_FIBER_PROF=1 (doa4_app_hooks.cpp)
   // The language code's frame step (doa4_language_hooks.h): every frame, in a session or not, before the frame's hash.
   doa4::language::OnFrame(base);
   if (doa4::np::Active()) doa4::np::OnFrame(ctx, base);

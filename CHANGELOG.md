@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.136 (2026-11-15)
+
+corysyx rollback research build (otherwise the same as 0.3.135).
+
+- Rollback: a profile of the frame by task (`DOA4_FIBER_PROF=1`, off by default). Round 36: the copy of the whole
+  14 MB state takes 1.1 ms (the harness's 57 ms save is 42 ms of asking which pages are committed), so a rollback
+  can save everything every frame. Round 37: the main thread spends 11.2 ms between the frame hook and the swap,
+  and a rollback replays several frames inside one, so the replay must leave out whatever only draws. The game
+  runs its frame as fibers, one per task; each switch now charges the time and the D3D command bytes since the
+  last one to the fiber that ran, and the frame hook logs the totals every 600 frames ("[FIBERPROF]").
+
 ## 0.3.135 (2026-11-15)
 
 corysyx rollback research build (otherwise the same as 0.3.134).

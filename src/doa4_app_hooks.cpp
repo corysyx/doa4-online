@@ -481,6 +481,46 @@ __declspec(noinline) void ParkAndSwitch(GuestFiber* self, GuestFiber* dst) {
   self->running = true;
 }
 
+}  // namespace
+extern "C" uint32_t doa4_rb_device();  // net/rb_snap.cpp
+namespace {
+// The fiber profile (0.3.136, DOA4_FIBER_PROF=1): where the main thread's frame goes, by task. The game's frame is
+// run by its cooperative scheduler, one fiber per task; round 37's trace put 11.2 ms of CPU between the frame hook
+// and the swap, and a rollback has to replay several frames inside one, so it must know which tasks are the
+// simulation and which only draw. Each switch charges the time since the last one, and the bytes the D3D command
+// stream grew by, to the fiber that was running. Reported from the frame hook every 600 frames.
+struct FiberProf {
+  uint64_t us = 0, cmd = 0, slices = 0;
+  uint32_t lr = 0;  // where it last parked
+};
+int g_prof_on = -1;
+thread_local int64_t tls_prof_t = 0;
+thread_local uint32_t tls_prof_cmd = 0;
+DWORD g_prof_thread = 0;
+std::unordered_map<uint32_t, FiberProf> g_prof;  // by fiber buffer; the profiled thread only
+int64_t g_prof_freq = 1;
+
+void ProfCharge(uint32_t buf, uint32_t lr, uint8_t* base) {
+  if (GetCurrentThreadId() != g_prof_thread) return;
+  LARGE_INTEGER q;
+  QueryPerformanceCounter(&q);
+  const uint32_t dev = doa4_rb_device();
+  uint32_t cmd = 0;
+  if (dev) {
+    const uint8_t* p = base + dev;
+    cmd = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+  }
+  if (tls_prof_t) {
+    FiberProf& f = g_prof[buf];
+    f.us += uint64_t((q.QuadPart - tls_prof_t) * 1000000 / g_prof_freq);
+    if (cmd > tls_prof_cmd && cmd - tls_prof_cmd < (16u << 20)) f.cmd += cmd - tls_prof_cmd;
+    ++f.slices;
+    if (lr) f.lr = lr;
+  }
+  tls_prof_t = q.QuadPart;
+  tls_prof_cmd = cmd;
+}
+
 void DoFiberSwap(PPCContext& ctx, uint8_t* base) {
   uint32_t dst_buf = (uint32_t)ctx.r3.u64;
   if (!dst_buf) {
@@ -493,6 +533,7 @@ void DoFiberSwap(PPCContext& ctx, uint8_t* base) {
   uint32_t kpcr = LoadU32(base, ctx.r13.u32 + 256);
   uint32_t out_buf = kpcr ? LoadU32(base, kpcr + 356) : 0;
   EnsureInitialFiber(out_buf, base);
+  if (g_prof_on > 0) ProfCharge(out_buf, (uint32_t)ctx.lr, base);
 
   GuestFiber* dst = GetOrCreateFiber(dst_buf, base);
 
@@ -611,6 +652,41 @@ extern "C" size_t doa4_fiber_table(uint32_t* out, size_t max) {
     ++n;
   }
   return n;
+}
+
+// The fiber profile's frame step, from the frame hook (np_session.cpp sub_824F4498) on the main thread.
+extern "C" void doa4_fiber_prof_frame(uint8_t* base, uint32_t np_frame, uint32_t fight_state) {
+  if (g_prof_on < 0) {
+    const char* v = std::getenv("DOA4_FIBER_PROF");
+    g_prof_on = v && v[0] == '1';
+    if (g_prof_on) {
+      LARGE_INTEGER f;
+      QueryPerformanceFrequency(&f);
+      g_prof_freq = f.QuadPart;
+      g_prof_thread = GetCurrentThreadId();
+    }
+  }
+  if (g_prof_on <= 0 || GetCurrentThreadId() != g_prof_thread) return;
+  static uint32_t frames = 0;
+  static uint32_t states[8] = {};
+  ++states[fight_state & 7];
+  if (++frames < 600) return;
+  std::vector<std::pair<uint32_t, FiberProf>> v(g_prof.begin(), g_prof.end());
+  std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second.us > b.second.us; });
+  uint64_t total = 0, cmd = 0;
+  for (const auto& [buf, f] : v) total += f.us, cmd += f.cmd;
+  REXLOG_INFO("[doa4][FIBERPROF] {} frames to np frame {} (fight states 0-7: {} {} {} {} {} {} {} {}): {:.2f} ms and "
+              "{:.1f} KB of D3D commands a frame, {} fibers",
+              frames, np_frame, states[0], states[1], states[2], states[3], states[4], states[5], states[6],
+              states[7], double(total) / 1000.0 / frames, double(cmd) / 1024.0 / frames, v.size());
+  for (const auto& [buf, f] : v) {
+    REXLOG_INFO("[doa4][FIBERPROF]   fiber {:08X}: {:.3f} ms, {:.1f} KB of commands, {:.1f} runs a frame; last "
+                "parked at lr {:08X}",
+                buf, double(f.us) / 1000.0 / frames, double(f.cmd) / 1024.0 / frames, double(f.slices) / frames, f.lr);
+  }
+  g_prof.clear();
+  frames = 0;
+  for (uint32_t& x : states) x = 0;
 }
 
 // Rollback save (net/rb_snap.cpp): every parked fiber's host stack and registers. out: [0] fibers, [1] with a host

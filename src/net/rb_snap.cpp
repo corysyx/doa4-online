@@ -1996,6 +1996,9 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
 
 void SnapRecordInput(const np::FrameInput& input) { G().inputs.push_back(input); }
 
+// The D3D device's guest address (0: not seen yet), for the fiber profile's command stream count (doa4_app_hooks.cpp).
+extern "C" uint32_t doa4_rb_device() { return g_device.load(std::memory_order_acquire); }
+
 #endif  // DOA4_RB_HOST_TEST
 
 }  // namespace doa4::rb
