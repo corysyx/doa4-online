@@ -25,6 +25,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/input/input_system.h>
+#include <rex/kernel/xam/module.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/entry.h>
 #include <rex/filesystem/vfs.h>
@@ -1376,6 +1377,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     in.setup_open = setup_open_.load(std::memory_order_acquire);
     in.sdk_overlay_open = HasSdkOverlayOpen();
     in.mnk_mode = rex::cvar::Query<bool>("mnk_mode");
+    in.xam_dialog_open = rex::kernel::xam::xeXamIsUIActive();
     const doa4::display::CursorAction action = doa4::display::DecideCursor(in);
     if (action == cursor_action_) return;
     cursor_action_ = action;
