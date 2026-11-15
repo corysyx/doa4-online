@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include <rex/hook.h>
@@ -654,8 +655,126 @@ extern "C" size_t doa4_fiber_table(uint32_t* out, size_t max) {
   return n;
 }
 
+// The sampling profile (0.3.137, with DOA4_FIBER_PROF=1). Round 38: the fibers are not the split - the main fiber
+// itself spends the frame and writes all of its D3D commands, between the switches. So a thread samples the main
+// thread's guest call chain 2000 times a second (its lr, then the return addresses up the stack's back chain), finds
+// the main loop's frame in it (sub_824F41E0, return addresses 824F41F8-824F420C) and counts the path of up to 7
+// calls below it. The reads race with the main thread, which costs a wrong sample now and then, not a crash: guest
+// memory is read through ReadProcessMemory.
+struct SampPath {
+  uint32_t a[7] = {};
+  bool operator==(const SampPath& o) const { return std::memcmp(a, o.a, sizeof a) == 0; }
+};
+struct SampHash {
+  size_t operator()(const SampPath& p) const {
+    size_t h = 1469598103934665603ull;
+    for (uint32_t v : p.a) h = (h ^ v) * 1099511628211ull;
+    return h;
+  }
+};
+std::mutex g_samp_mu;
+std::unordered_map<SampPath, uint32_t, SampHash> g_samp;  // by path, every prefix counted (fight state 2 only)
+uint32_t g_samp_total = 0, g_samp_no_loop = 0, g_samp_other_state = 0;
+std::atomic<PPCContext*> g_samp_ctx{nullptr};
+std::atomic<uint8_t*> g_samp_base{nullptr};
+std::atomic<uint32_t> g_samp_state{0};
+
+bool SampRead32(const uint8_t* p, uint32_t* out) {
+  uint8_t b[4];
+  SIZE_T got = 0;
+  if (!ReadProcessMemory(GetCurrentProcess(), p, b, 4, &got) || got != 4) return false;
+  *out = (uint32_t(b[0]) << 24) | (uint32_t(b[1]) << 16) | (uint32_t(b[2]) << 8) | b[3];
+  return true;
+}
+
+void SampThread() {
+  LARGE_INTEGER f, q;
+  QueryPerformanceFrequency(&f);
+  const int64_t step = f.QuadPart / 2000;
+  QueryPerformanceCounter(&q);
+  int64_t next = q.QuadPart + step;
+  for (;;) {
+    for (;;) {
+      QueryPerformanceCounter(&q);
+      if (q.QuadPart >= next) break;
+      SwitchToThread();
+    }
+    next += step;
+    if (next < q.QuadPart) next = q.QuadPart + step;
+    PPCContext* ctx = g_samp_ctx.load(std::memory_order_acquire);
+    uint8_t* base = g_samp_base.load(std::memory_order_acquire);
+    if (!ctx || !base) continue;
+    uint32_t fr[72];
+    int n = 0;
+    fr[n++] = uint32_t(ctx->lr);
+    uint32_t sp = ctx->r1.u32;
+    while (n < 72 && sp >= 0x70000000u && sp < 0x7F000000u) {
+      uint32_t up = 0, ret = 0;
+      if (!SampRead32(base + sp, &up) || up <= sp || up >= 0x7F000000u || up - sp > 0x100000u) break;
+      if (!SampRead32(base + up - 8, &ret)) break;
+      fr[n++] = ret;
+      sp = up;
+    }
+    std::lock_guard<std::mutex> lk(g_samp_mu);
+    if (g_samp_state.load(std::memory_order_relaxed) != 2) {
+      ++g_samp_other_state;
+      continue;
+    }
+    ++g_samp_total;
+    int loop = -1;
+    for (int i = n - 1; i >= 0; --i) {
+      if (fr[i] >= 0x824F41F8u && fr[i] <= 0x824F420Cu) {
+        loop = i;
+        break;
+      }
+    }
+    if (loop < 0) {
+      ++g_samp_no_loop;
+      continue;
+    }
+    SampPath p;
+    for (int d = 0; d < 7 && loop - d >= 0; ++d) {
+      p.a[d] = fr[loop - d];
+      ++g_samp[p];
+    }
+  }
+}
+
+void SampReport(uint32_t np_frame) {
+  std::vector<std::pair<SampPath, uint32_t>> v;
+  uint32_t total, no_loop, other;
+  {
+    std::lock_guard<std::mutex> lk(g_samp_mu);
+    v.assign(g_samp.begin(), g_samp.end());
+    total = g_samp_total;
+    no_loop = g_samp_no_loop;
+    other = g_samp_other_state;
+  }
+  if (!total) return;
+  std::sort(v.begin(), v.end(), [](const auto& x, const auto& y) {
+    return std::lexicographical_compare(x.first.a, x.first.a + 7, y.first.a, y.first.a + 7);
+  });
+  REXLOG_INFO("[doa4][SAMP] to np frame {}: {} samples in fight state 2 ({} in other states), {:.1f}% outside the "
+              "main loop's chain (fibers); the paths below the main loop, each as return addresses, with its share "
+              "of the frame's 16.67 ms:",
+              np_frame, total, other, 100.0 * no_loop / total);
+  for (const auto& [p, c] : v) {
+    if (c * 200 < total) continue;  // under 0.5%
+    std::string t;
+    int depth = 0;
+    for (uint32_t x : p.a) {
+      if (!x) break;
+      t += fmt::format(" {:08X}", x);
+      ++depth;
+    }
+    REXLOG_INFO("[doa4][SAMP] {:>5.1f}% {:>5.2f} ms {}{}", 100.0 * c / total, 16.667 * c / total,
+                std::string(size_t(depth - 1) * 2, ' '), t);
+  }
+}
+
 // The fiber profile's frame step, from the frame hook (np_session.cpp sub_824F4498) on the main thread.
-extern "C" void doa4_fiber_prof_frame(uint8_t* base, uint32_t np_frame, uint32_t fight_state) {
+extern "C" void doa4_fiber_prof_frame(uint8_t* base, uint32_t np_frame, uint32_t fight_state, void* vctx) {
+  g_samp_state.store(fight_state, std::memory_order_relaxed);
   if (g_prof_on < 0) {
     const char* v = std::getenv("DOA4_FIBER_PROF");
     g_prof_on = v && v[0] == '1';
@@ -664,12 +783,16 @@ extern "C" void doa4_fiber_prof_frame(uint8_t* base, uint32_t np_frame, uint32_t
       QueryPerformanceFrequency(&f);
       g_prof_freq = f.QuadPart;
       g_prof_thread = GetCurrentThreadId();
+      g_samp_base.store(base, std::memory_order_release);
+      g_samp_ctx.store(static_cast<PPCContext*>(vctx), std::memory_order_release);
+      std::thread(SampThread).detach();
     }
   }
   if (g_prof_on <= 0 || GetCurrentThreadId() != g_prof_thread) return;
-  static uint32_t frames = 0;
+  static uint32_t frames = 0, all_frames = 0;
   static uint32_t states[8] = {};
   ++states[fight_state & 7];
+  if (++all_frames % 1800 == 0) SampReport(np_frame);
   if (++frames < 600) return;
   std::vector<std::pair<uint32_t, FiberProf>> v(g_prof.begin(), g_prof.end());
   std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second.us > b.second.us; });

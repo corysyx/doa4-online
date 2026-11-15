@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.137 (2026-11-15)
+
+corysyx rollback research build (otherwise the same as 0.3.136).
+
+- Rollback: a sampling profile of the frame (with `DOA4_FIBER_PROF=1`, off by default). Round 38: the fibers are
+  not the split - the 12 task fibers take 0.5 ms a frame together, and the main fiber itself spends the rest and
+  writes all 1.4 MB of D3D commands. A thread now samples the main thread's guest call chain 2000 times a second and
+  counts the paths below the main loop (sub_824F41E0), logged every 1800 frames ("[SAMP]").
+
 ## 0.3.136 (2026-11-15)
 
 corysyx rollback research build (otherwise the same as 0.3.135).
