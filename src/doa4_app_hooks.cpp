@@ -383,6 +383,7 @@ void RecreateHostFiber(GuestFiber* fs) {
   fs->park_valid = false;
   fs->running = false;
   fs->restore_pending = false;
+  fs->stack_top = 0;
   fs->park_seq = ++g_park_seq;
   fs->dispatched = false;
   ++fs->generation;
@@ -463,7 +464,9 @@ __declspec(noinline) void ParkAndSwitch(GuestFiber* self, GuestFiber* dst) {
     SwitchToFiber(dst->host_fiber);
     return;
   }
-  if (!self->stack_top) self->stack_top = reinterpret_cast<uintptr_t>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
+  // every park: FIX 7 gives a fiber a new host fiber, and with it another stack (0.3.132 read it once, and the
+  // first save then copied from the new stack up to the old one's top, across unmapped memory)
+  self->stack_top = reinterpret_cast<uintptr_t>(reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
   self->park_seq = ++g_park_seq;
   RtlCaptureContext(&self->park_ctx);
   // A load's FiberRestoreJump returns here a second time, on the stack as it was at this park.
@@ -685,6 +688,7 @@ extern "C" void doa4_fibers_load(uint32_t* out) {
       g_fiber_graveyard.erase(g);
       DeleteFiber(f->host_fiber);  // the one made since the save: parked or never run
       f->host_fiber = sn.host_fiber;
+      f->stack_top = sn.low + sn.image.size();
       host_back = true;
       ++remade;
     }

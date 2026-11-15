@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.133 (2026-11-15)
+
+corysyx rollback research build (otherwise the same as 0.3.132).
+
+- SnapTest: fixed 0.3.132's crash at the first save (round 32: all three runs, at frame 3600 and 3700). A fiber's
+  host stack top was read once, but FIX 7 gives a fiber a new host fiber on another stack, so the save copied from
+  the new stack up to the old one's top, across unmapped memory. The top is now read at every park. Normal play was
+  not affected (nothing is copied without a snapshot).
+
 ## 0.3.132 (2026-11-14)
 
 corysyx rollback research build (otherwise the same as 0.3.131).
