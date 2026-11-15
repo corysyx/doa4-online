@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.135 (2026-11-15)
+
+corysyx rollback research build (otherwise the same as 0.3.134).
+
+- SnapTest: timing. Rounds 34 and 35 ran without a crash and every rewind started identical; a save takes about
+  57 ms and a load about 50 ms in the harness, against a 16.7 ms frame. Each save and load now logs where its time
+  goes, step by step ("save timing", "load timing"), and a save also times the bare work a rollback's save would
+  do ("save bench": the copy into a buffer that is already there, a page-by-page compare, a buffer-to-buffer
+  copy, and building the list of committed runs).
+
 ## 0.3.134 (2026-11-15)
 
 corysyx rollback research build (otherwise the same as 0.3.133).

@@ -1224,12 +1224,21 @@ void FindRunningThreads(Snap& s, uint8_t* base) {
 void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   FindDevice(s, base);
   const double gpu_ms = s.fence_rewind ? WaitGpu(s, base, 100) : 0;
+  // 0.3.135: where a save's time goes (the harness's 57 ms is not what a rollback's save has to cost)
+  std::string tm;
+  auto lap = std::chrono::steady_clock::now();
+  const auto Lap = [&](const char* what) {
+    tm += fmt::format("{}{} {:.2f}", tm.empty() ? "" : ", ", what, MsSince(lap));
+    lap = std::chrono::steady_clock::now();
+  };
   HoldOthers(s, "save");
+  Lap("hold the other threads");
   const auto t0 = std::chrono::steady_clock::now();
   AddLive(&s.live, s.live_new);
   s.live_new.clear();
   FindRunningThreads(s, base);
   BuildKeeps(s);
+  Lap("running threads and keeps");
   uint32_t pages = 0;
   if (s.full) {
     // every committed, writable page of the areas (at most 768 MB), whether the game's code wrote it or not
@@ -1253,7 +1262,9 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
       pages += s.saved[p];
     }
   }
+  Lap("page list");
   const size_t bytes = Capture(base, s.saved, &s.chunks, &s.buf);
+  Lap("copy");
   // physical memory the game's code wrote: not in the snapshot (the GPU reads and writes it), copied to report
   std::memset(s.phys_map, 0, sizeof s.phys_map);
   // 0xA0000000-0xFFFFFFFF: round 19 found the 0xE0000000 heap left out (0.3.122 and before)
@@ -1263,6 +1274,41 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                   double(phys_bytes) / (1024.0 * 1024.0), s.phys_chunks.size(),
                   s.phys_restore ? " (and put back: DOA4_NP_SNAPTEST_PHYS=restore)" : ""));
   const double copy_ms = MsSince(t0);
+  Lap("physical copy");
+  std::string bench;
+  {
+    // the same bytes again into a buffer that is already there, compared with it, and copied out of it: what the
+    // copy, a search for changed pages and a restore cost without the list building and without new memory
+    static std::vector<uint8_t> b1, b2;
+    if (b1.size() < bytes) b1.resize(bytes);
+    if (b2.size() < bytes) b2.resize(bytes);
+    auto bt = std::chrono::steady_clock::now();
+    for (const Chunk& c : s.chunks) std::memcpy(b1.data() + c.off, base + c.addr + HostOff(c.addr), c.len);
+    const double cold = MsSince(bt);
+    bt = std::chrono::steady_clock::now();
+    for (const Chunk& c : s.chunks) std::memcpy(b1.data() + c.off, base + c.addr + HostOff(c.addr), c.len);
+    const double warm = MsSince(bt);
+    bt = std::chrono::steady_clock::now();
+    size_t diff_pages = 0;
+    for (const Chunk& c : s.chunks) {
+      for (uint32_t o = 0; o < c.len; o += kPage) {
+        diff_pages += std::memcmp(b1.data() + c.off + o, base + c.addr + HostOff(c.addr) + o, std::min<uint32_t>(kPage, c.len - o)) != 0;
+      }
+    }
+    const double cmp = MsSince(bt);
+    bt = std::chrono::steady_clock::now();
+    std::memcpy(b2.data(), b1.data(), bytes);
+    const double back = MsSince(bt);
+    bt = std::chrono::steady_clock::now();
+    size_t n_chunks = 0;
+    for (const Range& r : Runs(s.saved, kPages)) {
+      ForCommitted(base, r.first_page << kPageShift, r.pages << kPageShift, [&](uint32_t, uint32_t) { ++n_chunks; });
+    }
+    const double list = MsSince(bt);
+    bench = fmt::format("copy {:.2f} then {:.2f}, compare by page {:.2f} ({} pages differ), buffer to buffer {:.2f}, "
+                        "list of {} committed runs {:.2f}", cold, warm, cmp, diff_pages, back, n_chunks, list);
+    lap = std::chrono::steady_clock::now();
+  }
   // memory that changes while the game stands at the boundary: written by the GPU or by threads that run on (kept)
   Sleep(kSettleMs);
   const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
@@ -1272,15 +1318,21 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     Out(fmt::format("{} words changed by themselves in {} ms at the save (kept from now on): {}", moved.size(),
                     kSettleMs, WordsText(base, moved, s.chunks, s.buf, 16)));
   }
+  lap = std::chrono::steady_clock::now();
   if (s.dev) s.dev_save.assign(base + s.dev, base + s.dev_end);
   const Fence fence = ReadFence(s, base);
   s.fence_at_save = fence.issued;
   const uint32_t clocks = np::det::SaveClocks();
   np::det::SaveAudio();
+  Lap("device, clocks, audio");
   s.xma_saved = s.xma_rewind && SaveXma(base);
+  Lap("XMA");
   s.kobj_save = KernelObjects();
+  Lap("kernel objects");
   SaveStacks(s, base);
+  Lap("thread stacks");
   SaveFiberStacks(s, base);
+  Lap("fiber stacks");
   std::memset(s.test, 0, sizeof s.test);
   s.fib_save = Fibers();
   if (s.fibers_fix) {
@@ -1292,7 +1344,9 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                       "running", fo[0], fo[1], fo[2] / 1024, fo[3]));
     }
   }
+  Lap("host fibers");
   s.h1.assign(1, Hash(s, base));
+  Lap("hash");
   s.h2.clear();
   s.inputs.clear();
   Census c = Count(s.saved, kPages);
@@ -1308,8 +1362,13 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
                   !s.fence_rewind  ? std::string()
                   : gpu_ms < 0     ? std::string("; the GPU was still busy after 100 ms")
                                    : fmt::format("; waited {:.1f} ms for the GPU", gpu_ms)));
+  lap = std::chrono::steady_clock::now();
   SaveHeaps(s);
+  Lap("heap page tables");
   ReleaseOthers(s);
+  Lap("release the threads");
+  Out("save timing (ms): " + tm);
+  Out("save bench (ms): " + bench);
   if (s.tests_done + 1 == g_watch_test) WatchArm(1, base);
 }
 
@@ -1329,8 +1388,16 @@ void EndFirstPass(Snap& s, uint8_t* base) {
 
 void Load(Snap& s, uint8_t* base) {
   if (s.tests_done + 1 == g_watch_test) WatchArm(2, base);
+  std::string tm;
+  auto lap = std::chrono::steady_clock::now();
+  const auto Lap = [&](const char* what) {
+    tm += fmt::format("{}{} {:.2f}", tm.empty() ? "" : ", ", what, MsSince(lap));
+    lap = std::chrono::steady_clock::now();
+  };
   HoldOthers(s, "load");
+  Lap("hold the other threads");
   LoadHeaps(s);
+  Lap("heap page tables");
   // the fibers: a fiber parked somewhere else than at the save resumes its host stack where it is now, with the
   // guest state of the save (rb_snap.h)
   s.fib_end1 = Fibers();
@@ -1414,6 +1481,7 @@ void Load(Snap& s, uint8_t* base) {
     }
   }
   const auto t0 = std::chrono::steady_clock::now();
+  lap = t0;
   const Fence fence_before = ReadFence(s, base);  // the device's counter before the restore (restore mode puts it back)
   // the kept bytes as they are now
   std::vector<uint8_t> kept;
@@ -1428,6 +1496,7 @@ void Load(Snap& s, uint8_t* base) {
     restored += done;
     skipped += c.len - done;
   }
+  Lap("copy back");
   size_t off = 0;
   for (const Keep& k : s.keeps) {
     std::memcpy(base + k.lo, kept.data() + off, k.hi - k.lo);
@@ -1449,6 +1518,7 @@ void Load(Snap& s, uint8_t* base) {
                              gpu_ms < 0 ? ", still busy after 100 ms" : fmt::format(" after {:.1f} ms", gpu_ms),
                              s.fence_at_save);
   }
+  Lap("keeps, device, fence");
   size_t cmd_skipped = 0;
   if (s.phys_restore) {
     for (const Chunk& c : s.phys_chunks) {
@@ -1480,9 +1550,13 @@ void Load(Snap& s, uint8_t* base) {
   const int64_t audio_back = s.audio_rewind ? np::det::RestoreAudio() : -2;
   const int xma_back = s.xma_saved ? RestoreXma(base) : -2;
   const double ms = MsSince(t0);
+  Lap("physical, registers, clocks, XMA and the rest");
   RepairStashes(s, base);
+  Lap("stashes");
   LoadStacks(s, base);
   LoadFiberStacks(s, base);
+  Lap("stacks");
+  Out("load timing (ms): " + tm);
   Sleep(kSettleMs);
   const std::vector<uint32_t> moved = ChangedWords(s, base, s.chunks, s.buf, true);
   if (s.phys_restore) {
