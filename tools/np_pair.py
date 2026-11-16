@@ -1067,6 +1067,9 @@ class Pair:
         for s in self.sides:
             after = hash_saves(s.ud)
             total += len(s.saves_before)
+            if not s.saves_before and a.allow_empty_save:  # D3: an empty test profile, nothing to compare
+                self.notes.append(f"the {s.name} copy: no save before the run: {', '.join(sorted(after)) or 'none'}")
+                continue
             if not s.saves_before:
                 self.problems.append(f"the {s.name} copy has no files under ud/{SAVE_DIR}: the unchanged-save check would be vacuous")
             changed = sorted(k for k in set(after) | set(s.saves_before) if after.get(k) != s.saves_before.get(k))
@@ -1120,6 +1123,9 @@ def main(argv=None):
     ap.add_argument("--orphan-watch", type=float, default=10, help="seconds pids.txt must stay unchanged after the last kill")
     ap.add_argument("--show-host", action="store_true",
                     help="start the host with the window state it asks for (a measurement of presentation); the joiner stays hidden")
+    ap.add_argument("--allow-empty-save", action="store_true",
+                    help="a copy with no save files is reported as 'no save before the run: <files after, or none>' instead of "
+                         "refused as vacuous (an empty test profile); every copy that had a save keeps the unchanged-save check")
     a = ap.parse_args(argv)
     if a.kill_joiner_at_frame is not None and a.quit_joiner_at_frame is not None:
         sys.exit("--kill-joiner-at-frame and --quit-joiner-at-frame exclude each other")

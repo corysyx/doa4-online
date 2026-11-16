@@ -2566,6 +2566,22 @@ def test_pair_saves(root):
                         "--runs", runs, "--exe", FAKE_EXE, "--end-grace", "1", "--step-timeout", "30", "--timeout", "60"],
                        capture_output=True, text=True, env=stand_in_env(), timeout=240)
     check(p.returncode == 1 and "vacuous" in p.stdout, f"np_pair, no save files to hash: exit {p.returncode}\n{p.stdout}{p.stderr}")
+    check("no save before the run" not in p.stdout, f"np_pair, no save files, without --allow-empty-save: no empty-save note\n{p.stdout}")
+    # --allow-empty-save (D3): the same empty pristine passes and says so, once per copy
+    runs = os.path.join(root, "earuns")
+    p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_pair.py"), "eva", "--script", pair_script(root), "--userdata", empty,
+                        "--runs", runs, "--exe", FAKE_EXE, "--end-grace", "1", "--step-timeout", "30", "--timeout", "60",
+                        "--allow-empty-save"],
+                       capture_output=True, text=True, env=stand_in_env(), timeout=240)
+    check(p.returncode == 0 and "verdict ok" in p.stdout, f"np_pair --allow-empty-save, no save files: exit {p.returncode}\n{p.stdout}{p.stderr}")
+    check("vacuous" not in p.stdout, f"np_pair --allow-empty-save: not refused as vacuous\n{p.stdout}")
+    check("note: the host copy: no save before the run: none" in p.stdout and "note: the joiner copy: no save before the run: none" in p.stdout,
+          f"np_pair --allow-empty-save: each empty copy is reported\n{p.stdout}")
+    # a copy that had a save keeps the check with the flag: its changed save still fails the pair
+    code, out, runs = np_pair(root, "sva", "--allow-empty-save", "--env-joiner", "FAKE_ONLINE_WRITE_SAVE=1")
+    check(code == 1 and "joiner copy's real save changed" in out and "save0.bin" in out,
+          f"np_pair --allow-empty-save, a session wrote a non-empty copy's real save: exit {code}\n{out}")
+    check("no save before the run" not in out, f"np_pair --allow-empty-save, copies with saves: no empty-save note\n{out}")
 
 
 def test_pair_own_processes(root):
