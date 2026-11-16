@@ -89,6 +89,7 @@
 #include "net/np_restart.h"
 #include "net/np_rules.h"
 #include "net/np_session.h"
+#include "net/np_start_rules.h"
 #include "net/np_transport.h"
 #include "net/np_upnp.h"
 
@@ -344,6 +345,14 @@ class DeadOrAlive4App : public rex::ReXApp {
         fmt::format("[doa4][NET] session user data: {} (save from the host: {} files, {} bytes), cache {}",
                     doa4::Utf8Generic(session), session_->files.size(), bytes, doa4::Utf8Generic(paths->cache_root));
     doa4::np::EarlyLog(line);
+    // Starting rules (ruling S14 d): decided once, here, before any guest code, from the hand-off's files, which both
+    // sides hold byte-equal (the host packed them, the joiner unpacked the same bytes): a save that already holds the
+    // rules (the host's lobby edited its packed copy, np_start_rules.h ApplyToSaveFiles) gets no in-memory write.
+    const bool armed = !doa4::np::start_rules::RulesHeld(session_->files);
+    doa4::np::start_rules::ArmMemoryWrite(armed);
+    doa4::np::EarlyLog(armed ? "[doa4][NET] start rules: the session's save does not hold them (no profile record, or one "
+                               "too short): written in memory at the first match-rule load"
+                             : "[doa4][NET] start rules: the session's save holds them: no in-memory write");
   }
 
   const std::filesystem::path& UserData() const {
@@ -887,7 +896,18 @@ class DeadOrAlive4App : public rex::ReXApp {
           [](const std::string& name) { return rex::cvar::Query<std::string>(name); });
     };
     const std::filesystem::path real = user_data_;
-    p.save_files = [real](std::string* error) { return SaveFilesOf(real, error); };
+    // Starting rules (np_start_rules.h): the hand-off carries the save with the three match options set, in this packed
+    // copy only (the files on disk are never written). A record too short to edit goes unedited (logged); the session
+    // then writes the rules in memory instead.
+    p.save_files = [real](std::string* error) {
+      std::vector<doa4::np::handoff::File> files = SaveFilesOf(real, error);
+      if (error->empty()) {
+        if (const std::string e = doa4::np::start_rules::ApplyToSaveFiles(&files); !e.empty()) {
+          REXLOG_WARN("[doa4][NET] start rules: {}; the session writes them in memory instead", e);
+        }
+      }
+      return files;
+    };
     p.suits = suits_checksum_;  // set in SetUpSuits, before any lobby of a process that is not a session (a session sends none)
     p.handoff_path = restart::HandoffPath(user_data_);
     p.restart_into_session = [this] {
