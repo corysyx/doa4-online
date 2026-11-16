@@ -227,6 +227,33 @@ static void TestLine() {
   CHECK(start_rules::MatchRulesLine(true, 65535, 0, 255) == "match rules: mode tag life 65535 rounds 0 time 255");
 }
 
+static void TestReplayKey() {
+  Group("replay_key");  // fix round 1: the online meta carries the armed state, a replay arms from it
+  CHECK(start_rules::MetaLine(true) == "start_rules=armed\n");
+  CHECK(start_rules::MetaLine(false) == "start_rules=held\n");
+  CHECK(start_rules::ArmedFromMeta("armed"));
+  CHECK(!start_rules::ArmedFromMeta("held"));
+  // a recording without the key (np_core MetaValue gives "(none)") is NOT armed: every older recording
+  CHECK(!start_rules::ArmedFromMeta("(none)"));
+  CHECK(!start_rules::ArmedFromMeta(""));
+  CHECK(!start_rules::ArmedFromMeta("Armed"));
+  CHECK(!start_rules::ArmedFromMeta("armed "));
+  CHECK(!start_rules::ArmedFromMeta("armedx"));
+  // the round trip: the value after "start_rules=" in the line, without its newline
+  CHECK(start_rules::ArmedFromMeta(start_rules::MetaLine(true).substr(12, 5)));
+  CHECK(std::string(start_rules::kMetaKey) == "start_rules");
+}
+
+static void TestMayWrite() {
+  Group("may_write");  // live or replay, and armed; never a record run, never unarmed
+  CHECK(start_rules::MayWrite(true, false, true));
+  CHECK(start_rules::MayWrite(false, true, true));
+  CHECK(!start_rules::MayWrite(true, false, false));
+  CHECK(!start_rules::MayWrite(false, true, false));
+  CHECK(!start_rules::MayWrite(false, false, true));  // a harness record run (Active, neither Online nor Replaying)
+  CHECK(!start_rules::MayWrite(false, false, false));
+}
+
 int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i)
     if (std::strcmp(argv[i], "-v") == 0) g_verbose = true;
@@ -235,6 +262,8 @@ int main(int argc, char** argv) {
   TestMemoryWrite();
   TestGuestAddresses();
   TestLine();
+  TestReplayKey();
+  TestMayWrite();
   std::printf("%s: %d checks, %d failures\n", g_failures ? "FAILED" : "PASSED", g_checks, g_failures);
   return g_failures ? 1 : 0;
 }

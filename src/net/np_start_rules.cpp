@@ -56,4 +56,10 @@ std::string MatchRulesLine(bool tag, uint16_t life, uint8_t rounds, uint8_t time
          " rounds " + std::to_string(unsigned(rounds)) + " time " + std::to_string(unsigned(time));
 }
 
+std::string MetaLine(bool armed) { return std::string(kMetaKey) + (armed ? "=armed\n" : "=held\n"); }
+
+bool ArmedFromMeta(std::string_view value) { return value == "armed"; }
+
+bool MayWrite(bool online, bool replaying, bool armed) { return (online || replaying) && armed; }
+
 }  // namespace doa4::np::start_rules

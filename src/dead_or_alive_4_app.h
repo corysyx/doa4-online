@@ -350,8 +350,9 @@ class DeadOrAlive4App : public rex::ReXApp {
     // rules (the host's lobby edited its packed copy, np_start_rules.h ApplyToSaveFiles) gets no in-memory write.
     const bool armed = !doa4::np::start_rules::RulesHeld(session_->files);
     doa4::np::start_rules::ArmMemoryWrite(armed);
-    doa4::np::EarlyLog(armed ? "[doa4][NET] start rules: the session's save does not hold them (no profile record, or one "
-                               "too short): written in memory at the first match-rule load"
+    doa4::np::EarlyLog(armed ? "[doa4][NET] start rules: the session's save does not hold them (no profile record, one "
+                               "too short, or one whose option bytes are not at the targets): written in memory at the "
+                               "first match-rule load"
                              : "[doa4][NET] start rules: the session's save holds them: no in-memory write");
   }
 

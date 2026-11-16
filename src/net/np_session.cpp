@@ -54,6 +54,7 @@
 #include "../doa4_unlocks.h"
 #include "../doa4_update_notice.h"
 #include "np_core.h"
+#include "np_start_rules.h"
 #include "np_det.h"
 #include "np_det_internal.h"
 #include "np_exec.h"
@@ -1566,7 +1567,8 @@ void StartOnline(Host host) {
       s.ho.suit_state == rules::SuitSession::kNone ? "" : "suits=" + std::string(rules::SuitSessionName(s.ho.suit_state)) + "\n";
   const std::string extra = "guest=" + s.guest_meta + "\nunlock=1\nguest_skipped=" +
                             (g_skipped.empty() ? std::string("none") : g_skipped) + "\nsession=online role=" +
-                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta;
+                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta +
+                            start_rules::MetaLine(start_rules::MemoryWriteArmed());  // fix round 1: a replay arms from it
   const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
   s.rec = _wfopen((s.dir / "rec.d4r").wstring().c_str(), L"wb");
   const std::string head = EncodeRecHeader(s.seed, 0, meta);
@@ -1716,6 +1718,16 @@ void PrepareReplayRules() {
     s.unlock = unlock == "1";
     EarlyLog("replay: the recording's unlock=" + unlock + (s.unlock ? " (the frame hook unlocks everything)" : ""));
   }
+  // Starting rules (fix round 1): a live armed session wrote the rules in memory; its replay starts from ud_start, the
+  // unedited save, so it arms from the recording's key and makes the same write. No key: not armed (a recording made
+  // before the key existed; only the unreleased sf2-5a made armed recordings without it).
+  const std::string rules = MetaValue(rec.meta, start_rules::kMetaKey);
+  const bool armed = start_rules::ArmedFromMeta(rules);
+  start_rules::ArmMemoryWrite(armed);
+  EarlyLog(rules == "(none)"
+               ? std::string("replay: start rules: the recording has no start_rules key: no in-memory write")
+               : "replay: start rules: the recording's start_rules=" + rules +
+                     (armed ? ": written in memory at the first match-rule load" : ": no in-memory write"));
 }
 
 bool Online() { return S().mode == Mode::kOnline; }

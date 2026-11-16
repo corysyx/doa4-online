@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "np_handoff.h"
@@ -71,8 +72,24 @@ bool WriteToRecord(std::span<uint8_t> record);
 // The match-rules log line (ruling S15), decimal: "match rules: mode <single|tag> life <v> rounds <v> time <v>".
 std::string MatchRulesLine(bool tag, uint16_t life, uint8_t rounds, uint8_t time);
 
+// The replay key (fix round 1): a live session's recording carries its armed state in the meta, so that an offline
+// replay of an armed session makes the same write at the same load (the replay starts from ud_start, the session's
+// UNEDITED save, and would otherwise leave the recording's course). The meta line is "start_rules=armed\n" or
+// "start_rules=held\n". ArmedFromMeta takes the key's value (np_core MetaValue: "(none)" without the key) and is true
+// only for "armed": a recording without the key is not armed (every recording made before the key existed had no
+// starting rules at all).
+inline constexpr char kMetaKey[] = "start_rules";
+std::string MetaLine(bool armed);
+bool ArmedFromMeta(std::string_view value);
+
+// Whether the match-rule load may make the in-memory write: a live session or a harness replay, and armed. A harness
+// record run is never armed and never writes.
+bool MayWrite(bool online, bool replaying, bool armed);
+
 // Game build only (doa4_start_rules_hooks.cpp): whether this session process writes the rules in memory at its first
-// match-rule load. Called once, when the session's save folder has been written, with !RulesHeld(session files).
+// match-rule load. Called once, before any guest code: in a live session when the session's save folder has been
+// written, with !RulesHeld(session files); in a replay from the recording's meta (ArmedFromMeta).
 void ArmMemoryWrite(bool armed);
+bool MemoryWriteArmed();
 
 }  // namespace doa4::np::start_rules
