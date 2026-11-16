@@ -543,8 +543,92 @@ bool WatchStackReadable(const uint8_t* p, size_t n) {
 
 extern "C" unsigned char doa4_wwatch[1u << 20];
 
+// The store census (0.3.139, DOA4_NP_SNAPTEST_CENSUS=<frame>): for 4 frames every page is marked in doa4_wwatch, and
+// each store is counted by the thread that made it - which pages, from which functions. Round 40: of the 8.8 ms a
+// fight frame's job workers take one at a time, one worker (thread start 82370638) takes 6 ms and another
+// (8234A160) 1.3 ms; a replayed frame can leave a job out only if what it writes is not the game's state.
+namespace doa4::rb {
+namespace {
+struct CensusT {
+  uint32_t tid = 0;
+  uint64_t stores = 0;
+  std::vector<uint64_t> bits = std::vector<uint64_t>(1u << 14);
+  std::unordered_map<const char*, uint64_t> fns;
+};
+std::mutex g_census_mu;
+std::vector<std::unique_ptr<CensusT>> g_census;
+std::atomic<bool> g_census_on{false};
+thread_local CensusT* t_census = nullptr;
+std::vector<uint8_t> g_census_keep;  // doa4_wwatch as it was
+
+void CensusHit(uint32_t addr, const char* fn) {
+  CensusT* c = t_census;
+  if (!c) {
+    auto* t = rex::system::XThread::GetCurrentThread();
+    std::lock_guard<std::mutex> lock(g_census_mu);
+    g_census.push_back(std::make_unique<CensusT>());
+    c = t_census = g_census.back().get();
+    c->tid = t ? t->thread_id() : 0;
+  }
+  ++c->stores;
+  c->bits[addr >> 18] |= 1ull << ((addr >> 12) & 63);
+  ++c->fns[fn];
+}
+
+void CensusReport(uint32_t frames) {
+  std::lock_guard<std::mutex> lock(g_census_mu);
+  std::sort(g_census.begin(), g_census.end(), [](const auto& a, const auto& b) { return a->stores > b->stores; });
+  Out(fmt::format("store census over {} frames: {} threads stored", frames, g_census.size()));
+  for (const auto& c : g_census) {
+    static const struct { uint32_t lo, hi; const char* name; } kAreas[] = {
+        {0x00000, 0x40000, "low heap"}, {0x40000, 0x70000, "heap 4"}, {0x70000, 0x80000, "stacks"},
+        {0x80000, 0xA0000, "XEX"},      {0xA0000, 0x100000, "physical"}};
+    std::string t;
+    for (const auto& a : kAreas) {
+      uint32_t pages = 0, runs = 0;
+      std::string list;
+      for (uint32_t p = a.lo; p < a.hi; ++p) {
+        if (!(c->bits[p >> 6] >> (p & 63) & 1)) continue;
+        uint32_t q = p;
+        while (q + 1 < a.hi && (c->bits[(q + 1) >> 6] >> ((q + 1) & 63) & 1)) ++q;
+        pages += q - p + 1;
+        if (++runs <= 14) list += fmt::format(" {:05X}+{}", p, q - p + 1);
+        p = q;
+      }
+      if (pages) t += fmt::format("; {} {} pages in {} runs:{}{}", a.name, pages, runs, list, runs > 14 ? " ..." : "");
+    }
+    std::vector<std::pair<const char*, uint64_t>> f(c->fns.begin(), c->fns.end());
+    std::sort(f.begin(), f.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::string top;
+    for (size_t i = 0; i < f.size() && i < 8; ++i) top += fmt::format(" {} {}", f[i].first, f[i].second / frames);
+    Out(fmt::format("  tid {}: {} stores a frame from {} functions{}; most from (a frame):{}", c->tid,
+                    c->stores / frames, f.size(), t, top));
+  }
+}
+
+void CensusStep(uint32_t frame) {
+  static const uint32_t at = [] {
+    const char* e = std::getenv("DOA4_NP_SNAPTEST_CENSUS");
+    return e && *e ? uint32_t(std::strtoul(e, nullptr, 10)) : 0u;
+  }();
+  constexpr uint32_t kFrames = 4;
+  if (!at) return;
+  if (frame == at) {
+    g_census_keep.assign(doa4_wwatch, doa4_wwatch + sizeof doa4_wwatch);
+    std::memset(doa4_wwatch, 1, sizeof doa4_wwatch);
+    g_census_on.store(true, std::memory_order_release);
+  } else if (frame == at + kFrames && g_census_on.load(std::memory_order_acquire)) {
+    g_census_on.store(false, std::memory_order_release);
+    std::memcpy(doa4_wwatch, g_census_keep.data(), sizeof doa4_wwatch);
+    CensusReport(kFrames);
+  }
+}
+}  // namespace
+}  // namespace doa4::rb
+
 extern "C" void doa4_wwatch_hit(unsigned int addr, unsigned int n, void* vctx, const char* fn) {
   using namespace doa4::rb;
+  if (g_census_on.load(std::memory_order_relaxed)) CensusHit(addr, fn);
   if (!g_watch_armed.load(std::memory_order_acquire)) return;
   const uint32_t end = addr + (n ? n : 128);  // a vector store or dcbz: up to a cache line
   bool in = false;
@@ -1930,6 +2014,7 @@ void LoadRegs(Snap& s, ::PPCContext* ctx) {
 
 SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCContext* ctx) {
   Snap& s = G();
+  CensusStep(frame);
   FoldMarks(s);
   SnapStep step;
   if (s.phase == 0 && s.tests_done < s.cfg.count && frame == s.next_at) {

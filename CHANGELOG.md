@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.139 (2026-11-16)
+
+corysyx rollback research build (otherwise the same as 0.3.138).
+
+- Rollback: a census of what each thread writes (`DOA4_NP_SNAPTEST_CENSUS=<frame>`). Round 40: of the 8.8 ms a
+  fight frame's job workers take one at a time, the first worker of the 82370638 pool takes about 6 ms, the first
+  of 8234A160 1.3 ms, two of 825689E8 0.5 ms each, and the other 21 next to nothing. Whether a replayed frame can
+  leave a job out depends on what it writes, so for 4 frames from the given frame every store is counted by
+  thread: the pages it wrote, by area (heaps, stacks, XEX data, physical memory), and the functions most of its
+  stores came from.
+
 ## 0.3.138 (2026-11-16)
 
 corysyx rollback research build (otherwise the same as 0.3.137).
