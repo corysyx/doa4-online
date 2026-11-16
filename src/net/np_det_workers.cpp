@@ -103,6 +103,13 @@ uint32_t Be32(const uint8_t* base, uint32_t a) {
 // thread's own update code.
 double g_main_wait_us = 0, g_main_wait_max_us = 0;  // this 600-frame window
 double g_join_us = 0, g_join_max_us = 0;            // the frame's join on the workers (any mode)
+// 0.3.138: each worker's own work in this 600-frame window (from its token to its signal, less its wait for the
+// mid event), by rank, and its thread's start function: which of the 25 jobs the 8.8 ms a fight frame goes to.
+double g_rank_us[32] = {};
+uint32_t g_rank_start[32] = {};
+thread_local std::chrono::steady_clock::time_point t_work_t0;
+thread_local bool t_working = false;
+thread_local double t_blocked_us = 0;
 
 // The main thread's wait for the workers in mode 3: 2 s, or DOA4_NP_MAIN_WAIT_MS (a positive
 // control for the gate: 0 makes every wait that is not already over a counted fallback).
@@ -165,6 +172,15 @@ void WorkersFrame() {
                         "update half, join avg {:.1f} us max {:.1f} us (600 frames)",
                         g_main_wait_us / 600, g_main_wait_max_us, g_join_us / 600, g_join_max_us));
     g_main_wait_us = g_main_wait_max_us = g_join_us = g_join_max_us = 0;
+    std::lock_guard lk(g_mu);
+    std::string t;
+    double sum = 0;
+    for (int r = 0; r < kWorkerCount && r < 32; ++r) {
+      sum += g_rank_us[r];
+      t += fmt::format(" {}:{:.0f}({:08X})", r, g_rank_us[r] / 600, g_rank_start[r]);
+      g_rank_us[r] = 0;
+    }
+    LogLine(fmt::format("job workers: their own work avg {:.1f} us a frame; by rank, us (thread start):{}", sum / 600, t));
   }
   std::lock_guard lk(g_mu);
   g_token = 0;
@@ -212,6 +228,12 @@ REX_HOOK_RAW(sub_827921C0) {
   if (mode >= 2 && t_rank >= 0) {
     std::lock_guard lk(g_mu);
     if (g_token == t_rank) {
+      if (t_working && t_rank < 32) {
+        const double us =
+            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t_work_t0).count();
+        g_rank_us[t_rank] += std::max(0.0, us - t_blocked_us);
+        t_working = false;
+      }
       ++g_token;  // end of this worker's work section: the next one may run
       g_cv.notify_all();
     }
@@ -246,6 +268,10 @@ REX_HOOK_RAW(sub_827921C0) {
         }
         g_token = rank;
       }
+      if (rank < 32) g_rank_start[rank] = ThreadStart();
+      t_work_t0 = std::chrono::steady_clock::now();
+      t_blocked_us = 0;
+      t_working = true;
     }
   }
 }
@@ -279,7 +305,9 @@ REX_HOOK_RAW(sub_82791190) {
     g_mid_waiter = t_rank;
   }
   g_cv.notify_all();
+  const auto w0 = std::chrono::steady_clock::now();
   __imp__sub_82791190(ctx, base);
+  t_blocked_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - w0).count();
   std::lock_guard lk(g_mu);
   if (g_mid_waiter == t_rank) g_mid_waiter = -1;
 }

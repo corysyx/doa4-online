@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.138 (2026-11-16)
+
+corysyx rollback research build (otherwise the same as 0.3.137).
+
+- Rollback: the job workers' time by worker. Round 39's sampling profile: of a fight frame's 16.7 ms the main
+  thread spends 8.0 ms waiting at 824F491C - for the 25 job workers, which a session runs one at a time for
+  determinism (the session log's own count: 8.8 ms a frame in a fight, 1.3 ms in the menus) - 4.1 ms waiting in
+  the swap, 1.4 ms in the frame hook and about 1.7 ms in its own update and draw code. So a replayed frame costs
+  what the workers cost. Each worker's own work (from its token to its signal, less its wait for the mid event)
+  is now summed by rank and logged every 600 frames with its thread's start function ("job workers: their own
+  work").
+
 ## 0.3.137 (2026-11-15)
 
 corysyx rollback research build (otherwise the same as 0.3.136).
