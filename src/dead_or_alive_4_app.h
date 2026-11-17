@@ -689,6 +689,18 @@ class DeadOrAlive4App : public rex::ReXApp {
     doa4::ReserveLowGuestMemory(runtime() ? runtime()->memory() : nullptr);
     SetUpExtras();  // before any guest code runs: the tweaks patch tables read at boot
     SetUpSnapshotWatcher();  // before the first guest swap, so the swap counts start together
+    // Kyoto in Bloom water (ou_runs/kyoto/REPORT.md): with asynchronous compilation the SDK skips a draw whose pipeline
+    // is not created yet but still carries out the resolve after it. The canal's ripple simulation feeds each frame from
+    // the last, so the one frame it meets its pipelines cold (the fall into the canal, fresh shader cache) copies
+    // leftover memory into it and the water stays flat and streaked for the rest of the fight. Compile before drawing
+    // instead: a short hitch the first time each new pipeline appears, until the shader cache holds it. Here, before
+    // StartNetplaySession and before any guest code runs: a session's host captures this value, and the value a joiner
+    // applies from the host's hand-off is the one that stays (OnPostSetup runs after this hook).
+    if (rex::cvar::SetFlagByName("async_shader_compilation", "false")) {
+      REXLOG_INFO("[doa4][GPU] async_shader_compilation=false (no skipped draws on a pipeline's first use)");
+    } else {
+      REXLOG_WARN("[doa4][GPU] failed to set async_shader_compilation cvar");
+    }
     StartNetplaySession();   // DOA4_NP only: record / replay / hash from the first frame
     // Skip the boot intro (doa4_intro_skip.h): the start-up value, before any guest code runs; a later change in the menu applies
     // at the next start. In a session the session's movie gate decides alone.
