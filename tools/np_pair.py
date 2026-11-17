@@ -77,7 +77,8 @@ SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)(?:, holders (\d+))?\s
 SESSION_GATE = re.compile(r"^fight gate open on (\d+) frames\s*$")  # np_session.cpp, at the session's end
 SESSION_RESYNC = re.compile(r"^scene generator made equal on (\d+) frames, its lock held on (\d+)\s*$")  # the same place, a mixed session
 # np_digest.h DigestRegions, pinned against the source by test_digest_regions_match_source; the two the hunting switch adds are left out.
-REGIONS_TODAY = ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr"]
+REGIONS_TODAY = ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr",
+                 "fight_state", "side0", "side1"]  # since lockstep port B4 (Ruling R57): the last three are the fight state and the records behind it
 REGIONS_MIXED = ["netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_83420020", "mt_8321B198", "frame_ctr", "cache_flag", "fight_state", "side0", "side1"]
 REGIONS_HUNT = ("stage_fx", "ctr_831A7AC0")
 SESSION_DIGESTS = (("costume tables", re.compile(r"session: costume tables digest ([0-9A-Fa-f]+) ")),  # dead_or_alive_4_app.h, game.log
@@ -804,7 +805,9 @@ class Pair:
 
     def gate_check(self, lines, host, joiner, state, ended_before_resync=False):
         """A mixed session's side records count only while the gate is open: one that never opened through a fight has checked no fighter
-        and looks clean. Every expect comes through here. A copy that was ended hard wrote no terminal line, and so no gate line."""
+        and looks clean. Every expect comes through here. A copy that was ended hard wrote no terminal line, and so no gate line. Only a
+        mixed session is judged: since lockstep port B4 a session with no suits or the same import gates its side rows too, and nothing
+        here judges that its gate opened (a pair brief reads both logs' fight gate line for that)."""
         if state != "mixed":
             return
         for s in (host, joiner):

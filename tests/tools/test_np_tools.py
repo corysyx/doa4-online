@@ -3254,7 +3254,11 @@ def test_digest_regions_match_source(root):
     flat = lambda text: ["task_slots" if b else a for a, b in names(text)]
     check(flat(today) == mod.REGIONS_TODAY, f"np_pair.REGIONS_TODAY vs np_digest.h:\n{flat(today)}\n{mod.REGIONS_TODAY}")
     check(flat(mixed) == mod.REGIONS_MIXED, f"np_pair.REGIONS_MIXED vs np_digest.h:\n{flat(mixed)}\n{mod.REGIONS_MIXED}")
-    check(len(mod.REGIONS_TODAY) == 10 and len(mod.REGIONS_MIXED) == 12, f"region counts {len(mod.REGIONS_TODAY)} {len(mod.REGIONS_MIXED)}")
+    check(len(mod.REGIONS_TODAY) == 13 and len(mod.REGIONS_MIXED) == 12, f"region counts {len(mod.REGIONS_TODAY)} {len(mod.REGIONS_MIXED)}")
+    # lockstep port B4 (Ruling R57): the non-mixed list is the old 10 in the old order, then the three the mixed list also carries
+    check(mod.REGIONS_TODAY[:10] == ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020",
+                                     "mt_8321B198", "frame_ctr"] and mod.REGIONS_TODAY[10:] == ["fight_state", "side0", "side1"],
+          f"np_pair.REGIONS_TODAY's order: {mod.REGIONS_TODAY}")
 
 
 def test_pair_regions_state(root):
@@ -3265,7 +3269,8 @@ def test_pair_regions_state(root):
     check(code == 0, f"np_pair, mixed, the mixed list: exit {code}\n{out}")
     code, out, runs = np_pair(root, "rg2", *both("FAKE_ONLINE_SUITS", "same"), *dig())
     check(code == 0, f"np_pair, same, today's list: exit {code}\n{out}")
-    today = "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr"
+    old10 = "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr"
+    today = old10 + ",fight_state,side0,side1"  # lockstep port B4: the non-mixed list is the 10 and the fight state and the two records
     code, out, runs = np_pair(root, "rg3", *both("FAKE_ONLINE_SUITS", "mixed"), *both("FAKE_ONLINE_REGIONS", today), *dig())
     check(code == 1 and "in a session with swimsuits mixed, expected" in out, f"np_pair, mixed, today's list: exit {code}\n{out}")
     mixedlist = "netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_83420020,mt_8321B198,frame_ctr,cache_flag,fight_state,side0,side1"
@@ -3275,6 +3280,9 @@ def test_pair_regions_state(root):
     check(code == 0, f"np_pair, none, the hunting switch's two extra regions: exit {code}\n{out}")
     code, out, runs = np_pair(root, "rg6", *both("FAKE_ONLINE_SUITS", "none"), *both("FAKE_ONLINE_REGIONS", today.replace(",frame_ctr", "")))
     check(code == 1 and "in a session with swimsuits none" in out, f"np_pair, none, a region missing: exit {code}\n{out}")
+    for state in ("none", "same"):  # a build from before B4 hashed the 10: np_pair refuses that header now, in both non-mixed states
+        code, out, runs = np_pair(root, "rg7" + state, *both("FAKE_ONLINE_SUITS", state), *both("FAKE_ONLINE_REGIONS", old10), *dig())
+        check(code == 1 and f"in a session with swimsuits {state}, expected" in out, f"np_pair, {state}, the 10 regions of before B4: exit {code}\n{out}")
 
 
 def test_frame0_diff(root):
@@ -3566,7 +3574,7 @@ def test_pair_gate_open(root):
     check(code == 0 and "host fight gate: open on 0 frames" in out, f"np_pair, mixed, no fight, gate shut: exit {code}\n{out}")
     code, out, runs = np_pair(root, "gn2", *mixed, *side(("FIGHT_STATES", 2)), *shut)
     check(code == 0, f"np_pair, mixed, two state values, gate shut: exit {code}\n{out}")
-    # A session with no gated region is not judged
+    # A session that is not mixed is not judged here: gate_check returns for it (since lockstep port B4 its side rows are gated too)
     code, out, runs = np_pair(root, "gn3", *side(("SUITS", "same")), *tables, *side(("GATE_OPEN", 0)))
     check(code == 0 and "fight gate" not in out, f"np_pair, same, gate count 0: exit {code}\n{out}")
 

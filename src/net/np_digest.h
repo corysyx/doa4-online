@@ -1,7 +1,20 @@
 // src/net/np_digest.h - what the sync check hashes (no SDK, no Windows; host test: np_core_host_test.cpp TestMixedMasksOnlyWhenMixed).
 //
 // Every session frame the check folds two rows into one checksum: the digest (DigestRegions, hashed every frame) and the sweep (rolling
-// 64 KB blocks of .data, minus SweepRanges). A session with no suits, or with the same import on both PCs, hashes what v1.0.9 hashes.
+// 64 KB blocks of .data, minus SweepRanges). A session with no suits, or with the same import on both PCs, hashed what v1.0.9 hashes (10
+// regions) until lockstep port B4 (Ruling R57); since then it also hashes the fight state and the two fighter records behind its gate: 13
+// regions, the 10 first and in the old order. Every record and replay process takes this list too (np_session.cpp OpenHashFiles: kNone).
+// Three things follow:
+//  - a recording made by a build before this change hashed 10 regions, and np_compare.py refuses it against a new one ("the runs hashed
+//    different regions"): references are recorded again on the port build;
+//  - the online check of such a session hashes the same 13 (np_session.cpp HashRows), so its checksum is not an older build's. Two PCs on
+//    builds before and after this change never meet in one session: the build id hashes the exe and rexruntime.dll (np_session.cpp
+//    ComputeBuildId); the host refuses a joiner whose build id differs (np_rules.cpp:625, Judge: Refusal::kBuild), a joiner refuses a
+//    host's hand-off whose build differs (np_online.cpp:1201, OnBootMessage), and the session process starts offline on a hand-off of
+//    another build (dead_or_alive_4_app.h ReadHandoff);
+//  - a fighter's position, life and state are checked on every round frame in every session.
+// Why: the sweep reaches a fighter's record only one frame in 41 (block 83030000), so a divergence in it shorter than that passed. The
+// mixed list below is unchanged.
 //
 // A mixed session (one player has an import the other lacks or has differently, so each PC draws a fighter from its own files) runs no
 // sweep and hashes a positive list instead. Measured over 8 whole runs: what two such PCs differ in has no end, each new scenario added thousands of words, and Tag added 16 blocks inside its
@@ -87,6 +100,11 @@ inline std::vector<Region> DigestRegions(rules::SuitSession state) {
     r.push_back({"mt_83420020", 0x83420020, 2504, {}});
     r.push_back({"mt_8321B198", 0x8321B198, 2504, {}});
     r.push_back({"frame_ctr", 0x831013E4, 4, {}});
+    // Lockstep port B4 (Ruling R57): the same three rows the mixed list ends with, in the same form (the gate byte is hashed by fight_state,
+    // its own region, as np_core.h RegionCopy requires; tools/np_pair.py REGIONS_TODAY lists these 13 names).
+    r.push_back({"fight_state", kFightState, 1, {}});
+    r.push_back({"side0", 0x83033B40, 0x78, {}, kFightState, kFightRound});
+    r.push_back({"side1", 0x83033BDC, 0x78, {}, kFightState, kFightRound});
     return r;
   }
   // Each slot's fiber pointer (+8, sub_824F3340 stores CreateFiber's result): a heap address, moved by what the loads before it took. The

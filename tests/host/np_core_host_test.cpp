@@ -929,21 +929,27 @@ static void TestFieldRanges() {
   CHECK(head.size() == sizeof(want) && std::memcmp(head.data(), want, sizeof(want)) == 0);
 }
 
-// mixed_masks_only_when_mixed (Task 6, ruling 15): a session with no suits or with the same import hashes exactly what v1.0.9 hashes, sweep
-// included. A mixed one runs no sweep and hashes a positive list, written out here by hand from the ruling, not from the code: a list
-// that grew to match the code would pass whatever it held.
+// mixed_masks_only_when_mixed (Task 6, ruling 15; lockstep port B4, Ruling R57): a session with no suits or with the same import hashes
+// what v1.0.9 hashed, sweep included, and since B4 also the fight state and the two fighter records behind its gate: 13 regions, the old
+// 10 in the old order first. A mixed one runs no sweep and hashes a positive list, written out here by hand from the ruling, not from the
+// code: a list that grew to match the code would pass whatever it held.
 static void TestMixedMasksOnlyWhenMixed() {
   using rules::SuitSession;
   struct Row {
     const char* name;
     uint32_t address, length;
+    uint32_t gate_address = 0;
+    uint8_t gate_value = 0;
   };
   const Row today[] = {{"game_obj", 0x8320D110, 0x63B0}, {"netmatch", 0x830C1CB0, 0x38C0},  {"pad_entries", 0x831011E0, 5 * 44},
                        {"pad_mgr", 0x8357C2D8, 0xD60},   {"task_slots", 0x83100F28, 24 * 28}, {"mt_833F7600", 0x833F7600, 2504},
                        {"mt_8357B5C0", 0x8357B5C0, 2504}, {"mt_83420020", 0x83420020, 2504}, {"mt_8321B198", 0x8321B198, 2504},
-                       {"frame_ctr", 0x831013E4, 4}};
+                       {"frame_ctr", 0x831013E4, 4},      {"fight_state", 0x830ACF85, 1},
+                       {"side0", 0x83033B40, 0x78, 0x830ACF85, 2}, {"side1", 0x83033BDC, 0x78, 0x830ACF85, 2}};
   const size_t today_count = sizeof(today) / sizeof(today[0]);
-  // kNone, kSame: today's regions, today's masks (the 24 mftb profile words and nothing else), the sweep on with the six host-timing ranges.
+  // kNone, kSame: the old 10 regions and then the fight state and the two records (gated on the state: np_core.h RegionCopy), today's
+  // masks (the 24 mftb profile words and nothing else), the sweep on with the six host-timing ranges. The state itself has no gate: two
+  // peers who disagree on it must differ in its own region. r[4] below is still the task slots (the fifth row).
   for (const SuitSession state : {SuitSession::kNone, SuitSession::kSame}) {
     CHECK(SweepOn(state));
     const std::vector<Region> r = DigestRegions(state);
@@ -953,7 +959,8 @@ static void TestMixedMasksOnlyWhenMixed() {
       CHECK(std::string(r[i].name) == today[i].name);
       CHECK(r[i].address == today[i].address);
       CHECK(r[i].length == today[i].length);
-      CHECK(r[i].gate_address == 0);
+      CHECK(r[i].gate_address == today[i].gate_address);
+      CHECK(r[i].gate_value == today[i].gate_value);
       masks += r[i].masks.size();
       if (std::string(r[i].name) != "task_slots") CHECK(r[i].masks.empty());
     }
@@ -1174,11 +1181,96 @@ static void TestFightGate() {
   CHECK(a.size() == 0x78 && a[3] == round[3] && a[4] == 0 && a[5] == 0 && a[6] == round[6]);
 }
 
+// fight_gate_every_session (lockstep port B4, Ruling R57): the gate over the whole list of a session that is not mixed (every online
+// session with no suits or the same import, and every record and replay process: np_session.cpp OpenHashFiles takes kNone there). Two
+// images of guest 0x83000000..0x83600000, equal except in the two side records, are copied region by region with RegionCopy. The record
+// and state addresses are written here by hand (np_digest.h kFightState; the fighter table), not read from the list.
+static void TestFightGateEverySession() {
+  const std::vector<Region> list = DigestRegions(rules::SuitSession::kNone);
+  constexpr uint32_t kOrigin = 0x83000000, kSize = 0x600000;
+  constexpr uint32_t kState = 0x830ACF85 - kOrigin, kSide0 = 0x83033B40 - kOrigin, kSide1 = 0x83033BDC - kOrigin, kRecord = 0x78;
+  CHECK(list.size() == 13);  // the 13-row guard
+  // Every row (and its gate byte) lies inside the image: a later row outside it fails here instead of reading past the buffer.
+  bool inside = true;
+  for (const Region& r : list) {
+    const bool ok = r.address >= kOrigin && uint64_t(r.address) + r.length <= uint64_t(kOrigin) + kSize &&
+                    (r.gate_address == 0 || (r.gate_address >= kOrigin && r.gate_address < kOrigin + kSize));
+    CHECK(ok);
+    inside = inside && ok;
+  }
+  if (!inside) return;
+  std::vector<Region> moved = list;
+  for (Region& r : moved) {
+    r.address -= kOrigin;
+    if (r.gate_address) r.gate_address -= kOrigin;
+  }
+  const size_t n = moved.size();
+  const auto index = [&](const char* name) {
+    for (size_t i = 0; i < n; ++i)
+      if (std::string(moved[i].name) == name) return i;
+    return n;  // absent
+  };
+  const size_t fs = index("fight_state"), s0 = index("side0"), s1 = index("side1");
+  CHECK(fs < n && s0 < n && s1 < n);
+  // The two images: one pattern everywhere, and two different patterns in the two side records.
+  std::vector<uint8_t> a(kSize), b(kSize);
+  for (uint32_t i = 0; i < kSize; ++i) a[i] = b[i] = uint8_t((i * 131u) ^ (i >> 9) ^ 0x5A);
+  for (uint32_t i = 0; i < kRecord; ++i) {
+    a[kSide0 + i] = uint8_t(0x11 + i);
+    b[kSide0 + i] = uint8_t(0xEE - i);
+    a[kSide1 + i] = uint8_t(0x22 + i);
+    b[kSide1 + i] = uint8_t(0xDD - i);
+  }
+  CHECK(!std::equal(a.begin() + kSide0, a.begin() + kSide0 + kRecord, b.begin() + kSide0));  // the fixture: the records differ
+  // differs[i]: region i's copy differs between the images with the state bytes sa and sb written into them.
+  const auto differs = [&](uint8_t sa, uint8_t sb) {
+    a[kState] = sa;
+    b[kState] = sb;
+    std::vector<bool> d(n, false);
+    std::vector<uint8_t> ca, cb;
+    for (size_t i = 0; i < n; ++i) {
+      RegionCopy(moved[i], a.data(), &ca);
+      RegionCopy(moved[i], b.data(), &cb);
+      d[i] = ca != cb;
+    }
+    return d;
+  };
+  // States 0, 1 and 3: the gate is closed, every copy is equal. State 3 is what a gate written "state not 0" or "state at least 2" fails.
+  for (const uint8_t state : {uint8_t(0), uint8_t(1), uint8_t(3)}) {
+    const std::vector<bool> d = differs(state, state);
+    for (size_t i = 0; i < n; ++i) CHECK(!d[i]);  // closed: copy i equal (the count of rows is the 13-row guard's)
+  }
+  // State 2: the gate is open, side0 and side1 differ, and the other 11 copies are equal.
+  {
+    const std::vector<bool> d = differs(2, 2);
+    CHECK(s0 < n && d[s0]);  // open: side0 differs
+    CHECK(s1 < n && d[s1]);  // open: side1 differs
+    size_t equal = 0;
+    for (size_t i = 0; i < n; ++i) {
+      if (i == s0 || i == s1) continue;
+      CHECK(!d[i]);  // open: copy i (not a record) equal
+      ++equal;
+    }
+    CHECK(equal == 11);
+  }
+  // Two peers that disagree on the state: the state's own row differs (np_digest.h: the state always counts). 1 against 2 is a gate
+  // open on one side only; 1 against 3 is two closed gates, where only an ungated state row can see the disagreement.
+  {
+    const std::vector<bool> d = differs(1, 2);
+    CHECK(fs < n && d[fs]);  // disagreeing 1/2: fight_state differs
+  }
+  {
+    const std::vector<bool> d = differs(1, 3);
+    CHECK(fs < n && d[fs]);  // disagreeing 1/3: fight_state differs
+  }
+}
+
 int main() {
   TestMixedMasksOnlyWhenMixed();
   TestSceneResync();
   TestSceneResyncLock();
   TestFightGate();
+  TestFightGateEverySession();
   TestFieldRanges();
   TestMxcsrAndSwitches();
   TestPadBytes();

@@ -391,7 +391,7 @@ def lobby(ctl):
         time.sleep(0.1)
 
 
-REAL_REGIONS = {"none": "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr",
+REAL_REGIONS = {"none": "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr,fight_state,side0,side1",
                 "mixed": "netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_83420020,mt_8321B198,frame_ctr,cache_flag,fight_state,side0,side1"}
 REAL_REGIONS["same"] = REAL_REGIONS["none"]
 
