@@ -885,6 +885,9 @@ class DeadOrAlive4App : public rex::ReXApp {
       return doa4::np::handoff::CaptureGuestSettings(
           [](const std::string& name) { return rex::cvar::Query<std::string>(name); });
     };
+    // Lockstep port B3: the host's worker order text, read by the lobby once where it builds the hand-off (the form of the text keys
+    // read elsewhere in this file, e.g. doa4_photo_dir); a session process never asks for it.
+    p.worker_order = [] { return rex::cvar::Query<std::string>("netplay_worker_order"); };
     const std::filesystem::path real = user_data_;
     p.save_files = [real](std::string* error) { return SaveFilesOf(real, error); };
     p.suits = suits_checksum_;  // set in SetUpSuits, before any lobby of a process that is not a session (a session sends none)
@@ -1216,6 +1219,7 @@ class DeadOrAlive4App : public rex::ReXApp {
         case doa4::np::live::End::kDesync: ending = ov::Ending::kDesync; break;
         case doa4::np::live::End::kFrame0Timeout: ending = ov::Ending::kFrame0Timeout; break;
         case doa4::np::live::End::kInternal: ending = ov::Ending::kInternal; break;
+        case doa4::np::live::End::kWorkerOrder: ending = ov::Ending::kWorkerOrder; break;  // lockstep port B3
         case doa4::np::live::End::kNone: break;
       }
     }

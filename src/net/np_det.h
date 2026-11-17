@@ -25,6 +25,10 @@ void AllowFileTimes(bool allow);
 void SetWorkerInputs(bool online, bool handoff_serial, bool replay, const std::string& meta_workers);
 // The meta value of the decided order: "lanes", "serial" or "mode<n>" (lanes::MetaWorkers). Decides, if nothing has yet.
 std::string WorkersMeta();
+// The decided order as its mode number (0 to 4; lanes::DecideMode), whatever Stopped() says (unlike the layer's own Mode(), which
+// answers 0 once the layer is stopped). Decides, if nothing has yet. Lockstep port B3: the online session mixes it into the
+// checksum it hands the other PC (exec::WithWorkerMode), so two PCs that decided differently disagree at the first compared frame.
+int WorkersMode();
 // Called by Start when a session begins (before guest code runs).
 void Start(uint64_t seed, const std::filesystem::path& dir);
 // The frame hook's checks of worker mode 4 (P17: placement complete, no worker inside a section, the four section objects and their

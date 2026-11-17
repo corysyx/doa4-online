@@ -1127,6 +1127,12 @@ void Lobby::Impl::StartSessionNow(uint32_t now) {
   h.seed = ParseU64(Test("DOA4_NP_SEED"), &seed) ? seed : Random64();
   h.suit_state = rules::SuitSessionOf(p.suits, peer_suits);
   h.suit_holders = uint8_t((p.suits.empty() ? 0 : 1) | (peer_suits.empty() ? 0 : 2));  // the host is player 0
+  // Lockstep port B3 (design section 4): the host's netplay_worker_order, read once here; both session processes take the order
+  // from this byte, never from the key. Not lanes or serial: lanes, and one line (Log defers it until the lobby mutex is released).
+  const std::string order_text = p.worker_order ? p.worker_order() : std::string("lanes");
+  h.worker_order = handoff::WorkerOrderFromText(order_text);
+  if (order_text != "lanes" && order_text != "serial")
+    Log("[doa4][NET] netplay_worker_order '" + Sanitize(order_text, 64) + "' is not lanes or serial: lanes");
   h.guest_settings = guest;
   h.files = std::move(files);
   const std::vector<uint8_t> bytes = handoff::Pack(h);

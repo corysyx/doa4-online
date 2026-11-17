@@ -443,7 +443,7 @@ static void TestMessages() {
   ExpectRoundTrip<Ack>(ack, EncodeAck(ack), &DecodeAck);
   ExpectRoundTrip<Leave>(leave, EncodeLeave(leave), &DecodeLeave);
   ExpectRoundTrip<BootReply>(boot, EncodeBootReply(boot), &DecodeBootReply);
-  for (unsigned r = 0; r <= 3; ++r) {  // every leave reason, and the extremes of the frame
+  for (unsigned r = 0; r <= 4; ++r) {  // every leave reason (B3: 4, the worker order), and the extremes of the frame
     Leave l;
     l.reason = LeaveReason(r);
     l.frame = (r % 2) ? INT32_MIN : INT32_MAX;
@@ -563,7 +563,13 @@ static void TestMessages() {
     r.text = std::string(201, 't');
     CHECK(EncodeBootReply(r).empty());
     CHECK(EncodeWelcome(Welcome{Refusal(6), 1, "r", "t", 1}).empty());     // an unknown refusal is not sent
-    CHECK(EncodeLeave(Leave{LeaveReason(4), 1}).empty());                  // nor an unknown leave reason
+    CHECK(EncodeLeave(Leave{LeaveReason(5), 1}).empty());                  // nor an unknown leave reason (B3: 4 is known)
+    {  // B3: reason 4, the worker order, is sent and read back as 4
+      const Bytes four = EncodeLeave(Leave{LeaveReason::kWorkerOrder, 7});
+      CHECK(four == (Bytes{0x04, 0x07, 0x00, 0x00, 0x00}));
+      Leave back;
+      CHECK(DecodeLeave(S(four), &back) && back.reason == LeaveReason::kWorkerOrder && uint8_t(back.reason) == 4 && back.frame == 7);
+    }
     Chunk c;
     const Bytes max_payload(1200, 0x5A), over(1201, 0x5A);
     c.count = 1;
@@ -641,13 +647,13 @@ static void TestMessages() {
     Bld ok;
     ok.U8(5).U64(1).U16(0).U16(0).U32(0).U16(0);
     CHECK(DecodeWelcome(S(ok.b), &w) && w.refusal == Refusal::kSession);
-    Bld l;  // a Leave with reason 4 (the last known is 3)
-    l.U8(4).U32(0);
+    Bld l;  // a Leave with reason 5 (the last known is 4, B3's worker order)
+    l.U8(5).U32(0);
     Leave lv;
     CHECK(!DecodeLeave(S(l.b), &lv));
     Bld lok;
-    lok.U8(3).U32(0);
-    CHECK(DecodeLeave(S(lok.b), &lv) && lv.reason == LeaveReason::kInternal);
+    lok.U8(4).U32(0);
+    CHECK(DecodeLeave(S(lok.b), &lv) && lv.reason == LeaveReason::kWorkerOrder);
   }
 
   Group("msg.decode.prefix");  // each decoder refuses every strict prefix of a valid body, a trailing byte, and leaves *out alone

@@ -41,7 +41,9 @@ struct Clock {
   std::function<void(uint32_t us)> sleep_precise;     // the pacer's wait (a high-resolution waitable timer)
 };
 
-enum class End : uint8_t { kNone, kLeft, kPeerLeft, kLost, kDesync, kFrame0Timeout, kInternal };
+// kWorkerOrder (lockstep port B3, design section 6): worker mode 4 raised an end request (np_det.h EndRequested) and the session
+// ended at the frame hook before anything of that frame was hashed or handed over; never returned by Session::Frame.
+enum class End : uint8_t { kNone, kLeft, kPeerLeft, kLost, kDesync, kFrame0Timeout, kInternal, kWorkerOrder };
 
 struct Timing { uint64_t net_us = 0, wait_us = 0, pacer_us = 0; };  // this frame's buckets
 
@@ -62,6 +64,16 @@ struct FrameResult {
   uint32_t holds = 0;   // holds reported since the session began (this frame's included)
   uint64_t hold_us = 0; // this frame's reported hold, begin to end (0 if none)
 };
+
+// The session's end as np_session.cpp logs and sends it (moved here from np_session.cpp in lockstep port B3, bodies unchanged
+// but for the new end, so that a host test reaches them):
+// the end's name in the "session end: <EndText> (<why>)" line;
+const char* EndText(End e);
+// the terminal reason np_pair judges ("session ended at frame N: <reason>"): left | peer left | lost | frame 0 timeout |
+// desync at frame ... | internal: ... | worker order;
+std::string TerminalReason(const FrameResult& r, bool refused);
+// the reason of the Leave this side sends the other when it ends (np_session.cpp EndOnline).
+wire::LeaveReason LeaveReasonFor(End e);
 
 // A hold = the waiting inside one Frame call, from its first wait_packet; it is REPORTED (events, holds) once it
 // reaches hold_report_ms, with the begin time it really had. Deadlines are whole milliseconds since the hold
@@ -92,9 +104,10 @@ class Session {
   ~Session();  // Close()
 
   // The frame hook, main thread, AFTER det::OnFrame(f) (R1). `checksum_entering` = FoldChecksum of the state
-  // entering f; `local` = this side's pad for frame f + delay. Blocks until frame f's inputs are confirmed or the
-  // session ends. Every call that does not end at once runs at least one Update (session events are taken once per
-  // Update). Once an end is returned, every later call returns the same end without touching GekkoNet.
+  // entering f, mixed with the worker mode this process decided (exec::WithWorkerMode, lockstep port B3); `local` = this
+  // side's pad for frame f + delay. Blocks until frame f's inputs are confirmed or the session ends. Every call that
+  // does not end at once runs at least one Update (session events are taken once per Update). Once an end is returned,
+  // every later call returns the same end without touching GekkoNet.
   FrameResult Frame(int32_t f, uint32_t checksum_entering, const Pad& local);
   // This side leaves at that frame (UI or the script's quit); any thread. Repeated calls keep the EARLIEST frame. The
   // call that reaches it (or the next call, if it is already past) returns kLeft with end_frame = that frame.

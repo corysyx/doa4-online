@@ -112,6 +112,10 @@ struct Providers {
   std::string release;              // DOA4_RELEASE_TAG
   std::function<std::string()> files;           // np_files Text of the game folder (may block on first use)
   std::function<std::string()> guest_settings;  // handoff::CaptureGuestSettings over rex::cvar
+  // The host's netplay_worker_order text (rex::cvar), read once where the host builds the hand-off at Start
+  // (handoff::WorkerOrderFromText); an empty member counts as lanes and logs nothing. Called on the I/O thread with the lobby
+  // mutex held, so it may not call back into the lobby.
+  std::function<std::string()> worker_order;
   std::function<std::vector<handoff::File>(std::string* error)> save_files;  // the host's save under kSavePrefix
   std::string suits;                            // this side's import checksum (suits::ImportChecksum), "" without an import
   std::filesystem::path handoff_path;           // <user data>/netplay/handoff.d4h

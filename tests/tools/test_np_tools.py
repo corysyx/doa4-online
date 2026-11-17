@@ -2796,6 +2796,61 @@ def test_pair_quit(root):
     check(code == 1 and "needs --quit-joiner-at-frame" in out, f"np_pair, --expect quit without --quit-joiner-at-frame: exit {code}\n{out}")
 
 
+def test_pair_worker_order(root):
+    # Lockstep port B3 (Phase C row C10): one copy could not keep worker mode 4's order and ended `worker order`; the other ended
+    # `peer left` on its Leave with reason 4 and its np_log's `session end:` line ends "(worker order))"; both name the same terminal
+    # frame and both relaunch offline. Two shapes: an end after frame 0 and an end at frame 0 (nothing hashed, no frame-0 dump).
+    wo = ("--expect", "worker-order")
+    host_fails = ("--env-host", "FAKE_ONLINE_END=worker-order", "--env-joiner", "FAKE_ONLINE_END=peer-leave")
+    joiner_fails = ("--env-joiner", "FAKE_ONLINE_END=worker-order", "--env-host", "FAKE_ONLINE_END=peer-leave")
+    at0 = ("--env-host", "FAKE_ONLINE_QUIT_AT=0", "--env-joiner", "FAKE_ONLINE_QUIT_AT=0",
+           "--env-host", "FAKE_ONLINE_NO_DUMP=1", "--env-joiner", "FAKE_ONLINE_NO_DUMP=1")
+    code, out, runs = np_pair(root, "wo", *wo, *host_fails)
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order: the host could not keep the order: exit {code}\n{out}")
+    check("host ended 'worker order' at frame 10, joiner ended 'peer left' at frame 10" in out, f"np_pair, worker-order: the ends are named\n{out}")
+    code, out, runs = np_pair(root, "woj", *wo, *joiner_fails)
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order: the joiner could not keep the order: exit {code}\n{out}")
+    # the end at frame 0: no frame-0 dump, so the dump check is not applied, and the verdict lines say so
+    code, out, runs = np_pair(root, "wo0", *wo, *host_fails, *at0)
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order at frame 0: exit {code}\n{out}")
+    check("frame-0 dump check not applied" in out, f"np_pair, worker-order at frame 0: the unapplied check is named\n{out}")
+    # (control of that exemption: after frame 0 the dump check is a rule, so a missing frame-0 dump fails the pair)
+    code, out, runs = np_pair(root, "wod", *wo, *host_fails, "--env-host", "FAKE_ONLINE_NO_DUMP=1")
+    check(code == 1 and "wrote no frame-0 dump" in out, f"np_pair, worker-order after frame 0 without a frame-0 dump: exit {code}\n{out}")
+    # either side's reason `left` fails it
+    code, out, runs = np_pair(root, "wol", *wo, "--env-host", "FAKE_ONLINE_END=worker-order")
+    check(code == 1 and "the joiner copy ended 'left', expected 'peer left'" in out, f"np_pair, worker-order, the joiner left: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "wolh", *wo, "--env-joiner", "FAKE_ONLINE_END=peer-leave")
+    check(code == 1 and "0 copies ended 'worker order'" in out, f"np_pair, worker-order, the host left: exit {code}\n{out}")
+    # the other side's `session end:` line names another reason
+    code, out, runs = np_pair(root, "wor", *wo, *host_fails, "--env-joiner", "FAKE_ONLINE_PEER_REASON=timeout")
+    check(code == 1 and "does not end '(worker order))'" in out, f"np_pair, worker-order, the Leave's reason is another: exit {code}\n{out}")
+    # a mixed session: at frame 0 no scene generator line is written (no boundary ran), so the gate check is not applied; after
+    # frame 0 an end at the frame hook comes before that frame's resync, so the resync covers the frames before the terminal frame
+    mixed = ("--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=mixed") + tuple(
+        x for side in ("--env-host", "--env-joiner") for x in (side, "FAKE_ONLINE_TABLES=aa", side, "FAKE_ONLINE_LABELS=bb"))
+    code, out, runs = np_pair(root, "wom0", *wo, *host_fails, *at0, *mixed)
+    check(code == 0 and "fight gate check not applied" in out, f"np_pair, worker-order at frame 0, mixed: exit {code}\n{out}")
+    resync = lambda h, j: ("--env-host", f"FAKE_ONLINE_RESYNC_FRAMES={h}", "--env-joiner", f"FAKE_ONLINE_RESYNC_FRAMES={j}")  # noqa: E731
+    # the bound is one frame lower only for the copy that ended `worker order` (the host here); the `peer left` copy ended inside
+    # live->Frame, after its own resync of the terminal frame, and keeps terminal + 1
+    code, out, runs = np_pair(root, "wom", *wo, *host_fails, *mixed, *resync(10, 11))
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order at frame 10, mixed, resync 10 / 11: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "wom9", *wo, *host_fails, *mixed, *resync(9, 11))
+    check(code == 1 and "the host: the scene generator was made equal on 9" in out,
+          f"np_pair, worker-order, mixed, the worker-order copy's resync on 9 frames: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "womp", *wo, *host_fails, *mixed, *resync(10, 10))
+    check(code == 1 and "the joiner: the scene generator was made equal on 10" in out and "fewer than the 11 frames" in out,
+          f"np_pair, worker-order, mixed, the peer-left copy's resync on the terminal frame only: exit {code}\n{out}")
+    # (the rule follows the copy's own reason, not its role: with the joiner as the copy that ended `worker order`, joiner 10 / host 11 passes;
+    # a rule keyed on the host would ask 11 of the joiner)
+    code, out, runs = np_pair(root, "womj", *wo, *joiner_fails, *mixed, *resync(11, 10))
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order, mixed, the joiner failed, resync 11 / 10: exit {code}\n{out}")
+    # an online end request writes no WARN line, so a WARN in either copy is another fault
+    code, out, runs = np_pair(root, "wow", *wo, *host_fails, "--env-joiner", "FAKE_ONLINE_WARN=1")
+    check(code == 1 and "the joiner np_log holds a WARN line" in out, f"np_pair, worker-order, a WARN line in the joiner: exit {code}\n{out}")
+
+
 def test_pair_lost_s6(root):
     # Task 15 R-S6a/b (gate S6 on p1g): the real survivor's events.txt starts with the frame-0 hold (with its own banner); the
     # disconnect is judged on the LAST hold begin at or after the kill frame; a copy np_pair ended itself is not waited for

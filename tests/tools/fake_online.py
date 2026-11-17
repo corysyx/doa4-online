@@ -610,6 +610,19 @@ def session(ctl):
             f.write(dump)
     elif end == "lost":
         reason = "left"  # nobody went away: an ordinary end
+    elif end == "worker-order":
+        # lockstep port B3: worker mode 4's end request ended this copy's session at the frame hook. np_session.cpp EndOnline's line
+        # "session end: " + EndText(r.end) + " (" + r.why + ")" with np_live.cpp EndText(kWorkerOrder), then the terminal line with
+        # TerminalReason(kWorkerOrder)
+        reason = "worker order"
+        cause = os.environ.get("FAKE_ONLINE_WORKER_CAUSE", "a worker was inside a section at the frame hook")
+        log.write("session end: " + "the worker order could not be kept" + " (" + cause + ")\n")
+    elif end == "peer-leave":
+        # the other copy's Leave ended this one: np_live.cpp's why "the other player left at frame %d (%s)" (ReasonText of the Leave's
+        # reason; PEER_REASON names it, default worker order), in np_session.cpp EndOnline's "session end: " + EndText + " (" + why + ")"
+        why = "the other player left at frame %d (%s)" % (frame, os.environ.get("FAKE_ONLINE_PEER_REASON", "worker order"))
+        log.write("session end: " + "peer left" + " (" + why + ")\n")
+        reason = "peer left"
     write_digest(os.path.join(sess, "digest.d4d"), frame, diverge)
     fake_game.write_sweep(os.path.join(sess, "sweep.d4s"), frame)
     fake_game.write_counters(os.path.join(sess, "counters.d4k"), frame, os.environ.get("FAKE_ONLINE_FALLBACK") == "1", False)

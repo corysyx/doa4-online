@@ -481,6 +481,40 @@ static void TestFoldChecksum() {
   CHECK(exec::FoldChecksum(5, std::vector<uint64_t>{v ^ 1}, std::vector<uint64_t>{w}) != base);
 }
 
+// Lockstep port B3 (design section 4, P20): the decided worker mode mixed into the checksum a session hands GekkoNet. The literals
+// come from np_runs/lp/b/b3/wwm_literals.py (Python, without the C++: checksum XOR ((mode * 0x9E3779B9) mod 2^32)); its control
+// reproduces FoldChecksum(0, {}, {}) = 0xD0EB658A and FoldChecksum(5, {1,2}, {3}) = 0xD754E478 above.
+static void TestWithWorkerMode() {
+  Group("checksum with the worker mode");
+  const uint32_t c = exec::FoldChecksum(0, std::vector<uint64_t>{}, std::vector<uint64_t>{});
+  CHECK(c == 0xD0EB658Au);
+  const uint32_t want[5] = {0xD0EB658Au, 0x4EDC1C33u, 0xEC8596F8u, 0x0A4D08A1u, 0xA836836Eu};
+  uint32_t got[5] = {};
+  for (int m = 0; m < 5; ++m) {
+    got[m] = exec::WithWorkerMode(c, m);
+    CHECKF(got[m] == want[m], "mode %d: %08X, want %08X", m, got[m], want[m]);
+  }
+  // the property beside the literals: five different values, and modes 3 and 4 are never the checksum itself
+  bool distinct = true;
+  for (int i = 0; i < 5; ++i)
+    for (int j = i + 1; j < 5; ++j) distinct = distinct && got[i] != got[j];
+  CHECK(distinct);
+  CHECK(got[3] != c && got[4] != c);
+  // a second checksum: the same five, by value, and the same property
+  const uint32_t d = exec::FoldChecksum(5, std::vector<uint64_t>{1, 2}, std::vector<uint64_t>{3});
+  CHECK(d == 0xD754E478u);
+  const uint32_t want_d[5] = {0xD754E478u, 0x49639DC1u, 0xEB3A170Au, 0x0DF28953u, 0xAF89029Cu};
+  for (int m = 0; m < 5; ++m) CHECKF(exec::WithWorkerMode(d, m) == want_d[m], "second checksum, mode %d", m);
+  // two different checksums stay different under one mode (one-to-one for each mode)
+  for (int m = 0; m < 5; ++m) CHECKF(exec::WithWorkerMode(c, m) != exec::WithWorkerMode(d, m), "mode %d maps two checksums together", m);
+  CHECK(exec::WithWorkerMode(c, 4) != exec::WithWorkerMode(c ^ 1u, 4));
+  // the mode is all that changes between two PCs with one state: lanes against serial differ for every one of these checksums
+  for (const uint32_t x : {0u, 1u, 0xFFFFFFFFu, 0x80000000u, c, d}) {
+    CHECKF(exec::WithWorkerMode(x, 3) != exec::WithWorkerMode(x, 4), "%08X: modes 3 and 4 agree", x);
+    CHECKF(exec::WithWorkerMode(x, 3) != x && exec::WithWorkerMode(x, 4) != x, "%08X: mode 3 or 4 is the identity", x);
+  }
+}
+
 // ---- the wrapper without a peer ----
 static void TestWrapperLifecycle() {
   Group("wrapper, lifecycle");
@@ -1204,6 +1238,7 @@ int main(int argc, char** argv) {
   TestExecutorClamp();
   TestExecutorDropPending();
   TestFoldChecksum();
+  TestWithWorkerMode();
   TestWrapperLifecycle();
   TestWrapperDrainCap();
   TestRealClean();

@@ -197,6 +197,9 @@ struct State {
   // ---- online ----
   handoff::Handoff ho;
   int slot = 0;
+  // Lockstep port B3: the worker mode this process decided (det::WorkersMode, latched in StartOnline once CurrentMeta has decided),
+  // mixed into every checksum handed to the other PC (exec::WithWorkerMode).
+  int workers_mode = 0;
   bool local_script = false;
   std::unique_ptr<gekko::Session> gk;
   std::unique_ptr<exec::Executor> ex;
@@ -809,39 +812,7 @@ void UnlockStep(State& s, uint32_t f) {
 }
 
 // ---- online ----
-
-const char* EndText(live::End e) {
-  switch (e) {
-    case live::End::kLeft: return "left";
-    case live::End::kPeerLeft: return "peer left";
-    case live::End::kLost: return "lost";
-    case live::End::kDesync: return "desync";
-    case live::End::kFrame0Timeout: return "frame 0 timeout";
-    case live::End::kInternal: return "internal";
-    case live::End::kNone: break;
-  }
-  return "none";
-}
-
-// The terminal reason np_pair judges: left | peer left | lost | frame 0 timeout | desync at frame ... | internal: ...
-std::string TerminalReason(const live::FrameResult& r, bool refused) {
-  if (refused) return "internal: the other player's game did not start the session";
-  switch (r.end) {
-    case live::End::kDesync: return r.why;  // "desync at frame N (this side X, other side Y)" or "... (reported by the other player)"
-    case live::End::kInternal: return "internal: " + r.why;
-    default: return EndText(r.end);
-  }
-}
-
-wire::LeaveReason LeaveReasonFor(live::End e) {
-  switch (e) {
-    case live::End::kDesync: return wire::LeaveReason::kDesync;
-    case live::End::kLost:
-    case live::End::kFrame0Timeout: return wire::LeaveReason::kTimeout;
-    case live::End::kInternal: return wire::LeaveReason::kInternal;
-    default: return wire::LeaveReason::kLeft;
-  }
-}
+// (EndText, TerminalReason and LeaveReasonFor live in np_live since lockstep port B3, where a host test reaches them.)
 
 void Event(State& s, int64_t unix_ms, const std::string& text) {
   std::lock_guard lk(s.events_mu);
@@ -941,9 +912,9 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   if (s.ended.exchange(true)) return;
   s.running.store(false);
   const bool refused = s.refused.load();
-  const std::string reason = TerminalReason(r, refused);
+  const std::string reason = live::TerminalReason(r, refused);
   const int32_t f = r.end_frame;
-  if (!r.why.empty()) Log("session end: " + std::string(EndText(r.end)) + " (" + r.why + ")");
+  if (!r.why.empty()) Log("session end: " + std::string(live::EndText(r.end)) + " (" + r.why + ")");
   const uint32_t handed = s.ex ? s.ex->saves_filled() : 0;
   if (at_hook) LogNetStats(s, "at the end");
   Log("session ended at frame " + std::to_string(f) + ": " + reason);
@@ -957,7 +928,7 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   // Task 15 G1: a desync's Leave carries the DESYNC frame (wire.h Leave: for kDesync the frame is the desync frame), so
   // the other side, which ends on it as a desync too, names the same frame
   if (s.host.send_leave && r.end != live::End::kPeerLeft)
-    s.host.send_leave(r.end == live::End::kDesync && r.desync_frame >= 0 ? r.desync_frame : f, LeaveReasonFor(r.end));
+    s.host.send_leave(r.end == live::End::kDesync && r.desync_frame >= 0 ? r.desync_frame : f, live::LeaveReasonFor(r.end));
   {
     std::lock_guard lk(s.result_mu);
     s.last_result = r;
@@ -1132,6 +1103,20 @@ void ForceStash(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+// Lockstep port B3 (design section 6): worker mode 4's end request, read at the frame hook. A request found here ends the online
+// session before this frame's checksum or input is handed over (EndOnline: "session end: the worker order could not be kept
+// (<cause>)", "session ended at frame <f>: worker order", the Leave with reason 4, the offline relaunch after 5 s; no dump).
+bool EndOnWorkerRequest(State& s, uint32_t f) {
+  std::string cause;
+  if (!det::EndRequested(&cause)) return false;
+  live::FrameResult r;
+  r.end = live::End::kWorkerOrder;
+  r.end_frame = int32_t(f);
+  r.why = cause.empty() ? std::string("no cause given") : cause;  // never empty: the "session end:" line names the cause
+  EndOnline(s, r, true);
+  return true;
+}
+
 void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   State& s = S();
   const double t0 = Now(s);
@@ -1161,13 +1146,21 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     }
   }
 
+  // P17 (design section 6): worker mode 4's end request and the frame hook's checks, before anything of frame f is hashed. The first
+  // read ends on a request raised during the frame before, before PreFrame runs its checks or makes a section object (B2's fix check,
+  // W2); PreFrame's checks may raise one; the second read ends on that.
+  if (EndOnWorkerRequest(s, f)) return;
+  det::PreFrame(f, base);
+  if (EndOnWorkerRequest(s, f)) return;
+
   if (f == 0) ForceStash(ctx, base);
 
   // (1) the state entering f, and its checksum
   const double h0 = Now(s);
   HashRows(s, base, f);
   if (base[kFightState] == kFightRound) s.gate_open_frames.fetch_add(1);
-  const uint32_t checksum = exec::FoldChecksum(int32_t(f), s.digest_row, s.sweep_row);
+  // P20: the decided worker mode is mixed in, so two PCs that decided differently disagree at the first compared frame (a desync)
+  const uint32_t checksum = exec::WithWorkerMode(exec::FoldChecksum(int32_t(f), s.digest_row, s.sweep_row), s.workers_mode);
   const double h1 = Now(s);
   WriteFieldRow(s, base, f);
 
@@ -1207,6 +1200,9 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   const double d0 = Now(s);
   det::OnFrame(f, ctx, base);
   const double det_us = Now(s) - d0;
+  // The third read (a guard; design section 6): a request found after det::OnFrame ends the session before step 5 (so a script's
+  // quit of this frame is not acted on) and before step 6 hands this frame's checksum and input to the other PC.
+  if (EndOnWorkerRequest(s, f)) return;
 
   // (5) the local pad
   Pad local;
@@ -1577,10 +1573,12 @@ void StartOnline(Host host) {
   const std::string extra = "guest=" + s.guest_meta + "\nunlock=1\nguest_skipped=" +
                             (g_skipped.empty() ? std::string("none") : g_skipped) + "\nsession=online role=" +
                             std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta;
-  // The worker order's inputs, before CurrentMeta (its workers= line is the decision). Lockstep port B2: an online session passes a
-  // serial hand-off, so every online session stays in mode 3 until B3 carries the host's order in the hand-off.
-  det::SetWorkerInputs(true, true, false, std::string());
+  // The worker order's inputs, before CurrentMeta (its workers= line is the decision). Lockstep port B3: the order is the host's, from
+  // the hand-off's worker_order byte (0 lanes, 1 serial; range-checked by handoff::Unpack), the same byte in both session processes;
+  // this process never reads the netplay_worker_order key. A session runs lanes (mode 4) unless the host's key says serial.
+  det::SetWorkerInputs(true, s.ho.worker_order == 1, false, std::string());
   const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
+  s.workers_mode = det::WorkersMode();  // decided by CurrentMeta's workers= line: latched once, mixed into every checksum (P20)
   s.rec = _wfopen((s.dir / "rec.d4r").wstring().c_str(), L"wb");
   const std::string head = EncodeRecHeader(s.seed, 0, meta);
   if (s.rec) std::fwrite(head.data(), 1, head.size(), s.rec);

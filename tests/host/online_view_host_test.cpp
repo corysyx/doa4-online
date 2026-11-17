@@ -403,6 +403,18 @@ static void TestBanner() {
   // an ending wins over a hold that was still showing
   CHECK_EQ(BannerText(true, Ending::kLost), BannerText(false, Ending::kLost));
   CHECK(BannerText(true, Ending::kLeft) != "Waiting for the other player...");
+  // lockstep port B3 (design section 6, final texts): this PC could not keep worker mode 4's order, or the other PC could not
+  CHECK_EQ(BannerText(false, Ending::kWorkerOrder),
+           "This PC could not keep the session's timing. The session ended; both games restart.");
+  CHECK_EQ(BannerText(false, Ending::kPeerWorkerOrder),
+           "The other player's PC could not keep the session's timing. The session ended; both games restart.");
+  CHECK(BannerText(false, Ending::kWorkerOrder) != BannerText(false, Ending::kPeerWorkerOrder));
+  CHECK_EQ(BannerText(true, Ending::kWorkerOrder), BannerText(false, Ending::kWorkerOrder));  // wins over a hold
+  CHECK(PeerLeftEnding(4, -1, false) == Ending::kPeerWorkerOrder);   // wire::LeaveReason::kWorkerOrder, every frame
+  CHECK(PeerLeftEnding(4, 0, false) == Ending::kPeerWorkerOrder);
+  CHECK(PeerLeftEnding(4, 100, false) == Ending::kPeerWorkerOrder);
+  CHECK(PeerLeftEnding(4, 0, true) == Ending::kPeerNotStarted);      // refused still wins
+  CHECK(PeerLeftEnding(5, 100, false) == Ending::kPeerLeft);         // the next number is still "anything else"
 }
 
 static void TestTabLogLine() {

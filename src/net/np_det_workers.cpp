@@ -11,7 +11,9 @@
 // main thread's update code share state (the stage-light timers, the scene RNG
 // again), and a worker running beside the main thread made a Tag fight diverge
 // now and then (frames 4026, 5923, 7421 in different runs; one in three runs).
-// Modes (DOA4_NP_SERIAL overrides; the fix's default in a session is 3):
+// Modes (decided once a process, lanes::DecideMode; design section 4): DOA4_NP_SERIAL first, then 0 with the workers fix off,
+// then an online session's hand-off byte (lanes 4, serial 3: the host's netplay_worker_order), a replay's workers= meta line, and
+// 4 for an offline record:
 //   0  parallel, as the game runs them;
 //   1  mutually exclusive: a worker holds one process-wide lock from its wait's
 //      return to its next signal (the order is still the OS's);
@@ -231,6 +233,11 @@ void WorkersSetInputs(bool workers_fix_on, bool online, bool handoff_serial, boo
 std::string WorkersMeta() {
   std::call_once(g_decide_once, Decide);
   return doa4::np::lanes::MetaWorkers(g_mode.load(std::memory_order_relaxed));
+}
+
+int WorkersMode() {
+  std::call_once(g_decide_once, Decide);
+  return g_mode.load(std::memory_order_relaxed);
 }
 
 void WorkersPreFrame(uint32_t frame, uint8_t* base) {

@@ -83,10 +83,14 @@ bool Refuse(Control control, bool in_session, std::string_view action, std::stri
 std::string LockedLine(bool in_session);
 
 // The banner (spec 7): how a session ended, as the overlay's own enum (the overlay maps live::End onto it).
-enum class Ending : uint8_t { kNone, kLeft, kPeerLeft, kPeerQuit, kPeerNotStarted, kLost, kDesync, kFrame0Timeout, kInternal };
+// kWorkerOrder: this PC ended the session because it could not keep worker mode 4's order (live::End::kWorkerOrder);
+// kPeerWorkerOrder: the other PC did (its Leave with reason 4, wire::LeaveReason::kWorkerOrder). Lockstep port B3.
+enum class Ending : uint8_t { kNone, kLeft, kPeerLeft, kPeerQuit, kPeerNotStarted, kLost, kDesync, kFrame0Timeout, kInternal,
+                              kWorkerOrder, kPeerWorkerOrder };
 // Review I2: the ending of a peer-left end by its reason (wire::LeaveReason as a number: 0 left, 1 desync, 2 timeout,
-// 3 internal), its frame (-1: a Bye) and whether the other game answered as a lobby (the refused-session path):
-// refused -> kPeerNotStarted; a kLeft Leave with a frame -> kPeerQuit; anything else -> kPeerLeft.
+// 3 internal, 4 worker order), its frame (-1: a Bye) and whether the other game answered as a lobby (the refused-session path):
+// refused -> kPeerNotStarted; reason 4 -> kPeerWorkerOrder (every frame); a kLeft Leave with a frame -> kPeerQuit; anything
+// else -> kPeerLeft.
 Ending PeerLeftEnding(int reason, int32_t frame, bool refused);
 // "" = no banner. An ending wins over a hold; a hold (waiting) is "Waiting for the other player...".
 std::string BannerText(bool waiting, Ending ending);

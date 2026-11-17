@@ -49,7 +49,8 @@ std::vector<uint8_t> Encode(Type type, uint32_t token, std::span<const uint8_t> 
 Drop Decode(std::span<const uint8_t> datagram, Packet* out);
 
 enum class Refusal : uint8_t { kNone = 0, kProto = 1, kBuild = 2, kFiles = 3, kBusy = 4, kSession = 5 };
-enum class LeaveReason : uint8_t { kLeft = 0, kDesync = 1, kTimeout = 2, kInternal = 3 };
+// kWorkerOrder (lockstep port B3): this PC could not keep worker mode 4's order and ended the session (live::End::kWorkerOrder).
+enum class LeaveReason : uint8_t { kLeft = 0, kDesync = 1, kTimeout = 2, kInternal = 3, kWorkerOrder = 4 };
 
 struct Hello {  // joiner -> host (lobby), and both ways in a session process
   uint64_t build = 0;          // np::BuildIdValue() (Task 12): XXH3 of the exe and rexruntime.dll; 0 = unreadable

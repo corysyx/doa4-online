@@ -355,6 +355,8 @@ struct Side {
   uint32_t timeout_ms = 2000;
   fs::path test_dir;
   std::map<std::string, std::string> test;
+  bool has_worker_order = false;  // B3: Providers::worker_order is set (to return worker_order) only when true
+  std::string worker_order;
   explicit Side(const char* tag) : dir(NewDir(tag)) {}
   online::Providers P() {
     online::Providers p;
@@ -366,6 +368,7 @@ struct Side {
       return files;
     };
     p.guest_settings = [this] { return guest; };
+    if (has_worker_order) p.worker_order = [this] { return worker_order; };  // B3: no provider unless a group sets one
     p.suits = suits;
     p.save_files = [this](std::string* e) {
       std::lock_guard<std::mutex> lock(save_mu);
@@ -1091,6 +1094,45 @@ static void TestSuitStates() {
   OneSuitCase("host", sha_a, "", SuitSession::kMixed, 1, "Swimsuits: only you", "Swimsuits: only the other player");
   OneSuitCase("differ", sha_a, sha_b, SuitSession::kMixed, 3, "Swimsuits: both, from different imports",
               "Swimsuits: both, from different imports");
+}
+
+// Lockstep port B3: the host's netplay_worker_order text (Providers::worker_order) decides the hand-off's worker_order byte of
+// both sides; the joiner's own provider is never asked. Real lobbies over the real transport, in the pattern of OneSuitCase.
+static void OneWorkerOrderCase(const char* name, bool host_has, const std::string& host_text, bool joiner_has,
+                               const std::string& joiner_text, uint8_t want, bool want_log) {
+  Side hs((std::string("order_h_") + name).c_str()), js((std::string("order_j_") + name).c_str());
+  hs.has_worker_order = host_has;
+  hs.worker_order = host_text;
+  js.has_worker_order = joiner_has;
+  js.worker_order = joiner_text;
+  online::Lobby host, joiner;
+  if (!StartLobby(host, hs) || !StartLobby(joiner, js)) return;
+  CHECK(ConnectPair(host, joiner));
+  CHECK(WaitCanStart(host));
+  host.StartSession();
+  CHECK(WaitFor([&] { return hs.restarts.load() == 1 && js.restarts.load() == 1; }, 3000));
+  Bytes hb, jb;
+  handoff::Handoff h, j;
+  CHECK(ReadFile(hs.HandoffPath(), &hb) && ReadFile(js.HandoffPath(), &jb));
+  CHECK(handoff::Unpack(hb, &h).empty() && handoff::Unpack(jb, &j).empty());
+  CHECKF(h.worker_order == want && j.worker_order == want, "%s: hand-offs say worker order %d and %d, want %d", name,
+         int(h.worker_order), int(j.worker_order), int(want));
+  const std::string line = "[doa4][NET] netplay_worker_order '" + host_text + "' is not lanes or serial: lanes";
+  CHECKF(hs.log.Count(line) == (want_log ? 1 : 0), "%s: the host logged '%s' %d times", name, line.c_str(), hs.log.Count(line));
+  CHECKF(hs.log.Count("netplay_worker_order") == (want_log ? 1 : 0), "%s: the host has %d lines naming netplay_worker_order", name,
+         hs.log.Count("netplay_worker_order"));
+  CHECKF(js.log.Count("netplay_worker_order") == 0, "%s: the joiner has %d lines naming netplay_worker_order", name,
+         js.log.Count("netplay_worker_order"));
+  host.Stop();
+  joiner.Stop();
+}
+
+static void TestWorkerOrders() {
+  if (!Group("worker order (B3): the host's text makes both hand-offs' byte; an unknown text is lanes and logged once")) return;
+  OneWorkerOrderCase("serial", true, "serial", false, "", 1, false);
+  OneWorkerOrderCase("lanes", true, "lanes", true, "serial", 0, false);       // the joiner's own value is never read
+  OneWorkerOrderCase("none", false, "", true, "serial", 0, false);            // no provider: lanes, no log line
+  OneWorkerOrderCase("Serial", true, "Serial", false, "", 0, true);           // not exact: lanes, and the line once
 }
 
 // A session process shows the state its hand-off carries and sends no checksum (like files: the lobby has compared).
@@ -2419,11 +2461,13 @@ static void TestConcurrentStop() {
 struct ProbeSink {
   std::atomic<online::Lobby*> lobby{nullptr};
   std::atomic<int> lines{0}, blocked{0};
+  std::atomic<int> order_lines{0};  // B3: lines naming netplay_worker_order that went through the probe
   std::mutex mu;
   std::vector<std::string> blocked_lines;
   std::function<void(const std::string&)> Fn() {
     return [this](const std::string& line) {
       ++lines;
+      if (line.find("netplay_worker_order") != std::string::npos) ++order_lines;
       online::Lobby* l = lobby;
       if (!l) return;
       auto done = std::make_shared<std::atomic<bool>>(false);
@@ -2446,6 +2490,8 @@ static void TestNoLogUnderLock() {
   online::Lobby host, joiner;
   ph.lobby = &host;
   pj.lobby = &joiner;
+  hs.has_worker_order = true;  // B3: a text that is neither word, so the hand-off's build logs its line through the probe
+  hs.worker_order = "Serial";
   online::Providers p1 = hs.P(), p2 = js.P();
   p1.log = ph.Fn();
   p2.log = pj.Fn();
@@ -2459,6 +2505,7 @@ static void TestNoLogUnderLock() {
   std::printf("info: no-lock probe: host %d lines (%d blocked), joiner %d lines (%d blocked)\n", ph.lines.load(), ph.blocked.load(),
               pj.lines.load(), pj.blocked.load());
   CHECK(ph.lines >= 5 && pj.lines >= 5);  // the probe saw the session start's lines
+  CHECKF(ph.order_lines == 1, "host: the probe saw %d netplay_worker_order lines, want 1", ph.order_lines.load());  // B3: it was logged
   {
     std::lock_guard<std::mutex> lock(ph.mu);
     CHECKF(ph.blocked == 0, "host: %d lines logged under the mutex, first '%s'", ph.blocked.load(),
@@ -2515,6 +2562,7 @@ int main(int argc, char** argv) {
   TestStartSession();
   TestJoinerRefusesBoot();
   TestSuitStates();
+  TestWorkerOrders();
   TestSuitsInSession();
   TestSuitsForgotten();
   TestWelcomeCarriesSuits();

@@ -17,10 +17,47 @@ const char* ReasonText(wire::LeaveReason why) {
     case wire::LeaveReason::kDesync: return "desync";
     case wire::LeaveReason::kTimeout: return "timeout";
     case wire::LeaveReason::kInternal: return "internal error";
+    case wire::LeaveReason::kWorkerOrder: return "worker order";
   }
   return "unknown";
 }
 }  // namespace
+
+const char* EndText(End e) {
+  switch (e) {
+    case End::kLeft: return "left";
+    case End::kPeerLeft: return "peer left";
+    case End::kLost: return "lost";
+    case End::kDesync: return "desync";
+    case End::kFrame0Timeout: return "frame 0 timeout";
+    case End::kInternal: return "internal";
+    case End::kWorkerOrder: return "the worker order could not be kept";
+    case End::kNone: break;
+  }
+  return "none";
+}
+
+// The terminal reason np_pair judges: left | peer left | lost | frame 0 timeout | desync at frame ... | internal: ... | worker order
+std::string TerminalReason(const FrameResult& r, bool refused) {
+  if (refused) return "internal: the other player's game did not start the session";
+  switch (r.end) {
+    case End::kDesync: return r.why;  // "desync at frame N (this side X, other side Y)" or "... (reported by the other player)"
+    case End::kInternal: return "internal: " + r.why;
+    case End::kWorkerOrder: return "worker order";  // the cause is in the "session end:" line's why
+    default: return EndText(r.end);
+  }
+}
+
+wire::LeaveReason LeaveReasonFor(End e) {
+  switch (e) {
+    case End::kDesync: return wire::LeaveReason::kDesync;
+    case End::kLost:
+    case End::kFrame0Timeout: return wire::LeaveReason::kTimeout;
+    case End::kInternal: return wire::LeaveReason::kInternal;
+    case End::kWorkerOrder: return wire::LeaveReason::kWorkerOrder;
+    default: return wire::LeaveReason::kLeft;
+  }
+}
 
 Session::Session(gekko::Session* gekko, exec::Executor* executor, Clock clock, Limits limits, Hooks hooks)
     : gekko_(gekko), executor_(executor), clock_(std::move(clock)), limits_(limits), hooks_(std::move(hooks)) {}

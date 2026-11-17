@@ -197,6 +197,7 @@ std::string LockedLine(bool in_session) {
 
 Ending PeerLeftEnding(int reason, int32_t frame, bool refused) {
   if (refused) return Ending::kPeerNotStarted;
+  if (reason == 4) return Ending::kPeerWorkerOrder;  // wire::LeaveReason::kWorkerOrder (lockstep port B3), at every frame
   if (reason == 0 && frame >= 0) return Ending::kPeerQuit;  // wire::LeaveReason::kLeft with a frame: the other player quit
   return Ending::kPeerLeft;  // a Bye (frame -1), kTimeout, kInternal, anything else
 }
@@ -211,6 +212,9 @@ std::string BannerText(bool waiting, Ending ending) {
     case Ending::kFrame0Timeout: return "The other player's game did not come back.";
     case Ending::kLeft: return "You left the session.";
     case Ending::kInternal: return "The session ended unexpectedly; both games restart.";
+    case Ending::kWorkerOrder: return "This PC could not keep the session's timing. The session ended; both games restart.";
+    case Ending::kPeerWorkerOrder:
+      return "The other player's PC could not keep the session's timing. The session ended; both games restart.";
     case Ending::kNone: break;
   }
   return waiting ? "Waiting for the other player..." : "";
