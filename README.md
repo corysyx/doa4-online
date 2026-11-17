@@ -5,7 +5,7 @@
 **Dead or Alive 4 Online** is a native Windows build of **Dead or Alive 4** (Xbox 360) with two-player
 online play, statically recompiled with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). It
 also builds **34 swimsuits from Dead or Alive Xtreme 2** (DOAX2) on your PC from your own disc, as extra
-costumes. This is **alpha 0.3.4**: it works and is used, but it is still an alpha, and the
+costumes. This is **alpha 0.3.5**: it works and is used, but it is still an alpha, and the
 [known issues](#known-issues) are listed below. **No game data is included.** You need your own copy of
 the game, and the swimsuits need your own DOAX2 disc.
 
@@ -50,7 +50,7 @@ folder; and, only for the swimsuits, your own **USA** copy of *Dead or Alive Xtr
    - **Windows Firewall:** when Windows asks, tick **both Private and Public** and allow the game
      (both players). If the prompt is hidden behind the game, press **Alt+Tab**.
 5. **Play.** When both show *Connected*, the host presses **Start online session**. Both games
-   restart into the session (host = player 1). At the title screen **only the host presses Start**, so the game loads the host's profile. The friend should not press anything until the menus appear: if the friend advances the title screen, the game can freeze for both players, and you then need to leave the session (**Leave online session**) and start a new one. Pick **Versus**, your characters and a stage, and
+   restart into the session (host = player 1). At the title screen **the host presses Start**, so the game loads the host's profile; the friend's controller is ignored until the menus appear. Pick **Versus**, your characters and a stage, and
    fight. Everything is unlocked in a session and your own save is never changed.
 6. **Finish.** **Leave online session** in the Online tab; both games restart offline.
 
@@ -181,6 +181,9 @@ the next start. The menu has five tabs: **Game**, **Controls**, **Photo**, **Ext
   also softens text a little."
 - **Texture filtering:** Off, 2x, 4x, 8x or 16x. "Applies to textures as the game draws them; you may
   see it after the next screen loads."
+- **Volume:** the game's overall loudness on your PC, 0 to 200 % (100 % by default), with a **Reset**
+  button. It acts at once. In an online session the tab says "In an online session the volume is kept
+  until the game closes."
 - **Speakers:** Automatic, Stereo or 5.1 surround. "Automatic follows Windows: 5.1 when the speakers are
   set to 5.1 or more, stereo otherwise. 5.1 surround always sends six channels." It takes effect after a
   restart: until then the tab says "Applies after a restart (running on Automatic)." (with the choice
@@ -309,11 +312,9 @@ that the game ran fine. Solo offline play does not seem to work under Linux for 
 | Story mode: retrying a fight after a loss freezes the game for a couple of frames before the fight starts again. | A fix is planned. |
 | The extra costumes (Esc menu, **Extras** tab: Helena's opera dress, Kokoro's pink and blue kimonos): reflections on the stage scenery show the character in a different costume. | A fix is planned. |
 | First start with an extracted *Dead or Alive 4* folder: choosing it on the setup screen starts the game right away, before the optional DOAX2 swimsuit step. | Import the swimsuits any time from the Esc menu, **Extras** tab, **Import DOAX2 swimsuits...**. A fix is planned. |
-| The profile / storage device screen on the first start hides the mouse pointer, which makes it awkward to click through. | A fix is planned: the screen should work with a controller or keyboard, or show the pointer. |
 | Alpha-152 (Esc menu, **Extras** tab, **Alpha-152 playable**): her icon in the Team Battle team list and on the results screen shows "?". | A proper icon is planned. |
 | Alpha-152: her model does not show on character select in an online match where the two players' DOAX2 swimsuit imports differ, or in Tag's second-fighter panel. | She is still playable there; only the select-screen model is missing. A fix is planned. |
 | The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
-| Online: if the joining player presses Start at the title screen, the session can freeze for both players. | Only the host should press Start; if it freezes, leave the session and start a new one. |
 | Online: on a CPU with fewer cores (for example 4 cores) the game can slow down a lot, because both games run at the speed of the slower PC. | Avoid the CPU-heavy stages, such as Savannah Safari and Experimental Playground, when playing online. Avoid the DOAX2 swimsuits online too: they take more CPU than the original DOA4 costumes. |
 | Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
 | Linux (Proton / Wine): the game starts to a black screen instead of opening as intended (reported by one player on GE-Proton11-12). | Joining an online session with another player is reported to still work, and the game runs fine after that. Solo offline play does not seem to work yet. |
@@ -361,6 +362,11 @@ The same names, and the licences of the code taken, are in [THIRD_PARTY_NOTICES.
 ## Contributing
 
 Pull requests are welcome. To build the game yourself, see [docs/BUILDING.md](docs/BUILDING.md).
+
+## Community
+
+The subreddit [r/doa4online](https://www.reddit.com/r/doa4online) is the place to share feedback and to find
+other players to play with online. Bugs still go to the Issues page (next section), not the subreddit.
 
 ## Reporting bugs
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.5 (2026-11-17)
+
+### New
+- **Volume slider.** The Esc menu's Game tab has a **Volume** slider (0 to 200 %, 100 % by default) with a Reset
+  button. It sets the game's overall loudness on your PC only and acts at once. A volume changed during an online
+  session is kept until the game closes. (issue #16)
+- **Online matches start on the same rules for everyone.** Every online session now starts with the life gauge at
+  its largest setting, Single matches at first to 3 rounds with a 60 second time limit, and Tag matches at 99 seconds.
+  These are starting values only: they can still be changed in the game's Settings during the session. Your own saved
+  settings are never changed.
+
+### Fixed
+- Game audio was too quiet. On stereo output (speakers or headphones) the game is now about 8 dB louder, 2.5 times
+  the old level. 5.1 surround output is unchanged. (issue #16)
+- The "Select a Device" pop-up on the first start showed "?" characters in place of its text, and the mouse pointer
+  was hidden. The text is readable now and the pointer shows while the pop-up is open. The pop-up is in English in
+  every game language.
+- Online: the joining player pressing START on the title screen at the start of a session froze both games. The
+  joining player's controller is now ignored on the title screen and before it; the host presses START.
+
+### Notes
+- There is now a subreddit, https://www.reddit.com/r/doa4online, for sharing feedback and finding other players to
+  play with online. Bugs still go to the GitHub Issues page: https://github.com/dwreckgg/doa4-online/issues
+- Online: when a session returns to the title screen later on, a press by the joining player in the instant the title
+  appears can still open the menu in the host's place. Nothing freezes.
+- The log now has a line at start-up with the processor's name, its cores and threads, and the PC's memory. It helps
+  with slowdown reports.
+
 ## 0.3.4 (2026-11-12)
 
 ### New
