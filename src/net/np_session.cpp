@@ -55,6 +55,7 @@
 #include "../doa4_update_notice.h"
 #include "np_core.h"
 #include "np_start_rules.h"
+#include "np_title_mask.h"
 #include "np_det.h"
 #include "np_det_internal.h"
 #include "np_exec.h"
@@ -1133,6 +1134,74 @@ void ForceStash(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+// The title mask (np_title_mask.h): the latch, armed at frame 0 and stepped once a frame by the frame hook
+// (TitleMaskFrame) from the draws the sprite hook notes (NoteTitleMaskSprite), and the joiner's filter, applied to the
+// joiner's pad in OnFrameOnline. The sprite hook and the
+// frame hook are both guest main-thread work; the lock keeps a call from another thread from tearing the state.
+// The edge lines are written in every np session (record, replay, live), from guest draws, so both sides of a pair
+// write the same lines at the same frames; the replaced-input lines only on a live session's joiner.
+std::mutex g_title_mask_mu;
+title_mask::TitleMask g_title_mask;
+title_mask::JoinerFilter g_joiner_filter;
+uint32_t g_title_mask_armed_at = 0;  // the frame of the last arm edge
+
+std::string Hex(uint32_t v, int digits) {
+  char text[16];
+  std::snprintf(text, sizeof text, "%0*X", digits, unsigned(v));
+  return text;
+}
+
+// The caller holds g_title_mask_mu.
+void LogTitleMaskEdge(title_mask::Edge e, uint32_t frame, uint32_t sprite) {
+  const std::string at = "title mask: frame " + std::to_string(frame) + ": ";
+  switch (e) {
+    case title_mask::Edge::kNone:
+      return;
+    case title_mask::Edge::kArmedSessionStart:
+      g_title_mask_armed_at = frame;
+      Log(at + "armed (session start)");
+      return;
+    case title_mask::Edge::kArmedTitleLogo:
+      g_title_mask_armed_at = frame;
+      Log(at + "armed (title logo 0x30000 drawn)");
+      return;
+    case title_mask::Edge::kOff: {
+      Log(at + "off (Mode Select reached: item caption 0x" + Hex(sprite, 5) + " drawn)");
+      const uint32_t replaced = g_joiner_filter.TakeReplacedCount();
+      if (S().mode == Mode::kOnline && S().slot != 0)
+        Log(at + "the joiner's input was replaced on " + std::to_string(replaced) +
+            " frames of the armed period that began at frame " + std::to_string(g_title_mask_armed_at));
+      return;
+    }
+  }
+}
+
+// The frame hook, at the start of frame f, before f's input: frame 0 arms (session start); every later frame applies the
+// draws of frame f - 1 (np_title_mask.h EndFrame) and logs an edge with that frame's number.
+void TitleMaskFrame(uint32_t f) {
+  std::lock_guard lk(g_title_mask_mu);
+  if (f == 0) {
+    g_title_mask.EndFrame();  // nothing is drawn before frame 0's hook; forget it if anything was
+    LogTitleMaskEdge(g_title_mask.OnSessionStart(), f, 0);
+    return;
+  }
+  const title_mask::Edge e = g_title_mask.EndFrame();
+  LogTitleMaskEdge(e, f - 1, g_title_mask.LastMenuSprite());
+}
+
+// The frame's local pad on a live session's side: the joiner's is sent as nothing pressed while the latch is armed, and
+// a button held from under the mask stays released until let go once. The host's goes through unchanged.
+Pad TitleMaskLocalPad(const State& s, uint32_t f, const Pad& local) {
+  std::lock_guard lk(g_title_mask_mu);
+  const bool mask = title_mask::MaskLocalInput(s.slot != 0, s.mode == Mode::kOnline, g_title_mask.Armed());
+  const title_mask::JoinerFilter::Out out = g_joiner_filter.Apply(mask, local);
+  if (out.first_replaced)
+    Log("title mask: frame " + std::to_string(f) + ": the joiner's input (buttons " + Hex(local.buttons, 4) +
+        ") replaced by nothing pressed, the first in the armed period that began at frame " +
+        std::to_string(g_title_mask_armed_at));
+  return out.sent;
+}
+
 void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   State& s = S();
   const double t0 = Now(s);
@@ -1163,6 +1232,7 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   }
 
   if (f == 0) ForceStash(ctx, base);
+  TitleMaskFrame(f);
 
   // (1) the state entering f, and its checksum
   const double h0 = Now(s);
@@ -1219,6 +1289,7 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     Pad p;
     if (s.host.read_local_pad(&p)) local = p;
   }
+  local = TitleMaskLocalPad(s, f, local);  // before the pad enters the lockstep (np_title_mask.h)
   bool shot = false;
   for (ScriptEvent::Kind k : fired) {
     if (k == ScriptEvent::kShot) shot = true;
@@ -1382,6 +1453,7 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
     Quit(s, "end of the recording");
     return;
   }
+  TitleMaskFrame(f);  // the title mask's edge lines (np_title_mask.h); a record or replay never masks
 
   // 1. Hash the state entering frame f.
   const double h0 = Now(s);
@@ -1917,6 +1989,13 @@ void Start(Host host) {
 }
 
 void LogLine(const std::string& line) { Log(line); }
+
+void NoteTitleMaskSprite(uint32_t sprite, bool visible) {
+  if (!Active()) return;
+  if (sprite != title_mask::kTitleLogoSprite && !title_mask::IsMenuSignal(sprite, visible)) return;
+  std::lock_guard lk(g_title_mask_mu);
+  g_title_mask.OnDraw(sprite, visible);  // applied at the frame's end (TitleMaskFrame)
+}
 
 // The writer captures through the presenter, so it must be done before the presenter goes. The race this
 // closes (a queued shot captured while the presenter is torn down) cannot be forced by a test: the check
