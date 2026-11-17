@@ -1,0 +1,90 @@
+# boot -> title -> Versus -> Single Battle -> entry (P1 left, P2 right) -> P1 one down and one right of the defaults = Hitomi,
+# P2 two left, THEN two down = Spartan (the 8 x 3 grid, column,row from the top-left: Kasumi 0,0; P2 starts at Ayane 7,0;
+# Hitomi is 1,1 and Spartan 5,2; the bottom row ends at 6,2, so a DOWN from the right-hand column goes nowhere),
+# costume 1 -> stage 14 right of RANDOM (the savanna: giraffe and gazelles; stage select shows RANDOM, then 16 stages, and
+# the savanna is the third from the end) -> 60 s of random fighting (seeds 25-30) -> quit. The stage-select shot just before
+# the A is the evidence that the cursor is on it. Built for rb0 (rollback stage 0), after single_b.
+# Needs --headless=true (the entry's sign-in message box is answered with its default).
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 DOWN LEFT
+30 -
+4 RIGHT LEFT
+30 -
+4 - DOWN
+30 -
+4 - DOWN
+30 -
+shot
+4 A A
+60 -
+4 A A
+360 -
+shot
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+shot
+4 A
+600 -
+shot
+random 600 25 0 1
+shot
+random 600 26 0 1
+shot
+random 600 27 0 1
+shot
+random 600 28 0 1
+shot
+random 600 29 0 1
+shot
+random 600 30 0 1
+shot
+quit
