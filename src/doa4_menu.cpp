@@ -165,6 +165,11 @@ constexpr std::array<const char*, 2> kAntiAliasingNote = {
     "The game uses 2x MSAA; FXAA Extreme suits it best. FXAA also softens", "text a little."};
 constexpr std::array<const char*, 2> kTextureFilteringNote = {
     "Applies to textures as the game draws them; you may see it after the", "next screen loads."};
+constexpr const char* kGpuUploadsLabel = "Batch GPU uploads (for slower graphics cards)";
+constexpr std::array<const char*, 3> kGpuUploadsNote = {
+    "May raise the frame rate when the graphics card is the limit. Side effect:",
+    "hair and other moving parts can be drawn one frame late now and then.",
+    "In an online session the host's choice is used."};
 constexpr std::array<const char*, 2> kSpeakersNote = {
     "Automatic follows Windows: 5.1 when the speakers are set to 5.1 or more,",
     "stereo otherwise. 5.1 surround always sends six channels."};
@@ -422,6 +427,8 @@ float MenuDialog::WidestRow() {
   }
   for (const char* t : kAntiAliasingNote) w.push_back(text(t));
   for (const char* t : kTextureFilteringNote) w.push_back(text(t));
+  w.push_back(toggle(kGpuUploadsLabel));
+  for (const char* t : kGpuUploadsNote) w.push_back(text(t));
   for (const char* t : kSpeakersNote) w.push_back(text(t));
   w.push_back(text(kVolumeSessionNote));
   w.push_back(row({display::MenuPx(kVolumeSliderWidth, ImGui::GetFontSize()), text("Reset")}));
@@ -477,7 +484,7 @@ float MenuDialog::WidestRow() {
   return widest;
 }
 
-// The Game tab's first part: display mode, Show FPS, render scale, anti-aliasing, texture filtering.
+// The Game tab's first part: display mode, Show FPS, render scale, anti-aliasing, texture filtering, performance.
 void MenuDialog::DrawVideoSettings() {
   ImGui::SeparatorText("Display mode");
   DrawDisplayRows();
@@ -552,6 +559,22 @@ void MenuDialog::DrawVideoSettings() {
     ImGui::TextColored(kNoteColor, "Custom (%d) set in dead_or_alive_4.toml.", aniso);
   }
   for (const char* line : kTextureFilteringNote) ImGui::TextDisabled("%s", line);
+
+  // gpu_upload_prefetch is read by the SDK at every swap: no further call needed. The hand-off carries the host's value to
+  // the joiner, so in a session the box shows the value in effect and is locked (drawn disabled; no other menu code acts on
+  // kGpuUploads). The SDK's F4 settings overlay and the DOA4_GX test switch can still set the cvar in a session.
+  ImGui::SeparatorText("Performance");
+  bool prefetch = rex::cvar::Query<bool>("gpu_upload_prefetch");
+  const bool uploads_locked = Locked(online_view::Control::kGpuUploads);
+  ImGui::BeginDisabled(uploads_locked);
+  if (ImGui::Checkbox(kGpuUploadsLabel, &prefetch)) {
+    SaveThenSet("gpu_upload_prefetch", prefetch ? "true" : "false", false);
+  }
+  ImGui::EndDisabled();
+  if (uploads_locked) {
+    ImGui::TextColored(kNoteColor, "%s", online_view::kLockedText);
+  }
+  for (const char* line : kGpuUploadsNote) ImGui::TextDisabled("%s", line);
 }
 
 // The Game tab's speakers part: the Speakers choice (its own separator) and the Output device block.
