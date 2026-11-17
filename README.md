@@ -366,7 +366,7 @@ Pull requests are welcome. To build the game yourself, see [docs/BUILDING.md](do
 ## Community
 
 The subreddit [r/doa4online](https://www.reddit.com/r/doa4online) is the place to share feedback and to find
-other players to play with online. Bugs still go to the Issues page (next section), not the subreddit.
+other players to play with online. Bugs should still be reported on the Issues page (next section).
 
 ## Reporting bugs
 
