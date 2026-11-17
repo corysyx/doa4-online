@@ -43,6 +43,8 @@ constexpr const char* kSdkSettings[] = {
     "readback_resolve", "readback_resolve_half_pixel_offset", "readback_memexport", "readback_memexport_fast",
     "d3d12_readback_resolve", "d3d12_readback_memexport", "vulkan_readback_resolve", "vulkan_readback_memexport",
     "query_occlusion_fake_sample_count", "occlusion_query_enable", "clear_memory_page_state",
+    // decides which pages are re-uploaded at a frame's end; a stale page reaches guest memory by the readbacks above
+    "gpu_upload_prefetch",
     // a draw whose pipeline is not created yet is skipped, which drops its memexport, resolve and occlusion work
     "async_shader_compilation",
     // guest audio callbacks
