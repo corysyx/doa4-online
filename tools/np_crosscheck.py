@@ -51,12 +51,15 @@ def out_dir(run):
 
 
 def friend_lines(run):
-    """The friend's session log lines worth reading beside the comparison: the job-worker mode line (mode 3: one at a
-    time) and the frame-period lines (np_session.cpp / np_det.cpp log them every 600 frames)."""
+    """The friend's session log lines worth reading beside the comparison: the worker order's decision line ('workers:
+    lanes, ...', 'workers: serial', 'workers: mode <n>'), the job-worker line of a serial order ('job workers: one at a
+    time ...', which a lanes log does not have) and the frame-period lines (np_session.cpp / np_det.cpp log them every
+    600 frames)."""
     path = os.path.join(out_dir(run), "np_log.txt")
     if not os.path.exists(path):
         return ["no np_log.txt"]
-    return [l.strip() for l in read_text(path).splitlines() if "frame period" in l or l.startswith("job workers: one at a time")]
+    return [l.strip() for l in read_text(path).splitlines()
+            if "frame period" in l or l.startswith("job workers: one at a time") or l.startswith("workers: ")]
 
 
 def main(argv=None):

@@ -1155,6 +1155,25 @@ def test_crosscheck(root):
     check(code == 0 and "rx" in out and "not in recordings.txt" in out, f"crosscheck, an unlisted extra run: exit {code}\n{out}")
 
 
+FRIEND_LOG_LANES = "\n".join([  # lines of a real np_log.txt of the lockstep port's order (np_runs/lp/b/merge/runs/mg_r1/out, build lp-b4)
+    "workers: lanes, table s6v1, cs 4, vsm sort",
+    "workers placed: chain 0: 0 1 6 7 12 16 20; chain 1: 2 8 13 17 21; chain 2: 3 9 14 18 22; chain 3: 4 10 23; chain 4: 5 11 15 19 24; table: yes",
+    "frame 599: hook avg 32.3 us max 696.2 us, hash avg 20.8 us max 357.5 us, det wait avg 173.5 us max 7280.0 us, "
+    "frame period avg 16.766 ms (59.64 fps) max 101.53 ms"]) + "\n"
+
+
+def test_crosscheck_workers_line(root):
+    """A lanes log has no 'job workers: one at a time' line: the friend's decision line ('workers: ...') is printed instead
+    (lockstep port task B5, ledger 1074-1080)."""
+    res, local = make_results(os.path.join(root, "t1"), dpps=fixture_text("dpps_canon_sample.txt"))
+    with open(os.path.join(res, "out", "ra", "out", "np_log.txt"), "w") as f:
+        f.write(FRIEND_LOG_LANES)
+    code, out = crosscheck_run(res, local)
+    check("friend: workers: lanes, table s6v1, cs 4, vsm sort" in out and "frame period avg 16.766 ms" in out,
+          f"crosscheck: the friend's decision line of a lanes log is printed\n{out}")
+    check("friend: workers placed:" not in out, f"crosscheck: the placement line is not one of the friend lines\n{out}")
+
+
 def pattern(n, mul, add):
     """The bytes xxh3_vectors.cpp's Pattern(n, mul, add) makes."""
     return bytes((i * mul + add) & 0xFF for i in range(n))
