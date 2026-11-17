@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.140 (2026-11-17)
+
+corysyx rollback research build (otherwise the same as 0.3.139).
+
+- Rollback: a SnapTest replay can leave the heaviest job out (`DOA4_NP_SNAPTEST_SKIPJOB=<n>`: on every replayed
+  frame but the last n). Round 41's census: the 82370638 pool's worker (6 of a fight frame's 8.8 ms of job work)
+  makes a million stores a frame, mostly from sub_8235D4A0, sub_82359578 and sub_82364700 under the two per-item
+  functions sub_82356F90 and sub_82357438, into 107 pages of the low heap (some of which the main thread writes
+  too) and 107 pages of physical memory. Reading it does not say whether the game's state needs it; leaving it out
+  of the first replayed frames and comparing the end does. With the option set, those two functions return at once
+  on that worker; the item is still taken off the queue.
+
 ## 0.3.139 (2026-11-16)
 
 corysyx rollback research build (otherwise the same as 0.3.138).

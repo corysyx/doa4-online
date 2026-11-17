@@ -53,6 +53,9 @@ extern "C" {
 REX_EXTERN(__imp__sub_827921C0);
 REX_EXTERN(__imp__sub_82792140);
 REX_EXTERN(__imp__sub_82791190);
+REX_EXTERN(__imp__sub_82356F90);
+REX_EXTERN(__imp__sub_82357438);
+extern "C" std::atomic<int> doa4_rb_skip_job;  // net/rb_snap.cpp: 1 while a SnapTest replay frame leaves the job out
 REX_EXTERN(__imp__sub_827922E0);
 }
 
@@ -279,6 +282,20 @@ REX_HOOK_RAW(sub_827921C0) {
 // sub_82792140 = SetEvent(r3). The main loop's update half sets the job pool's
 // five start events (call site 0x824F48AC) and later its mid event (0x824F491C);
 // in mode 3 the main thread then waits for the workers (MainWaitForWorkers).
+// 0.3.140: the two per-item functions of the 82370638 pool's job (sub_82370500), 6 of a fight frame's 8.8 ms of
+// job work (round 40). Round 41's census: that worker writes 107 pages of the low heap (some of which the main
+// thread writes too) and 107 of physical memory. A SnapTest replay can leave them out on its first frames
+// (DOA4_NP_SNAPTEST_SKIPJOB) to see whether the game's state needs them: the item is still taken off the queue and
+// the rest of the job body runs.
+REX_HOOK_RAW(sub_82356F90) {
+  if (doa4_rb_skip_job.load(std::memory_order_relaxed) && ThreadStart() == 0x82370638) return;
+  __imp__sub_82356F90(ctx, base);
+}
+REX_HOOK_RAW(sub_82357438) {
+  if (doa4_rb_skip_job.load(std::memory_order_relaxed) && ThreadStart() == 0x82370638) return;
+  __imp__sub_82357438(ctx, base);
+}
+
 REX_HOOK_RAW(sub_82792140) {
   const uint32_t handle = ctx.r3.u32;
   const uint32_t lr = uint32_t(ctx.lr);

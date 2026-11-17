@@ -2012,6 +2012,27 @@ void LoadRegs(Snap& s, ::PPCContext* ctx) {
                   differ, s.regs.size() / 8));
 }
 
+}  // namespace doa4::rb
+// 1 while a replay frame leaves the 82370638 job's items out (np_det_workers.cpp). DOA4_NP_SNAPTEST_SKIPJOB=<n>: all
+// replay frames but the last n (0: all of them); unset: never.
+extern "C" std::atomic<int> doa4_rb_skip_job{0};
+namespace doa4::rb {
+namespace {
+int SkipTail() {
+  static const int tail = [] {
+    const char* e = std::getenv("DOA4_NP_SNAPTEST_SKIPJOB");
+    return e && *e ? int(std::strtol(e, nullptr, 10)) : -1;
+  }();
+  return tail;
+}
+// Before the replay's frame `i` (1-based) runs.
+void SetSkip(const Snap& s, uint32_t i) {
+  const int tail = SkipTail();
+  const bool on = tail >= 0 && int(i) <= int(s.cfg.frames) - tail;
+  doa4_rb_skip_job.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+}  // namespace
+
 SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCContext* ctx) {
   Snap& s = G();
   CensusStep(frame);
@@ -2045,6 +2066,11 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
     }
     s.phase = 2;
     s.i = 1;
+    SetSkip(s, 1);
+    if (SkipTail() >= 0) {
+      Out(fmt::format("replay leaves the 82370638 job's items out on frames 1-{} of {}",
+                      std::max(0, int(s.cfg.frames) - SkipTail()), s.cfg.frames));
+    }
     step.rewind = true;
     step.frame = s.at;
     step.replay = true;
@@ -2064,8 +2090,10 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
       step.replay = true;
       step.input = &s.inputs[s.i];
       ++s.i;
+      SetSkip(s, s.i);
       return step;
     }
+    doa4_rb_skip_job.store(0, std::memory_order_relaxed);
     CompareHeaps(s);
     Report(s, base);
     ++s.tests_done;
