@@ -561,7 +561,8 @@ void MenuDialog::DrawVideoSettings() {
   for (const char* line : kTextureFilteringNote) ImGui::TextDisabled("%s", line);
 
   // gpu_upload_prefetch is read by the SDK at every swap: no further call needed. The hand-off carries the host's value to
-  // the joiner, so in a session the box shows the value in effect and is locked (drawn disabled; nothing else acts on it).
+  // the joiner, so in a session the box shows the value in effect and is locked (drawn disabled; no other menu code acts on
+  // kGpuUploads). The SDK's F4 settings overlay and the DOA4_GX test switch can still set the cvar in a session.
   ImGui::SeparatorText("Performance");
   bool prefetch = rex::cvar::Query<bool>("gpu_upload_prefetch");
   const bool uploads_locked = Locked(online_view::Control::kGpuUploads);
