@@ -169,9 +169,6 @@ constexpr std::array<const char*, 2> kSpeakersNote = {
     "Automatic follows Windows: 5.1 when the speakers are set to 5.1 or more,",
     "stereo otherwise. 5.1 surround always sends six channels."};
 constexpr float kVolumeSliderWidth = 260.0f;
-constexpr std::array<const char*, 2> kVolumeNote = {
-    "The game's overall loudness on this PC. Above 100 % the loudest moments",
-    "are held back so they do not distort."};
 constexpr const char* kVolumeSessionNote = "In an online session the volume is kept until the game closes.";
 constexpr float kLanguageComboWidth = 220.0f;
 constexpr const char* kSkipIntroLabel = "Skip the intro at start-up";
@@ -426,7 +423,6 @@ float MenuDialog::WidestRow() {
   for (const char* t : kAntiAliasingNote) w.push_back(text(t));
   for (const char* t : kTextureFilteringNote) w.push_back(text(t));
   for (const char* t : kSpeakersNote) w.push_back(text(t));
-  for (const char* t : kVolumeNote) w.push_back(text(t));
   w.push_back(text(kVolumeSessionNote));
   w.push_back(row({display::MenuPx(kVolumeSliderWidth, ImGui::GetFontSize()), text("Reset")}));
   w.push_back(text(fmt::format("Custom ({}) set in dead_or_alive_4.toml.", rex::cvar::Query<int32_t>("anisotropic_override"))));
@@ -589,7 +585,6 @@ void MenuDialog::DrawSpeakerSettings() {
     SetPresentationSetting("audio_volume", std::to_string(rex::audio::kVolumePercentDefault), false);
   }
   ImGui::PopID();
-  for (const char* line : kVolumeNote) ImGui::TextDisabled("%s", line);
   if (SessionLocked()) ImGui::TextColored(kNoteColor, "%s", kVolumeSessionNote);
 
   ImGui::SeparatorText("Speakers");
