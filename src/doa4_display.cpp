@@ -33,7 +33,7 @@ std::string FpsMeter::Text() const {
 
 CursorAction DecideCursor(const CursorInputs& in) {
   if (in.mnk_mode) return CursorAction::kLeave;
-  const bool needs_mouse = in.menu_open || in.setup_open || in.sdk_overlay_open;
+  const bool needs_mouse = in.menu_open || in.setup_open || in.sdk_overlay_open || in.xam_dialog_open;
   return in.focused && !needs_mouse ? CursorAction::kHide : CursorAction::kShow;
 }
 

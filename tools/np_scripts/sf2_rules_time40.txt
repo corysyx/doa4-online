@@ -1,0 +1,215 @@
+# Small fixes 2, Task 5 step 9 (Review Focus 2): Single, then out to Settings and Round Time -> 40 (RIGHT x4 from the
+# session start of 60: 60 -> 99 -> No Limit -> 30 -> 40), then Tag (time fixed at 99 by the game), then Single again
+# (it must read time 40: nothing re-applies the start rules). Same presses as sf2_rules_single_tag.txt otherwise;
+# the second Settings visit changes nothing. Offline on np_runs/sf2/ud/targets_edit (Round Time 60 as in a session):
+# Single life 300 rounds 3 time 60, Tag life 300 rounds 2 time 99, Single life 300 rounds 3 time 40.
+# Mapped offline on sf2-5a (np_runs/sf2/t5, runs t5m1..t5m4):
+# - out of a fight: START, wait 120 (the pause menu ignores presses for about the first 100 frames), DOWN x2 = Select
+#   Character, A, "Are you sure you want to quit?" A = Yes, B x2 = the Versus list (cursor on the mode just played).
+# - B on the Versus list = Mode Select on VERSUS; RIGHT x2 = SETTINGS; A, A, DOWN x4, A = the Versus Mode rows; B x3 =
+#   Mode Select on SETTINGS; LEFT x2 = VERSUS. Going through Mode Select gives a fresh PLAYER ENTRY (P1 left, P2 centre),
+#   as the stock scripts expect; straight from the list after a match, P2 stays on the right and P1 is centred.
+# Needs --headless=true (the entry's sign-in message box is answered with its default).
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+# Single
+4 A
+90 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+4 A A
+60 -
+4 A A
+360 -
+4 RIGHT
+30 -
+4 A
+600 -
+shot
+# out of the fight to the Versus list
+4 START
+120 -
+4 DOWN
+60 -
+4 DOWN
+60 -
+4 A
+240 -
+4 A
+300 -
+4 B
+150 -
+4 B
+150 -
+shot
+# Mode Select -> Settings -> Game Settings -> Versus Mode rows (nothing changed) -> back to Mode Select on VERSUS
+4 B
+150 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+4 A
+150 -
+4 A
+120 -
+4 DOWN
+30 -
+4 DOWN
+30 -
+4 DOWN
+30 -
+4 DOWN
+30 -
+30 -
+4 A
+150 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 RIGHT
+40 -
+4 RIGHT
+40 -
+4 RIGHT
+40 -
+4 RIGHT
+40 -
+shot
+10 -
+4 B
+150 -
+4 B
+150 -
+4 B
+150 -
+4 LEFT
+30 -
+4 LEFT
+40 -
+# Tag
+4 A
+90 -
+shot
+4 RIGHT
+30 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+4 A A
+60 -
+4 A A
+120 -
+4 A A
+60 -
+4 A A
+600 -
+4 A
+600 -
+shot
+# out of the fight to the Versus list
+4 START
+120 -
+4 DOWN
+60 -
+4 DOWN
+60 -
+4 A
+240 -
+4 A
+300 -
+4 B
+150 -
+4 B
+150 -
+shot
+# Mode Select -> Settings -> rows (nothing changed) -> back to Mode Select on VERSUS
+4 B
+150 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+4 A
+150 -
+4 A
+120 -
+4 DOWN
+30 -
+4 DOWN
+30 -
+4 DOWN
+30 -
+4 DOWN
+30 -
+30 -
+4 A
+150 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+4 DOWN
+40 -
+176 -
+shot
+10 -
+4 B
+150 -
+4 B
+150 -
+4 B
+150 -
+4 LEFT
+30 -
+4 LEFT
+40 -
+# Single again
+4 A
+90 -
+shot
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+4 A A
+60 -
+4 A A
+360 -
+4 RIGHT
+30 -
+4 A
+600 -
+shot
+60 -
+quit

@@ -162,5 +162,8 @@ const FrameInput* StagedInput();  // null outside a session
 uint32_t CurrentFrame();          // the frame being run (the last frame hook's)
 uint64_t SessionSeed();
 void LogLine(const std::string& line);  // np_log.txt and the game log
+// The title mask's latch (np_title_mask.h): the 2D sprite hook hands it every submission with its draw bit. Does
+// nothing outside an np session.
+void NoteTitleMaskSprite(uint32_t sprite, bool visible);
 
 }  // namespace doa4::np

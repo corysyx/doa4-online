@@ -54,6 +54,8 @@
 #include "../doa4_unlocks.h"
 #include "../doa4_update_notice.h"
 #include "np_core.h"
+#include "np_start_rules.h"
+#include "np_title_mask.h"
 #include "np_det.h"
 #include "np_det_internal.h"
 #include "np_exec.h"
@@ -1117,6 +1119,74 @@ bool EndOnWorkerRequest(State& s, uint32_t f) {
   return true;
 }
 
+// The title mask (np_title_mask.h): the latch, armed at frame 0 and stepped once a frame by the frame hook
+// (TitleMaskFrame) from the draws the sprite hook notes (NoteTitleMaskSprite), and the joiner's filter, applied to the
+// joiner's pad in OnFrameOnline. The sprite hook and the
+// frame hook are both guest main-thread work; the lock keeps a call from another thread from tearing the state.
+// The edge lines are written in every np session (record, replay, live), from guest draws, so both sides of a pair
+// write the same lines at the same frames; the replaced-input lines only on a live session's joiner.
+std::mutex g_title_mask_mu;
+title_mask::TitleMask g_title_mask;
+title_mask::JoinerFilter g_joiner_filter;
+uint32_t g_title_mask_armed_at = 0;  // the frame of the last arm edge
+
+std::string Hex(uint32_t v, int digits) {
+  char text[16];
+  std::snprintf(text, sizeof text, "%0*X", digits, unsigned(v));
+  return text;
+}
+
+// The caller holds g_title_mask_mu.
+void LogTitleMaskEdge(title_mask::Edge e, uint32_t frame, uint32_t sprite) {
+  const std::string at = "title mask: frame " + std::to_string(frame) + ": ";
+  switch (e) {
+    case title_mask::Edge::kNone:
+      return;
+    case title_mask::Edge::kArmedSessionStart:
+      g_title_mask_armed_at = frame;
+      Log(at + "armed (session start)");
+      return;
+    case title_mask::Edge::kArmedTitleLogo:
+      g_title_mask_armed_at = frame;
+      Log(at + "armed (title logo 0x30000 drawn)");
+      return;
+    case title_mask::Edge::kOff: {
+      Log(at + "off (Mode Select reached: item caption 0x" + Hex(sprite, 5) + " drawn)");
+      const uint32_t replaced = g_joiner_filter.TakeReplacedCount();
+      if (S().mode == Mode::kOnline && S().slot != 0)
+        Log(at + "the joiner's input was replaced on " + std::to_string(replaced) +
+            " frames of the armed period that began at frame " + std::to_string(g_title_mask_armed_at));
+      return;
+    }
+  }
+}
+
+// The frame hook, at the start of frame f, before f's input: frame 0 arms (session start); every later frame applies the
+// draws of frame f - 1 (np_title_mask.h EndFrame) and logs an edge with that frame's number.
+void TitleMaskFrame(uint32_t f) {
+  std::lock_guard lk(g_title_mask_mu);
+  if (f == 0) {
+    g_title_mask.EndFrame();  // nothing is drawn before frame 0's hook; forget it if anything was
+    LogTitleMaskEdge(g_title_mask.OnSessionStart(), f, 0);
+    return;
+  }
+  const title_mask::Edge e = g_title_mask.EndFrame();
+  LogTitleMaskEdge(e, f - 1, g_title_mask.LastMenuSprite());
+}
+
+// The frame's local pad on a live session's side: the joiner's is sent as nothing pressed while the latch is armed, and
+// a button held from under the mask stays released until let go once. The host's goes through unchanged.
+Pad TitleMaskLocalPad(const State& s, uint32_t f, const Pad& local) {
+  std::lock_guard lk(g_title_mask_mu);
+  const bool mask = title_mask::MaskLocalInput(s.slot != 0, s.mode == Mode::kOnline, g_title_mask.Armed());
+  const title_mask::JoinerFilter::Out out = g_joiner_filter.Apply(mask, local);
+  if (out.first_replaced)
+    Log("title mask: frame " + std::to_string(f) + ": the joiner's input (buttons " + Hex(local.buttons, 4) +
+        ") replaced by nothing pressed, the first in the armed period that began at frame " +
+        std::to_string(g_title_mask_armed_at));
+  return out.sent;
+}
+
 void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   State& s = S();
   const double t0 = Now(s);
@@ -1154,6 +1224,7 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   if (EndOnWorkerRequest(s, f)) return;
 
   if (f == 0) ForceStash(ctx, base);
+  TitleMaskFrame(f);
 
   // (1) the state entering f, and its checksum
   const double h0 = Now(s);
@@ -1214,6 +1285,7 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     Pad p;
     if (s.host.read_local_pad(&p)) local = p;
   }
+  local = TitleMaskLocalPad(s, f, local);  // before the pad enters the lockstep (np_title_mask.h)
   bool shot = false;
   for (ScriptEvent::Kind k : fired) {
     if (k == ScriptEvent::kShot) shot = true;
@@ -1383,6 +1455,7 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
     Quit(s, "lanes end request: " + cause);
     return;
   }
+  TitleMaskFrame(f);  // the title mask's edge lines (np_title_mask.h); a record or replay never masks
 
   // 1. Hash the state entering frame f.
   const double h0 = Now(s);
@@ -1572,7 +1645,8 @@ void StartOnline(Host host) {
       s.ho.suit_state == rules::SuitSession::kNone ? "" : "suits=" + std::string(rules::SuitSessionName(s.ho.suit_state)) + "\n";
   const std::string extra = "guest=" + s.guest_meta + "\nunlock=1\nguest_skipped=" +
                             (g_skipped.empty() ? std::string("none") : g_skipped) + "\nsession=online role=" +
-                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta;
+                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta +
+                            start_rules::MetaLine(start_rules::MemoryWriteArmed());  // fix round 1: a replay arms from it
   // The worker order's inputs, before CurrentMeta (its workers= line is the decision). Lockstep port B3: the order is the host's, from
   // the hand-off's worker_order byte (0 lanes, 1 serial; range-checked by handoff::Unpack), the same byte in both session processes;
   // this process never reads the netplay_worker_order key. A session runs lanes (mode 4) unless the host's key says serial.
@@ -1727,6 +1801,16 @@ void PrepareReplayRules() {
     s.unlock = unlock == "1";
     EarlyLog("replay: the recording's unlock=" + unlock + (s.unlock ? " (the frame hook unlocks everything)" : ""));
   }
+  // Starting rules (fix round 1): a live armed session wrote the rules in memory; its replay starts from ud_start, the
+  // unedited save, so it arms from the recording's key and makes the same write. No key: not armed (a recording made
+  // before the key existed; only the unreleased sf2-5a made armed recordings without it).
+  const std::string rules = MetaValue(rec.meta, start_rules::kMetaKey);
+  const bool armed = start_rules::ArmedFromMeta(rules);
+  start_rules::ArmMemoryWrite(armed);
+  EarlyLog(rules == "(none)"
+               ? std::string("replay: start rules: the recording has no start_rules key: no in-memory write")
+               : "replay: start rules: the recording's start_rules=" + rules +
+                     (armed ? ": written in memory at the first match-rule load" : ": no in-memory write"));
 }
 
 bool Online() { return S().mode == Mode::kOnline; }
@@ -1920,6 +2004,13 @@ void Start(Host host) {
 }
 
 void LogLine(const std::string& line) { Log(line); }
+
+void NoteTitleMaskSprite(uint32_t sprite, bool visible) {
+  if (!Active()) return;
+  if (sprite != title_mask::kTitleLogoSprite && !title_mask::IsMenuSignal(sprite, visible)) return;
+  std::lock_guard lk(g_title_mask_mu);
+  g_title_mask.OnDraw(sprite, visible);  // applied at the frame's end (TitleMaskFrame)
+}
 
 // The writer captures through the presenter, so it must be done before the presenter goes. The race this
 // closes (a queued shot captured while the presenter is torn down) cannot be forced by a test: the check
