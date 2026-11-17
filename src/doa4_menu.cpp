@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 
+#include <rex/audio/output_gain.h>
 #include <rex/audio/speaker_mode.h>
 #include <rex/cvar.h>
 #include <rex/input/input_system.h>
@@ -167,6 +168,11 @@ constexpr std::array<const char*, 2> kTextureFilteringNote = {
 constexpr std::array<const char*, 2> kSpeakersNote = {
     "Automatic follows Windows: 5.1 when the speakers are set to 5.1 or more,",
     "stereo otherwise. 5.1 surround always sends six channels."};
+constexpr float kVolumeSliderWidth = 260.0f;
+constexpr std::array<const char*, 2> kVolumeNote = {
+    "The game's overall loudness on this PC. Above 100 % the loudest moments",
+    "are held back so they do not distort."};
+constexpr const char* kVolumeSessionNote = "In an online session the volume is kept until the game closes.";
 constexpr float kLanguageComboWidth = 220.0f;
 constexpr const char* kSkipIntroLabel = "Skip the intro at start-up";
 constexpr const char* kSkipIntroNote = "Starts at the title screen. Applies at the next start.";
@@ -420,6 +426,9 @@ float MenuDialog::WidestRow() {
   for (const char* t : kAntiAliasingNote) w.push_back(text(t));
   for (const char* t : kTextureFilteringNote) w.push_back(text(t));
   for (const char* t : kSpeakersNote) w.push_back(text(t));
+  for (const char* t : kVolumeNote) w.push_back(text(t));
+  w.push_back(text(kVolumeSessionNote));
+  w.push_back(row({display::MenuPx(kVolumeSliderWidth, ImGui::GetFontSize()), text("Reset")}));
   w.push_back(text(fmt::format("Custom ({}) set in dead_or_alive_4.toml.", rex::cvar::Query<int32_t>("anisotropic_override"))));
   {
     ExtrasState unsaved;  // both restart warnings (UnsavedUnlocksWarning), whichever shows
@@ -551,6 +560,38 @@ void MenuDialog::DrawVideoSettings() {
 
 // The Game tab's speakers part: the Speakers choice (its own separator) and the Output device block.
 void MenuDialog::DrawSpeakerSettings() {
+  // Master volume (audio_volume, read by the audio driver for every chunk it plays): a drag is heard at
+  // once and the value is written to the settings file when the drag ends. It changes only this PC's
+  // output, so it stays usable in an online session; there it is set in memory only, like every other
+  // setting near a session (the session restores the settings file at its end).
+  ImGui::SeparatorText("Volume");
+  ImGui::PushID("volume");
+  int volume = rex::cvar::Query<int32_t>("audio_volume");
+  ImGui::SetNextItemWidth(display::MenuPx(kVolumeSliderWidth, ImGui::GetFontSize()));
+  if (ImGui::SliderInt("##volume", &volume, rex::audio::kVolumePercentMin, rex::audio::kVolumePercentMax,
+                       "%d %%", ImGuiSliderFlags_AlwaysClamp)) {
+    if (!rex::cvar::SetFlagByName("audio_volume", std::to_string(volume))) {
+      status_ = fmt::format("Could not set audio_volume to {}.", volume);
+    }
+  }
+  if (ImGui::IsItemDeactivatedAfterEdit() && !SessionLocked()) {
+    std::string error = SaveTomlKey(host_.config_path, "audio_volume",
+                                    std::to_string(rex::cvar::Query<int32_t>("audio_volume")));
+    if (error.empty()) {
+      status_.clear();
+      REXLOG_INFO("[doa4][UI] audio_volume = {} saved", rex::cvar::Query<int32_t>("audio_volume"));
+    } else {
+      status_ = "Could not save settings: " + error;
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Reset")) {
+    SetPresentationSetting("audio_volume", std::to_string(rex::audio::kVolumePercentDefault), false);
+  }
+  ImGui::PopID();
+  for (const char* line : kVolumeNote) ImGui::TextDisabled("%s", line);
+  if (SessionLocked()) ImGui::TextColored(kNoteColor, "%s", kVolumeSessionNote);
+
   ImGui::SeparatorText("Speakers");
   if (!host_.saved_speakers) return;
   std::string& saved = *host_.saved_speakers;
