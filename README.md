@@ -71,6 +71,12 @@ cores) the game can slow down a lot when playing online. Online, avoid the CPU-h
 Savannah Safari and Experimental Playground, and avoid the DOAX2 swimsuits: they take more CPU than the
 original DOA4 costumes.
 
+**Slow graphics card:** if your graphics card is the slow part (a built-in or older card), try the Esc menu,
+**Game** tab, **Performance**, **Batch GPU uploads (for slower graphics cards)**. It can raise the frame rate; as a
+side effect, hair and other moving parts can be drawn one frame late now and then. It does not help a slow CPU,
+which is what slows online play down above. Online, the host's choice is used for both players, so the host ticks
+it.
+
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
 pre-releases named `alpha-v<x.y.z>` on
@@ -315,7 +321,7 @@ that the game ran fine. Solo offline play does not seem to work under Linux for 
 | Alpha-152 (Esc menu, **Extras** tab, **Alpha-152 playable**): her icon in the Team Battle team list and on the results screen shows "?". | A proper icon is planned. |
 | Alpha-152: her model does not show on character select in an online match where the two players' DOAX2 swimsuit imports differ, or in Tag's second-fighter panel. | She is still playable there; only the select-screen model is missing. A fix is planned. |
 | The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
-| Online: on a CPU with fewer cores (for example 4 cores) the game can slow down a lot, because both games run at the speed of the slower PC. | Avoid the CPU-heavy stages, such as Savannah Safari and Experimental Playground, when playing online. Avoid the DOAX2 swimsuits online too: they take more CPU than the original DOA4 costumes. |
+| Online: on a CPU with fewer cores (for example 4 cores) the game can slow down a lot, because both games run at the speed of the slower PC. | Avoid the CPU-heavy stages, such as Savannah Safari and Experimental Playground, when playing online. Avoid the DOAX2 swimsuits online too: they take more CPU than the original DOA4 costumes. If the graphics card rather than the CPU is the slow part, the host can tick **Batch GPU uploads** (Esc menu, **Game** tab). |
 | Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
 | Linux (Proton / Wine): the game starts to a black screen instead of opening as intended (reported by one player on GE-Proton11-12). | Joining an online session with another player is reported to still work, and the game runs fine after that. Solo offline play does not seem to work yet. |
 
