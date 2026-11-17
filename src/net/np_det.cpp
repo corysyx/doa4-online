@@ -81,6 +81,7 @@
 
 #include "np_core.h"
 #include "np_det_internal.h"
+#include "np_det_lanes.h"
 #include "np_session.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -131,6 +132,7 @@ std::atomic<uint32_t> g_counters[kCounterCount];
 constexpr const char* kCounterNames[] = {
     "fb_worker_token", "fb_main_wait",  "fb_unranked",    "fb_loader_outside", "fb_loader_idle",
     "fb_audio_late",   "fb_spin_cap",   "fb_cri_ready",   "fb_audio_start",    "fb_reader",
+    "fb_lane_stall",   "fb_lane_end",   "fb_vsm_stand_down",
     "pr_cri_passes",   "pr_spin_steps", "pr_loader_jobs", "pr_cri_jobs",       "pr_reseeds",
     "pr_notify"};
 static_assert(std::size(kCounterNames) == kCounterCount, "one name per Counter, in enum order");
@@ -274,6 +276,19 @@ void AllowFileTimes(bool allow) { g_allow_file_times = allow; }
 
 std::string FixSetName() { return FixSetText(SessionFixes(ParseFixSet(TestSwitch("DOA4_NP_FIX")), g_allow_file_times)); }
 
+// As Start computes the fix set (below), so the decision made before Start reads what Start will store (Task 4b, finding 1).
+bool WorkersFixAtStart() {
+  return (SessionFixes(ParseFixSet(TestSwitch("DOA4_NP_FIX")), g_allow_file_times) & kWorkers) != 0;
+}
+
+void SetWorkerInputs(bool online, bool handoff_serial, bool replay, const std::string& meta_workers) {
+  WorkersSetInputs(WorkersFixAtStart(), online, handoff_serial, replay, meta_workers);
+}
+
+void PreFrame(uint32_t frame, uint8_t* base) { WorkersPreFrame(frame, base); }
+
+bool EndRequested(std::string* cause) { return eng::EndRequested(cause); }
+
 void Start(uint64_t seed, const std::filesystem::path& dir) {
   g_seed = seed;
   g_seeds.Reset();  // the series counts the seedings of this session
@@ -299,7 +314,7 @@ void Start(uint64_t seed, const std::filesystem::path& dir) {
 void OnFrame(uint32_t frame, PPCContext& ctx, uint8_t* base) {
   TraceFrame(frame);
   g_frame.store(frame, std::memory_order_release);
-  WorkersFrame();
+  WorkersFrame(base);
   MiddlewareFrame(frame, ctx, base);
 }
 

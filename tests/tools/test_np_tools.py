@@ -318,9 +318,12 @@ def test_counter_names_match_source(root):
     table = re.search(r"kCounterNames\[\]\s*=\s*\{(.*?)\};", src, re.S)
     names = re.findall(r'"([^"]*)"', table.group(1)) if table else []
     # 16 since Task 11c: fb_reader (the reader fix's fallback) - a fallback counter, so np_compare's "no fallbacks"
-    # judges it (NOT a pr_ name, which would only be compared between runs)
-    check(len(names) == 16, f"np_det.cpp: expected 16 counter names, found {len(names)}")
+    # judges it (NOT a pr_ name, which would only be compared between runs). 19 since the lockstep port's B2: worker
+    # mode 4's three fallbacks (a stall over 2 s, an end request, a stand-down of the list pass), after fb_reader
+    check(len(names) == 19, f"np_det.cpp: expected 19 counter names, found {len(names)}")
     check("fb_reader" in names, f"np_det.cpp: the reader fix's fallback counter fb_reader: {names}")
+    check(names[10:13] == ["fb_lane_stall", "fb_lane_end", "fb_vsm_stand_down"],
+          f"np_det.cpp: mode 4's three fallback counters right after fb_reader: {names}")
     check(all(re.fullmatch(r"(fb|pr)_[a-z_]+", n) and len(n) <= 23 for n in names),
           f"np_det.cpp: every name is fb_/pr_ and fits the file's 23 characters: {names}")
     enum = re.search(r"enum Counter : int \{(.*?)kCounterCount", open(os.path.join(net, "np_det_internal.h"),
@@ -935,8 +938,9 @@ def test_compare_final_progress(root):
 def test_gate_final_progress(root):
     # the gate prints every run's final progress counters once (not once per pair), so the values a good
     # build ends with are in the gate's own output. The stand-in's counter at COUNTERS index i ends at
-    # (i + 1) * 100 + 11 (12 frames); pr_cri_passes is index 10 since fb_reader (index 9) came in (Task 11c).
-    final = "pr_cri_passes=1111 pr_spin_steps=1211 pr_loader_jobs=1311 pr_cri_jobs=1411 pr_reseeds=1511 pr_notify=1611"
+    # (i + 1) * 100 + 11 (12 frames); pr_cri_passes is index 13 since fb_lane_stall, fb_lane_end and
+    # fb_vsm_stand_down (indexes 10 to 12) came in after fb_reader (index 9; lockstep port B2).
+    final = "pr_cri_passes=1411 pr_spin_steps=1511 pr_loader_jobs=1611 pr_cri_jobs=1711 pr_reseeds=1811 pr_notify=1911"
     code, out, runs = gate(root, "fp", "--script", SCRIPT, "--replays", "1", "--concurrent", "1")
     check(code == 0, f"gate, final progress: exit {code}\n{out}")
     for n in ("fp_rec", "fp_rep1", "fp_con1"):
@@ -949,12 +953,12 @@ def test_gate_final_progress(root):
     check(code == 1, f"gate, final progress, an unreadable recording: exit {code}\n{out}")
     check("fq_rep1 final progress: none (no counters.d4k)\n" in out, f"gate, final progress: the run without counters\n{out}")
     check(f"fq_rec final progress: {final}\n" in out, f"gate, final progress: the good run still printed\n{out}")
-    # each line comes from its own run: one concurrent replay ends with pr_notify 1612 (+1 at its last row only),
-    # the others with 1611; the pairs that include it differ and fail the gate
+    # each line comes from its own run: one concurrent replay ends with pr_notify 1912 (+1 at its last row only),
+    # the others with 1911; the pairs that include it differ and fail the gate
     code, out, runs = gate(root, "fr", "--script", SCRIPT, "--replays", "1", "--concurrent", "2", FAKE_GAME_PROGRESS_END="_con2")
     check(code == 1 and "pr_notify first differs at frame 11" in out, f"gate, final progress, runs that end apart: exit {code}\n{out}")
-    for n, notify in (("fr_rec", 1611), ("fr_rep1", 1611), ("fr_con1", 1611), ("fr_con2", 1612)):
-        line = final.replace("pr_notify=1611", f"pr_notify={notify}")
+    for n, notify in (("fr_rec", 1911), ("fr_rep1", 1911), ("fr_con1", 1911), ("fr_con2", 1912)):
+        line = final.replace("pr_notify=1911", f"pr_notify={notify}")
         check(f"{n} final progress: {line}\n" in out, f"gate, final progress, runs that end apart: the line of {n}\n{out}")
     # the helper alone: runs of different values, a missing file, a file that is not a counters file
     gate_final_progress = load("np_gate").final_progress

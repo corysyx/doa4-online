@@ -71,8 +71,9 @@ HANG_SECONDS = 8  # FAKE_GAME_HANG: long enough for a test's timeout of a few se
 REGIONS =[("game_obj", 0x8320D110, 0x63B0), ("frame_ctr", 0x831013E4, 4)]
 SWEEP_PER = 2
 COUNTERS = ["fb_worker_token", "fb_main_wait", "fb_unranked", "fb_loader_outside", "fb_loader_idle",
-            "fb_audio_late", "fb_spin_cap", "fb_cri_ready", "fb_audio_start", "fb_reader", "pr_cri_passes",
-            "pr_spin_steps", "pr_loader_jobs", "pr_cri_jobs", "pr_reseeds", "pr_notify"]
+            "fb_audio_late", "fb_spin_cap", "fb_cri_ready", "fb_audio_start", "fb_reader", "fb_lane_stall",
+            "fb_lane_end", "fb_vsm_stand_down", "pr_cri_passes", "pr_spin_steps", "pr_loader_jobs", "pr_cri_jobs",
+            "pr_reseeds", "pr_notify"]
 # The line np_det.cpp KeepAliveSkip logs, filled in as the real game would (pinned against the source's format
 # string by test_keepalive_warn_text).
 KEEPALIVE_WARN = ("WARN keep-alive: sub_8275AEE0 called on the D3D kick thread 8275BD18 from lr 82765D70, not from "

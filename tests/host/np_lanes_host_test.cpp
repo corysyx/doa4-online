@@ -458,6 +458,83 @@ static void TestTurnsCounts() {
   j.MidWaitEnd(0);
   CHECK(j.MaxAtOnce() == 1);      // precondition: 0 is at its job, so a count beside main would be 1
   CHECK(j.MaxBesideMain() == 0);  // traced: MidWaitEnd's Note runs with the join mark set
+  // MaxLaneBesideMain (B2 fix wave F2, review M1): lane workers only (kLane: 0 is lane 1's first, 12 lane 2's first; 20 is a free cloth
+  // worker with no lane), counted where MaxBesideMain is (main not waiting, before the join), started again by FrameReset from the lane
+  // workers still at their job. Each value traced by hand from np_lanes_pure.cpp Note, MidWaitEnd, End and FrameReset.
+  Turns l1;  // case 1: a lane worker ends its mid wait, main not waiting, before the join
+  l1.Begin(0);
+  l1.MidWaitBegin(0);
+  l1.MainReachedMid();
+  l1.MidWaitEnd(0);
+  CHECK(l1.MaxLaneBesideMain() == 1);
+  CHECK(l1.MaxBesideMain() == 1);
+  Turns l2;  // case 2: a cloth worker the same, no lane worker at its job (a count of every worker would be 1)
+  l2.Begin(20);
+  l2.MidWaitBegin(20);
+  l2.MainReachedMid();
+  l2.MidWaitEnd(20);
+  CHECK(l2.MaxBesideMain() == 1);  // precondition: 20 is counted beside main
+  CHECK(l2.MaxLaneBesideMain() == 0);
+  Turns l3;  // case 3: a lane worker ends its mid wait while the main thread is marked waiting
+  l3.MainWaiting(true);
+  l3.Begin(0);
+  l3.MidWaitBegin(0);
+  l3.MainReachedMid();
+  l3.MidWaitEnd(0);
+  CHECK(l3.MaxAtOnce() == 1);  // precondition: 0 is at its job
+  CHECK(l3.MaxBesideMain() == 0);
+  CHECK(l3.MaxLaneBesideMain() == 0);
+  Turns l4;  // case 4: after the join, main not waiting
+  l4.Begin(0);
+  l4.MidWaitBegin(0);
+  l4.MainReachedMid();
+  l4.MainReachedJoin();
+  l4.MidWaitEnd(0);
+  CHECK(l4.MaxAtOnce() == 1);  // precondition: 0 is at its job
+  CHECK(l4.MaxLaneBesideMain() == 0);
+  Turns l5;  // case 5: two lane workers of different lanes at their job, main not waiting (a count held at 1 would be 1)
+  l5.Begin(0);
+  l5.Begin(12);
+  l5.MidWaitBegin(0);
+  l5.MidWaitBegin(12);
+  l5.MainReachedMid();
+  l5.MidWaitEnd(0);
+  l5.MidWaitEnd(12);
+  CHECK(l5.MaxLaneBesideMain() == 2);
+  CHECK(l5.MaxBesideMain() == 2);
+  // case 6: FrameReset after case 1's worker has ended
+  l1.End(0);
+  CHECK(l1.MaxLaneBesideMain() == 1);  // precondition: the frame's maximum outlives the worker's end until the reset
+  l1.FrameReset();
+  CHECK(l1.MaxLaneBesideMain() == 0);
+  // case 6, the start value: FrameReset starts it from the lane workers still at their job, not from every worker at its job
+  l2.FrameReset();                     // 20 (no lane) still at its job
+  CHECK(l2.MaxBesideMain() == 1);      // precondition: the old count starts from every worker at its job
+  CHECK(l2.MaxLaneBesideMain() == 0);
+  Turns l6;
+  l6.Begin(12);
+  l6.MidWaitBegin(12);
+  l6.MainReachedMid();
+  l6.MidWaitEnd(12);
+  l6.FrameReset();                     // 12 (lane 2) still at its job
+  CHECK(l6.MaxLaneBesideMain() == 1);
+  // case 7 (fix check W1): End lowers the lane count only for a lane worker that was at its job. A cloth worker ends after its job
+  // and a lane worker ends without having been at its job; a version that lowers the count for either leaves it below zero, and the
+  // line "lanes beside main" would then read 0 for good. Traced: after End(20) and End(12) the lane count is 0, so worker 0 makes it 1.
+  Turns l7;
+  l7.Begin(20);
+  l7.MidWaitBegin(20);
+  l7.MainReachedMid();
+  l7.MidWaitEnd(20);
+  l7.End(20);                          // a cloth worker ends after its job
+  l7.Begin(12);
+  l7.End(12);                          // a lane worker ends, never at its job
+  CHECK(l7.MaxBesideMain() == 1);      // precondition: 20 was counted beside main
+  CHECK(l7.MaxLaneBesideMain() == 0);  // precondition: no lane worker has been at its job
+  l7.Begin(0);
+  l7.MidWaitBegin(0);
+  l7.MidWaitEnd(0);
+  CHECK(l7.MaxLaneBesideMain() == 1);
 }
 
 static void TestTurnsFrameReset() {
@@ -835,6 +912,17 @@ static void TestDecideMode() {
   }
   CHECK(MetaWorkers(4) == "lanes" && MetaWorkers(3) == "serial");
   CHECK(MetaWorkers(0) == "mode0" && MetaWorkers(1) == "mode1" && MetaWorkers(2) == "mode2");
+  // MakeModeInputs, the one builder of the decision's inputs (task B2, ledger L36, review m12): each argument reaches its field. Each case
+  // is one that a builder leaving one argument at its default decides otherwise (online: case 1; handoff_serial: case 1; replay and
+  // meta_workers: case 4; workers_fix_on: case 5; serial_switch: case 6).
+  CHECK(Is(DecideMode(MakeModeInputs(nullptr, true, true, true, false, nullptr)), 3, false));   // B2's online start
+  CHECK(Is(DecideMode(MakeModeInputs(nullptr, true, true, false, false, nullptr)), 4, false));  // online, hand-off lanes
+  CHECK(Is(DecideMode(MakeModeInputs(nullptr, true, false, true, false, nullptr)), 4, false));  // the hand-off byte means nothing offline
+  CHECK(Is(DecideMode(MakeModeInputs(nullptr, true, false, false, true, "serial")), 3, false)); // a replay of a serial record
+  CHECK(Is(DecideMode(MakeModeInputs(nullptr, false, true, false, false, nullptr)), 0, false)); // the workers fix off
+  CHECK(Is(DecideMode(MakeModeInputs("3", true, true, false, false, nullptr)), 3, false));      // the switch
+  // B2 fix wave F4 (review M4): online and handoff_serial exchanged inside the builder give online, hand-off lanes: 4, not refused
+  CHECK(Is(DecideMode(MakeModeInputs(nullptr, true, false, true, true, "serial")), 3, false));  // offline replay of a serial record
 }
 
 // ---- lanes_test_switch ----
@@ -1006,7 +1094,9 @@ static void TestLines() {
   CHECK(SectionLine(0x8321B178u, SectionState::kAlready, 0x52455800u, 0xF8001ABCu, "") == "section 8321B178: already 52455800 F8001ABC");
   CHECK(SectionLine(0x83303A68u, SectionState::kRefused, 0, 0, "x") == "section 83303A68: refused: x");
   CHECK(SectionLine(0x835780E0u, SectionState::kNotInitialised, 0, 0, "y") == "section 835780E0: refused: y");
-  CHECK(LanesLine(600, 412, 5, 0, 1, 0) == "lanes: frames 600, 2+ at once 412, most at once 5, most beside main 0, stalls 1, end requests 0");
+  // seven different numbers, so an argument printed in another field's place cannot pass (B2 fix wave F2; replaces the pin with 0 twice)
+  CHECK(LanesLine(600, 412, 7, 5, 3, 2, 1) ==
+        "lanes: frames 600, 2+ at once 412, most at once 7, most beside main 5, lanes beside main 3, stalls 2, end requests 1");
   CHECK(CpuLine(3, H({1000, 1000, 7000}), 123456789, 987654321) ==
         "cpu: fight frames 3, wait p50 1.25 ms p99 7.25 ms max 7.00 ms, cycles main 123456789 workers 987654321");
   CHECK(CpuLine(1, H({15749}), 0, 0) == "cpu: fight frames 1, wait p50 15.75 ms p99 15.75 ms max 15.75 ms, cycles main 0 workers 0");

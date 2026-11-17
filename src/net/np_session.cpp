@@ -393,7 +393,7 @@ std::string CurrentMeta(const std::filesystem::path& game_data_root, uint32_t sw
   }
   const std::string serial = Switch("DOA4_NP_SERIAL");
   return "build=" + BuildId() + "\ndata=" + DataId(game_data_root) + "\nfixes=" + det::FixSetName() +
-         "\nserial=" + (serial.empty() ? std::string("default") : serial) + "\nsweep=" +
+         "\nserial=" + (serial.empty() ? std::string("default") : serial) + "\nworkers=" + det::WorkersMeta() + "\nsweep=" +
          std::to_string(sweep_per_frame) + "\ntweaks=" + tweaks + "\n" + extra;
 }
 
@@ -1381,6 +1381,12 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
     Quit(s, "end of the recording");
     return;
   }
+  // P17: the frame hook's checks of worker mode 4, then its end request, both before anything of frame f is hashed (design 6).
+  det::PreFrame(f, base);
+  if (std::string cause; det::EndRequested(&cause)) {
+    Quit(s, "lanes end request: " + cause);
+    return;
+  }
 
   // 1. Hash the state entering frame f.
   const double h0 = Now(s);
@@ -1416,6 +1422,10 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
   const double d0 = Now(s);
   det::OnFrame(f, ctx, base);
   const double det_us = Now(s) - d0;
+  if (std::string cause; det::EndRequested(&cause)) {  // the second read (design 6): a request raised since the first ends the run here
+    Quit(s, "lanes end request: " + cause);
+    return;
+  }
 
   // 3. Screenshots and the end of the run.
   bool shot = false;
@@ -1567,6 +1577,9 @@ void StartOnline(Host host) {
   const std::string extra = "guest=" + s.guest_meta + "\nunlock=1\nguest_skipped=" +
                             (g_skipped.empty() ? std::string("none") : g_skipped) + "\nsession=online role=" +
                             std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta;
+  // The worker order's inputs, before CurrentMeta (its workers= line is the decision). Lockstep port B2: an online session passes a
+  // serial hand-off, so every online session stays in mode 3 until B3 carries the host's order in the hand-off.
+  det::SetWorkerInputs(true, true, false, std::string());
   const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
   s.rec = _wfopen((s.dir / "rec.d4r").wstring().c_str(), L"wb");
   const std::string head = EncodeRecHeader(s.seed, 0, meta);
@@ -1851,6 +1864,10 @@ void Start(Host host) {
   } else {
     det::AllowFileTimes(false);
   }
+  // The worker order's inputs, before CurrentMeta (its workers= line is the decision): a replay runs the order its recording names
+  // (MetaValue answers "(none)" for a recording without the line, which the decision refuses: mode 3 and a WARN line).
+  det::SetWorkerInputs(false, false, s.mode == Mode::kReplay,
+                       s.mode == Mode::kReplay ? MetaValue(s.replay.meta, "workers") : std::string());
   const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
 
   if (s.mode == Mode::kReplay) {

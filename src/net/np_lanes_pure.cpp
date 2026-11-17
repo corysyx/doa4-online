@@ -187,6 +187,7 @@ void Turns::FrameReset() {
   for (int w = 0; w < kWorkers; ++w) ended_[w] = false;
   mid_ = join_ = main_waiting_ = false;
   max_at_once_ = max_beside_ = at_job_count_;  // 0 unless a worker is still at its job (the pre-frame step ends the session then)
+  max_lane_beside_ = lane_at_job_count_;       // the same, of the lane workers only
 }
 
 int Turns::BlockerOf(int w) const {
@@ -219,6 +220,7 @@ bool Turns::End(int w) {
   if (at_job_[w]) {
     at_job_[w] = false;
     --at_job_count_;
+    if (lane_of_[w] >= 0) --lane_at_job_count_;
   }
   ended_[w] = true;
   return unseen;
@@ -234,6 +236,7 @@ void Turns::MidWaitEnd(int w) {
   if (!at_job_[w]) {
     at_job_[w] = true;
     ++at_job_count_;
+    if (lane_of_[w] >= 0) ++lane_at_job_count_;
     Note();
   }
 }
@@ -252,7 +255,10 @@ void Turns::MainWaiting(bool waiting) {
 
 void Turns::Note() {
   max_at_once_ = std::max(max_at_once_, at_job_count_);
-  if (!main_waiting_ && !join_) max_beside_ = std::max(max_beside_, at_job_count_);
+  if (!main_waiting_ && !join_) {
+    max_beside_ = std::max(max_beside_, at_job_count_);
+    max_lane_beside_ = std::max(max_lane_beside_, lane_at_job_count_);  // review M1: must stay 0 (design 3, rule 4)
+  }
 }
 
 int Turns::FirstWaitBlocker() const {
@@ -353,6 +359,18 @@ ModeChoice DecideMode(const ModeInputs& in) {
     out.mode = 4;
   }
   return out;
+}
+
+ModeInputs MakeModeInputs(const char* serial_switch, bool workers_fix_on, bool online, bool handoff_serial, bool replay,
+                          const char* meta_workers) {
+  ModeInputs in;
+  in.serial_switch = serial_switch;
+  in.workers_fix_on = workers_fix_on;
+  in.online = online;
+  in.handoff_serial = handoff_serial;
+  in.replay = replay;
+  in.meta_workers = meta_workers;
+  return in;
 }
 
 std::string MetaWorkers(int mode) {
@@ -553,11 +571,11 @@ std::string SectionLine(uint32_t addr, SectionState state, uint32_t w8, uint32_t
   return head + "refused: " + why;
 }
 
-std::string LanesLine(uint64_t frames, uint64_t frames_2plus, int most_at_once, int most_beside_main, uint64_t stalls,
-                      uint64_t end_requests) {
+std::string LanesLine(uint64_t frames, uint64_t frames_2plus, int most_at_once, int most_beside_main, int lanes_beside_main,
+                      uint64_t stalls, uint64_t end_requests) {
   return "lanes: frames " + std::to_string(frames) + ", 2+ at once " + std::to_string(frames_2plus) + ", most at once " +
-         std::to_string(most_at_once) + ", most beside main " + std::to_string(most_beside_main) + ", stalls " + std::to_string(stalls) +
-         ", end requests " + std::to_string(end_requests);
+         std::to_string(most_at_once) + ", most beside main " + std::to_string(most_beside_main) + ", lanes beside main " +
+         std::to_string(lanes_beside_main) + ", stalls " + std::to_string(stalls) + ", end requests " + std::to_string(end_requests);
 }
 
 std::string CpuLine(uint64_t fight_frames, const WaitHistogram& wait, uint64_t cycles_main, uint64_t cycles_workers) {

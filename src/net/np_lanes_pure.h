@@ -113,6 +113,9 @@ class Turns {
   // This frame's most workers at their job at once, and at once while the main thread ran its own code before the join.
   int MaxAtOnce() const { return max_at_once_; }
   int MaxBesideMain() const { return max_beside_; }
+  // This frame's most lane workers (workers with a lane; the free cloth workers 20 to 24 have none) at their job at once while the main
+  // thread ran its own code before the join (review M1). Design 3, rule 4 makes it 0 in every frame that kept the order.
+  int MaxLaneBesideMain() const { return max_lane_beside_; }
   bool AnyInSection() const { return running_ > 0; }
   // The first worker before w in its lane, in lane order, that has not ended; -1 when none or w is free.
   int BlockerOf(int w) const;
@@ -126,9 +129,9 @@ class Turns {
 
   int lane_of_[kWorkers] = {}, lane_pos_[kWorkers] = {};
   bool in_section_[kWorkers] = {}, ended_[kWorkers] = {}, mid_waiting_[kWorkers] = {}, at_job_[kWorkers] = {};
-  int running_ = 0, at_job_count_ = 0;
+  int running_ = 0, at_job_count_ = 0, lane_at_job_count_ = 0;  // lane_at_job_count_: those at their job that have a lane
   bool mid_ = false, join_ = false, main_waiting_ = false;
-  int max_at_once_ = 0, max_beside_ = 0;
+  int max_at_once_ = 0, max_beside_ = 0, max_lane_beside_ = 0;
 };
 
 // ---- the waiting time (design 6, "How the waiting time is counted"; P18) ----
@@ -186,6 +189,10 @@ struct ModeChoice {
 // workers fix off: 0; (3) online: 3 if handoff_serial, else 4; (4) a replay: meta "lanes" 4, "serial" 3, anything else refused; (5)
 // an offline record: 4. A refused choice carries the mode rules (2) to (5) give without the refused input, 3 where rule (4) refused.
 ModeChoice DecideMode(const ModeInputs& in);
+// The decision's inputs, built here and nowhere else (task B2, ledger L36, review finding m12): copies its six arguments into the
+// six fields, nothing else, so a caller cannot leave one at its default by omission.
+ModeInputs MakeModeInputs(const char* serial_switch, bool workers_fix_on, bool online, bool handoff_serial, bool replay,
+                          const char* meta_workers);
 // The meta value for a mode: "lanes" (4), "serial" (3), "mode<n>" otherwise.
 std::string MetaWorkers(int mode);
 
@@ -265,9 +272,9 @@ std::string PlacementLine(const Placement& p);
 // "section <addr>: made <w8> <w12>", "section <addr>: already <w8> <w12>", "section <addr>: refused: <why>" (kNotInitialised and
 // kRefused); each value 8 upper-case hex digits.
 std::string SectionLine(uint32_t addr, SectionState state, uint32_t w8, uint32_t w12, const std::string& why);
-// "lanes: frames <n>, 2+ at once <n>, most at once <n>, most beside main <n>, stalls <n>, end requests <n>"
-std::string LanesLine(uint64_t frames, uint64_t frames_2plus, int most_at_once, int most_beside_main, uint64_t stalls,
-                      uint64_t end_requests);
+// "lanes: frames <n>, 2+ at once <n>, most at once <n>, most beside main <n>, lanes beside main <n>, stalls <n>, end requests <n>"
+std::string LanesLine(uint64_t frames, uint64_t frames_2plus, int most_at_once, int most_beside_main, int lanes_beside_main,
+                      uint64_t stalls, uint64_t end_requests);
 // "cpu: fight frames <n>, wait p50 <x.xx> ms p99 <x.xx> ms max <x.xx> ms, cycles main <n> workers <n>" (ms rounded half up to the
 // hundredth from the microseconds)
 std::string CpuLine(uint64_t fight_frames, const WaitHistogram& wait, uint64_t cycles_main, uint64_t cycles_workers);
