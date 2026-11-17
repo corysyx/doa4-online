@@ -1,0 +1,81 @@
+# Small fixes 2, Task 6 (Part B): the title's paths, for Task 7. boot -> title (shot) -> idle: the attract sequence
+# (helicopters over the moon from about frame 1800 on first boot, then a long in-engine cinematic) -> START = back to
+# the title -> B (on the title B does nothing) -> START = Mode Select -> B = back to the title (no question) -> START =
+# Mode Select -> quit. The START, B pair after the idle ends on the title whether the attract is still running (START
+# leaves it for the title, B does nothing there) or has returned to the title by itself (START opens Mode Select, B
+# goes back). Mapped offline on sf2-5b (np_runs/sf2/t6, runs t6b1, t6b2, t6b3). Needs --headless=true.
+connect 0 1
+300 -
+shot
+1200 -
+shot
+300 -
+shot
+300 -
+shot
+900 -
+shot
+1000 -
+shot
+1000 -
+shot
+1000 -
+shot
+1000 -
+shot
+1000 -
+shot
+1000 -
+shot
+1000 -
+shot
+1000 -
+shot
+1000 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+250 -
+shot
+# out of the attract (or, if it has ended, into Mode Select)
+6 START
+150 -
+shot
+# on the title B does nothing; on Mode Select it goes back to the title
+4 B
+200 -
+shot
+# the title -> Mode Select
+6 START
+150 -
+shot
+# Mode Select -> back to the title (no question)
+4 B
+200 -
+shot
+# the title -> Mode Select again
+6 START
+150 -
+shot
+60 -
+quit

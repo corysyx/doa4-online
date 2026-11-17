@@ -1,0 +1,57 @@
+# Small fixes 2, Task 6 (Part C): the starting rules after the title's attract. Host column first, joiner second.
+# Host save EMPTY (rules armed): idle on the title into the attract sequence (it starts about 2000 frames after the
+# title appears and runs past frame 15000: t6b1, t6b2, t6b3), the HOST's START at 15000 = back to the title, B (does
+# nothing on the title; on Mode Select, had the attract ended, it goes back), then single.txt's presses from the
+# title to the first Single match (Kasumi vs Ayane), shot, quit. Needs --headless=true (np_pair passes it).
+connect 0 1
+1500 -
+shot
+1500 -
+shot
+3000 -
+shot
+4000 -
+shot
+5000 -
+shot
+# out of the attract
+6 START
+150 -
+shot
+4 B
+200 -
+shot
+# single.txt from the title's START to the match start
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 A A
+60 -
+4 A A
+360 -
+shot
+4 RIGHT
+30 -
+4 A
+600 -
+shot
+60 -
+quit
