@@ -92,6 +92,10 @@ int main() {
   TestCleanBrand();
   TestLogLine();
   TestRead();
-  std::printf("%d checks, %d failures\n", g_checks, g_failures);
-  return g_failures ? 1 : 0;
+  if (g_failures == 0) {
+    std::printf("PASSED: %d checks, 0 failures\n", g_checks);
+    return 0;
+  }
+  std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
+  return 1;
 }
