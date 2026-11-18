@@ -22,7 +22,7 @@ enum Fix : uint32_t {
   kLoader = 1u << 6,    // loader thread jobs only at the frame boundary
   kCri = 1u << 7,       // CRI server passes on the main thread (+ spin steps)
   kCriJob = 1u << 8,    // CRI job-thread jobs inline
-  kWorkers = 1u << 9,   // job workers one at a time in a fixed order
+  kWorkers = 1u << 9,   // job workers in a fixed order (mode 3 one at a time, mode 4 in two lanes: np_lanes_pure.h DecideMode)
   kNotify = 1u << 10,   // system notifications visible at frame boundaries (nothing dropped: the SDK posts none about the host's controllers)
   kKeepAlive = 1u << 11,  // the D3D kick thread's timeout re-present does nothing (np_core.h ClassifyKeepAlive)
   kReader = 1u << 12,     // the save manager's one-shot file thread runs to its end before the game polls it

@@ -1254,8 +1254,9 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     Log("forced desync: one byte of the MT state 0x833F7600 flipped at frame " + std::to_string(f));
   }
   // A mixed session: the scene generator made equal on both peers at this boundary, after the row and the field log, so the log shows what the
-  // frame before it drew (np_digest.h says why, and what it leaves). The workers do not run beside this thread unless main's 2 s wait in
-  // np_det_workers.cpp mode 3 times out; a frame that finds the generator's lock held is skipped and counted apart, and np_pair fails a pair
+  // frame before it drew (np_digest.h says why, and what it leaves). The workers do not run beside this thread: in the serial order (mode 3)
+  // only once main's 2 s wait in np_det_workers.cpp times out, and in the lanes order (mode 4) never, since a worker found inside a section
+  // at the frame hook ends the session (det::PreFrame, before the hash); a frame that finds the generator's lock held is skipped and counted apart, and np_pair fails a pair
   // on any such frame and on a resync that did not cover every frame.
   static const bool no_resync = MixedOff("sync");
   if (ResyncsSceneGenerator(s.ho.suit_state) && !no_resync) {

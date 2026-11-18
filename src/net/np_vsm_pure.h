@@ -44,7 +44,8 @@ const char* StandDown(bool original_ran, uint32_t manager, bool main_thread, uin
 std::string Line(uint64_t resets, uint64_t sorted, uint64_t cleared, uint64_t stood_down, uint64_t anomalies, uint64_t content);
 // "vsm stood down at frame <f>: <why>"
 std::string StoodDownLine(int32_t frame, const std::string& why);
-// "WARN vsm: stood down (<why>): the run is not evidence"
+// "WARN vsm: stood down (<why>): the run is not evidence". Kept from the measurement branch with its host test; no build calls it:
+// in mode 4 a stand-down raises an end request, whose own "WARN lanes:" line fails an offline run (np_det_lanes.cpp).
 std::string StoodDownWarn(const std::string& why);
 
 }  // namespace doa4::np::vsm

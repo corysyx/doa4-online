@@ -9,10 +9,12 @@
 //                           sweep.d4s, counters.d4k, shots/, dumps/
 //   DOA4_NP_SCRIPT=<file>   pad script played from frame 0 (record)
 //   DOA4_NP_REC=<file>      recording to replay; the run quits after its last frame. A recording
-//                           made by another build, game data (default.xex), fix set, worker mode
-//                           (DOA4_NP_SERIAL), sweep setting or Extras tweak state is refused, and
+//                           made by another build, game data (default.xex), fix set, worker-order
+//                           switch (DOA4_NP_SERIAL), sweep setting or Extras tweak state is refused, and
 //                           so is one that cannot be read: np_log.txt gets a "refused: ..." or
-//                           "cannot replay ..." line and the host is asked to quit, with no session
+//                           "cannot replay ..." line and the host is asked to quit, with no session.
+//                           The worker order the recording ran (its workers= line) is the order the
+//                           replay runs; a recording without that line runs mode 3 with a WARN workers: line
 //   DOA4_NP_ALLOW_MISMATCH=1  replay a recording of another build etc. anyway (hunting only; a
 //                           recording that cannot be read is never replayed)
 //   DOA4_NP_SEED=<n>        session seed written into the recording (record)

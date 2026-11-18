@@ -115,7 +115,8 @@ class InputQueue {
 // ---- Recordings ----
 // Header (32 bytes): "D4NPREC1", u32 version (2; 1 = the proof's, still read), u32 frame bytes (52),
 // u64 session seed, u32 flags, u32 meta bytes (0 in version 1). Version 2 then holds the meta text
-// ("key=value" lines: build, data, fixes, serial, sweep, tweaks, guest, unlock) before the frames. Then one 52-byte record
+// ("key=value" lines: build, data, fixes, serial, workers, sweep, tweaks, guest, unlock, and in some sessions suits and
+// start_rules; np_session.cpp CurrentMeta) before the frames. Then one 52-byte record
 // per frame from frame 0: u8 connected mask, 3 zero bytes, 4 x 12 guest gamepad bytes.
 // A recording cut short by a crash is still readable (whole frames only).
 inline constexpr size_t kRecHeaderBytes = 32;

@@ -337,6 +337,26 @@ def test_counter_names_match_source(root):
     check(fake.COUNTERS == names, f"fake_game.COUNTERS vs np_det.cpp:\n{fake.COUNTERS}\n{names}")
 
 
+def test_worker_order_texts_match_source(root):
+    # Lockstep port B6 (review B finding 2): np_pair judges a worker-order end by texts np_live.cpp writes, and the stand-in
+    # session writes copies of them. Pin all three sides against the C++ source, so a rewording there fails here and not
+    # first in a real pair (Phase C row C10).
+    src = open(os.path.join(HERE, "..", "..", "src", "net", "np_live.cpp"), encoding="utf-8").read()
+    leave = re.findall(r'case wire::LeaveReason::kWorkerOrder: return "([^"]*)";', src)  # ReasonText of Leave reason 4
+    end = re.findall(r'case End::kWorkerOrder: return "([^"]*)";', src)  # EndText, then TerminalReason
+    check(len(leave) == 1 and len(end) == 2, f"np_live.cpp: one ReasonText and two End texts of the worker order, found {leave} {end}")
+    if len(leave) != 1 or len(end) != 2:
+        return
+    end_text, terminal = end
+    mod = load("np_pair")
+    check(terminal == mod.WORKER_ORDER_REASON, f"np_pair.WORKER_ORDER_REASON {mod.WORKER_ORDER_REASON!r} vs TerminalReason {terminal!r}")
+    check(leave[0] == mod.WORKER_ORDER_REASON, f"np_pair.WORKER_ORDER_REASON {mod.WORKER_ORDER_REASON!r} vs ReasonText {leave[0]!r}")
+    fake = open(os.path.join(HERE, "fake_online.py"), encoding="utf-8").read()
+    check(f'reason = "{terminal}"' in fake, f"fake_online.py: the ending copy's terminal reason {terminal!r}")
+    check(f'"session end: " + "{end_text}"' in fake, f"fake_online.py: the ending copy's session end text {end_text!r}")
+    check(f'"FAKE_ONLINE_PEER_REASON", "{leave[0]}"' in fake, f"fake_online.py: the other copy's default Leave reason {leave[0]!r}")
+
+
 def fake_game_module():
     spec = importlib.util.spec_from_file_location("fake_game", os.path.join(HERE, "fake_game.py"))
     fake = importlib.util.module_from_spec(spec)
