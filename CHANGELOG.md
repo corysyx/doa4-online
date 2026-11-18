@@ -16,7 +16,10 @@
   scripted fights, the graphics card's work fell from 3.4 to 4.5 ms a frame to 1.7 to 2.2 ms (37 to 52 % less): the
   same data goes up in 6 to 23 times fewer uploads, the main thread's cost did not get worse, and every fight came out
   the same as without it. That PC's graphics card was far from its limit, so it shows no frame-rate change there;
-  the gain on a slower graphics card has not been measured yet: reports welcome. (issue #20)
+  the gain on a slower graphics card has not been measured yet. **If an earlier version ran slowly for you because
+  of the graphics card (high GPU usage, a low frame rate), please turn it on and tell us how it goes in
+  [issue #20](https://github.com/dwreckgg/doa4-online/issues/20)**: your graphics card, the frame rate with it off
+  and on, and anything that looks wrong.
 
 ### Fixed
 - Kyoto in Bloom (day and night): after a fall into the canal, the water could stay flat and streaked for the rest of

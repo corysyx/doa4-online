@@ -74,7 +74,9 @@ original DOA4 costumes.
 **Game** tab, **Performance**, **Batch GPU uploads (for slower graphics cards)**. It can raise the frame rate; as a
 side effect, hair and other moving parts can be drawn one frame late now and then. It does not help a slow CPU,
 which is what slows online play down above. Online, the host's choice is used for both players, so the host ticks
-it.
+it. If the game ran slowly for you before 0.3.6 because of the graphics card, please try it and tell us how it goes
+in [issue #20](https://github.com/dwreckgg/doa4-online/issues/20): your graphics card, the frame rate with it off
+and on, and anything that looks wrong.
 
 **Worker order (host only):** since 0.3.6 an online session runs the game's job workers side by side, in one fixed
 order that both PCs follow (`netplay_worker_order = "lanes"` in `dead_or_alive_4.toml`, the default). The host can
