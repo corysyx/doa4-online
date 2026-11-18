@@ -12,7 +12,11 @@
 - **Batch GPU uploads.** The Esc menu's Game tab has a **Batch GPU uploads (for slower graphics cards)** checkbox
   under **Performance**. It is off by default. It can raise the frame rate when the graphics card is the slow part;
   as a side effect, hair and other moving parts can be drawn one frame late now and then. Online, the host's choice
-  is used for both players. (issue #20)
+  is used for both players. On the developer's PC, in tests on a development build of the same change over four
+  scripted fights, the graphics card's work fell from 3.4 to 4.5 ms a frame to 1.7 to 2.2 ms (37 to 52 % less): the
+  same data goes up in 6 to 23 times fewer uploads, the main thread's cost did not get worse, and every fight came out
+  the same as without it. That PC's graphics card was far from its limit, so it shows no frame-rate change there;
+  the gain on a slower graphics card has not been measured yet: reports welcome. (issue #20)
 
 ### Fixed
 - Kyoto in Bloom (day and night): after a fall into the canal, the water could stay flat and streaked for the rest of
