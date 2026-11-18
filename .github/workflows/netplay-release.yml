@@ -94,7 +94,7 @@ jobs:
           type "%RUNNER_TEMP%\pgo_check.txt"
           if not "%PGO_RC%"=="0" exit /b 1
           set "PGO_USE="
-          for /f "usebackq tokens=1,2,*" %%a in ("%RUNNER_TEMP%\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_USE= -fprofile-use=%%c -mllvm -static-func-full-module-prefix=false"
+          for /f "usebackq tokens=1,2,*" %%a in ("%RUNNER_TEMP%\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_USE= -fprofile-use=%%c -mllvm -static-func-full-module-prefix=false -fmacro-prefix-map=%GITHUB_WORKSPACE:\=/%/doa4-recomp=/doa4 -fmacro-prefix-map=%GITHUB_WORKSPACE:\=/%/rexglue-sdk=/rexglue-sdk"
           set "PGO_USE_LINE="
           findstr /b /l /c:"pgo: use " "%RUNNER_TEMP%\pgo_check.txt" >nul && set "PGO_USE_LINE=1"
           if defined PGO_USE_LINE if not defined PGO_USE echo pgo: use line read but no flag set

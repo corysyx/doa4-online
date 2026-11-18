@@ -1,7 +1,7 @@
 """The source id of a PGO profile (docs/PGO.md): which game tree, SDK commit and LLVM version pgo/doa4.profdata was made from.
 
   py -3 -I tools/pgo_source_id.py compute [--sdk COMMIT] [--repo DIR]
-      prints the four lines of pgo/source.txt: game=<sha256>, sdk=<commit>, llvm=23.1.4, names=basename
+      prints the four lines of pgo/source.txt: game=<sha256>, sdk=<commit>, llvm=23.1.4, names=portable
       (--sdk defaults to the commit named in netplay_sdk.txt)
   py -3 -I tools/pgo_source_id.py check --sdk-from {pin|worktree:PATH} [--repo DIR]
       exit 0, 'pgo: use <profile>'  both pgo/ files exist and name this tree, this SDK, this LLVM and NAMES_MODE
@@ -31,9 +31,13 @@ LLVM = "23.1.4"  # the release workflow's pinned LLVM (its 'LLVM 23.1.4' step); 
 # NAMES_FLAG, so a name is <file name>;<function>, the same at any build path; a profile made in the other mode gives a
 # build nothing for those functions, with no warning, so source.txt records the mode and check compares it.
 NAMES_FLAG = "-mllvm -static-func-full-module-prefix=false"
-# The mode is looked up from the flag, never set beside it: a new flag without an entry here fails at import.
-NAMES_MODES = {"-mllvm -static-func-full-module-prefix=false": "basename"}
-NAMES_MODE = NAMES_MODES[NAMES_FLAG]
+# Both modes also pass -fmacro-prefix-map=<game root>=/doa4 and <SDK root>=/rexglue-sdk: an anonymous namespace's
+# ?A0x hash is taken from the source file's name, so without the maps those names move with the build path too.
+MACRO_ROOTS = ("/doa4", "/rexglue-sdk")
+# The mode is looked up from the flags, never set beside them: a new flag set without an entry here fails at import.
+# (basename was the mode of commit 4601af3: the names flag without the maps.)
+NAMES_MODES = {("-mllvm -static-func-full-module-prefix=false", ("/doa4", "/rexglue-sdk")): "portable"}  # literals
+NAMES_MODE = NAMES_MODES[(NAMES_FLAG, MACRO_ROOTS)]
 KEYS = ("game", "sdk", "llvm", "names")
 PROFILE = os.path.join("pgo", "doa4.profdata")
 SOURCE = os.path.join("pgo", "source.txt")

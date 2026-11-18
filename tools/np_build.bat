@@ -10,7 +10,9 @@ rem refused). DOA4_PGO=off: a plain build. DOA4_PGO=gen:<folder>: the instrument
 rem into <folder> (never timed or shipped). Every configure passes all four compiler and linker flag variables, so
 rem none keeps a value cached by an earlier configure of the same build folder. Both profile modes pass
 rem -mllvm -static-func-full-module-prefix=false: a file-local function's profile name is then <file name>;<function>
-rem instead of <absolute path>;<function>, so a profile made here matches a build at any other path (CI).
+rem instead of <absolute path>;<function>, so a profile made here matches a build at any other path (CI). The two
+rem -fmacro-prefix-map flags (game root to /doa4, SDK root to /rexglue-sdk) do the same for anonymous-namespace names,
+rem whose ?A0x hash clang takes from the source file's name; they also make __FILE__ read /doa4/... in these builds.
 set "PGO_GEN_DIR="
 if not defined DOA4_PGO goto pgo_dir_done
 if /i not "%DOA4_PGO:~0,4%"=="gen:" goto pgo_dir_done
@@ -19,13 +21,16 @@ if not defined PGO_GEN_DIR goto pgo_dir_done
 for %%I in ("%PGO_GEN_DIR%") do set "PGO_GEN_DIR=%%~fI"
 set "PGO_GEN_DIR=%PGO_GEN_DIR:\=/%"
 :pgo_dir_done
-if defined DOA4_SDK goto sdk_set
-for %%I in ("%~dp0..\..\sdk-np1") do set "DOA4_SDK=%%~fI"
+if not defined DOA4_SDK set "DOA4_SDK=%~dp0..\..\sdk-np1"
+rem One spelling whatever the caller gave: absolute, forward slashes, no trailing slash. The profile modes' SDK map is
+rem matched against CMake's forward-slash compile paths and fails silently on any other spelling (names review R3-1).
+for %%I in ("%DOA4_SDK%") do set "DOA4_SDK=%%~fI"
 set "DOA4_SDK=%DOA4_SDK:\=/%"
-:sdk_set
+if "%DOA4_SDK:~-1%"=="/" set "DOA4_SDK=%DOA4_SDK:~0,-1%"
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64 >nul
 set "PATH=C:\Program Files\LLVM\bin;%PATH%"
 cd /d "%~dp0.."
+set "PGO_ROOT=%CD:\=/%"
 if not "%1"=="configure" goto build
 set "PGO_C="
 set "PGO_SHLINK="
@@ -38,7 +43,7 @@ exit /b 1
 echo pgo: off (DOA4_PGO=off: a plain build)
 goto pgo_ready
 :pgo_gen
-set "PGO_C= -fprofile-generate=%PGO_GEN_DIR% -DDOA4_PGO_DUMP -mllvm -static-func-full-module-prefix=false"
+set "PGO_C= -fprofile-generate=%PGO_GEN_DIR% -DDOA4_PGO_DUMP -mllvm -static-func-full-module-prefix=false -fmacro-prefix-map=%PGO_ROOT%=/doa4 -fmacro-prefix-map=%DOA4_SDK%=/rexglue-sdk"
 set "PGO_SHLINK=-Wl,/force:unresolved -Wl,/export:__llvm_profile_dump"
 echo pgo: gen %PGO_GEN_DIR% (the instrumented build: never timed, gated or shipped)
 goto pgo_ready
@@ -48,7 +53,7 @@ py -3 -I "%CD%\tools\pgo_source_id.py" check --sdk-from "worktree:%DOA4_SDK%" > 
 set "PGO_RC=%errorlevel%"
 type out\pgo_check.txt
 if not "%PGO_RC%"=="0" exit /b 1
-for /f "usebackq tokens=1,2,*" %%a in ("out\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_C= -fprofile-use=%%c -mllvm -static-func-full-module-prefix=false"
+for /f "usebackq tokens=1,2,*" %%a in ("out\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_C= -fprofile-use=%%c -mllvm -static-func-full-module-prefix=false -fmacro-prefix-map=%PGO_ROOT%=/doa4 -fmacro-prefix-map=%DOA4_SDK%=/rexglue-sdk"
 rem The guard: findstr reads the check's file apart from the for /f, so a 'pgo: use' line that set no flag stops here.
 set "PGO_USE_LINE="
 findstr /b /l /c:"pgo: use " out\pgo_check.txt >nul && set "PGO_USE_LINE=1"

@@ -35,9 +35,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = ("tag", "single", "single_c", "single_savanna")
 DUMP_RE = re.compile(r"pgo dump: exe 0, rexruntime\.dll 0\s*$")
-# names=basename: the instrumented build (np_build.bat gen) always names file-local functions by file name
-# (pgo_source_id.NAMES_FLAG), so a source id naming another mode is not one this recipe can have made
-SOURCE_RE = re.compile(r"game=[0-9a-f]{64}\nsdk=[0-9a-f]{40}\nllvm=\d+\.\d+\.\d+\nnames=basename\n")
+# names=portable: the instrumented build (np_build.bat gen) always passes the path-free naming flags
+# (pgo_source_id.NAMES_FLAG and the MACRO_ROOTS maps), so a source id naming another mode is not one this recipe made
+SOURCE_RE = re.compile(r"game=[0-9a-f]{64}\nsdk=[0-9a-f]{40}\nllvm=\d+\.\d+\.\d+\nnames=portable\n")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
