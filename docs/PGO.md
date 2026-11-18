@@ -7,16 +7,16 @@ An instrumented build plays a few scripted fights and counts what runs. The rele
 ## What is in the repository
 
 - `pgo/doa4.profdata`: the merged profile (binary, `.gitattributes` marks it so).
-- `pgo/source.txt`: what the profile was made from, three lines: `game=` (SHA-256 of the `git ls-tree -r HEAD` lines
+- `pgo/source.txt`: what the profile was made from, four lines: `game=` (SHA-256 of the `git ls-tree -r HEAD` lines
   of the game's inputs: `src`, `generated`, `third_party`, `CMakeLists.txt`, `CMakePresets.json`, `hints.toml`,
-  `dead_or_alive_4_manifest.toml`), `sdk=` (the SDK commit) and `llvm=23.1.4`. Locally `sdk=` is the SDK checkout's
-  HEAD commit, so uncommitted SDK edits are not in the id.
+  `dead_or_alive_4_manifest.toml`), `sdk=` (the SDK commit), `llvm=23.1.4` and `names=basename` (see the release
+  workflow below). Locally `sdk=` is the SDK checkout's HEAD commit, so uncommitted SDK edits are not in the id.
 
 `py -3 -I tools/pgo_source_id.py check --sdk-from pin` (or `worktree:<sdk folder>`) decides:
 
-- both files present and `source.txt` names this tree, this SDK and this LLVM: `pgo: use <profile>`;
+- both files present and `source.txt` names this tree, this SDK, this LLVM and this naming: `pgo: use <profile>`;
 - neither file: `pgo: none`, a plain build;
-- anything else (one file alone, the game tree, SDK or LLVM differs, or the game files are edited and not
+- anything else (one file alone, the game tree, SDK, LLVM or naming differs, or the game files are edited and not
   committed): `pgo: refused: <reason>`, and the build stops. The message ends with the way out: `DOA4_PGO=off`
   locally; in CI, delete both `pgo/` files.
 
@@ -51,6 +51,9 @@ delete `out/build/win-amd64-release` or build clean.
 `.github/workflows/netplay-release.yml` runs the check with `--sdk-from pin` (the commit in `netplay_sdk.txt`) before
 CMake. `pgo: use` adds `-fprofile-use` to the C and C++ flags; `pgo: none` builds plainly; a refusal stops the job,
 so nothing is published with a stale profile. A push that changes `pgo/` publishes a release like any game change.
+Both profile modes pass `-mllvm -static-func-full-module-prefix=false` (the use mode here and in `np_build.bat`, the
+instrumented mode in `np_build.bat`): a file-local function's profile name is `<file name>;<function>`, not its path,
+which a build elsewhere (CI) cannot match (6.6 % of round 1's block counts, lost silently). `names=basename` records it.
 
 Online, a PGO build and a plain build are different code: the handshake refuses to pair them, as it does any two
 different builds.

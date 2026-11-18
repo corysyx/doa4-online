@@ -1,10 +1,10 @@
 """The source id of a PGO profile (docs/PGO.md): which game tree, SDK commit and LLVM version pgo/doa4.profdata was made from.
 
   py -3 -I tools/pgo_source_id.py compute [--sdk COMMIT] [--repo DIR]
-      prints the three lines of pgo/source.txt: game=<sha256>, sdk=<commit>, llvm=23.1.4
+      prints the four lines of pgo/source.txt: game=<sha256>, sdk=<commit>, llvm=23.1.4, names=basename
       (--sdk defaults to the commit named in netplay_sdk.txt)
   py -3 -I tools/pgo_source_id.py check --sdk-from {pin|worktree:PATH} [--repo DIR]
-      exit 0, 'pgo: use <profile>'  both pgo/ files exist and name this tree, this SDK and this LLVM
+      exit 0, 'pgo: use <profile>'  both pgo/ files exist and name this tree, this SDK, this LLVM and NAMES_MODE
       exit 0, 'pgo: none'           neither file exists (a plain build)
       exit 1, 'pgo: refused: <why> (to build without the profile: ...)'
                                     anything else: half a profile, a mismatch, a working tree that differs from HEAD
@@ -27,6 +27,14 @@ import sys
 ID_PATHS = ("src", "generated", "third_party", "CMakeLists.txt", "CMakePresets.json", "hints.toml",
             "dead_or_alive_4_manifest.toml")
 LLVM = "23.1.4"  # the release workflow's pinned LLVM (its 'LLVM 23.1.4' step); the local install is the same version
+# How file-local functions are named in the profile. tools/np_build.bat (both profile modes) and the workflow pass
+# NAMES_FLAG, so a name is <file name>;<function>, the same at any build path; a profile made in the other mode gives a
+# build nothing for those functions, with no warning, so source.txt records the mode and check compares it.
+NAMES_FLAG = "-mllvm -static-func-full-module-prefix=false"
+# The mode is looked up from the flag, never set beside it: a new flag without an entry here fails at import.
+NAMES_MODES = {"-mllvm -static-func-full-module-prefix=false": "basename"}
+NAMES_MODE = NAMES_MODES[NAMES_FLAG]
+KEYS = ("game", "sdk", "llvm", "names")
 PROFILE = os.path.join("pgo", "doa4.profdata")
 SOURCE = os.path.join("pgo", "source.txt")
 SDK_PIN = "netplay_sdk.txt"
@@ -97,7 +105,7 @@ def compute(repo, sdk):
     dirty = dirty_path(repo)
     if dirty:
         raise Refused(f"working tree differs in {dirty}")
-    return f"game={game_id(repo)}\nsdk={sdk}\nllvm={LLVM}\n"
+    return f"game={game_id(repo)}\nsdk={sdk}\nllvm={LLVM}\nnames={NAMES_MODE}\n"
 
 
 def parse_source(text):
@@ -106,10 +114,10 @@ def parse_source(text):
         if not line.strip():
             continue
         key, sep, value = line.partition("=")
-        if not sep or key not in ("game", "sdk", "llvm") or key in values:
+        if not sep or key not in KEYS or key in values:
             raise Refused(f"source.txt malformed at {line!r}")
         values[key] = value.strip()
-    missing = [k for k in ("game", "sdk", "llvm") if k not in values]
+    missing = [k for k in KEYS if k not in values]
     if missing:
         raise Refused(f"source.txt malformed: no {', '.join(missing)} line")
     return values
@@ -142,6 +150,8 @@ def check(repo, sdk_from):
         raise Refused(f"sdk differs (source.txt sdk={want['sdk']}, {sdk_from.split(':')[0]} {sdk}): remake the profile")
     if want["llvm"] != LLVM:
         raise Refused(f"llvm differs (source.txt llvm={want['llvm']}, the build uses {LLVM})")
+    if want["names"] != NAMES_MODE:
+        raise Refused(f"names differ (source.txt names={want['names']}, the build uses {NAMES_MODE}): remake the profile")
     return "pgo: use " + os.path.abspath(profile).replace("\\", "/")
 
 

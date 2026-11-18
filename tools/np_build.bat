@@ -8,7 +8,9 @@ rem PGO (docs/PGO.md), configure only. DOA4_PGO unset: tools\pgo_source_id.py ch
 rem used when pgo\source.txt names this tree and the SDK checkout's HEAD; neither file: a plain build; anything else:
 rem refused). DOA4_PGO=off: a plain build. DOA4_PGO=gen:<folder>: the instrumented build, which writes its profiles
 rem into <folder> (never timed or shipped). Every configure passes all four compiler and linker flag variables, so
-rem none keeps a value cached by an earlier configure of the same build folder.
+rem none keeps a value cached by an earlier configure of the same build folder. Both profile modes pass
+rem -mllvm -static-func-full-module-prefix=false: a file-local function's profile name is then <file name>;<function>
+rem instead of <absolute path>;<function>, so a profile made here matches a build at any other path (CI).
 set "PGO_GEN_DIR="
 if not defined DOA4_PGO goto pgo_dir_done
 if /i not "%DOA4_PGO:~0,4%"=="gen:" goto pgo_dir_done
@@ -36,7 +38,7 @@ exit /b 1
 echo pgo: off (DOA4_PGO=off: a plain build)
 goto pgo_ready
 :pgo_gen
-set "PGO_C= -fprofile-generate=%PGO_GEN_DIR% -DDOA4_PGO_DUMP"
+set "PGO_C= -fprofile-generate=%PGO_GEN_DIR% -DDOA4_PGO_DUMP -mllvm -static-func-full-module-prefix=false"
 set "PGO_SHLINK=-Wl,/force:unresolved -Wl,/export:__llvm_profile_dump"
 echo pgo: gen %PGO_GEN_DIR% (the instrumented build: never timed, gated or shipped)
 goto pgo_ready
@@ -46,7 +48,7 @@ py -3 -I "%CD%\tools\pgo_source_id.py" check --sdk-from "worktree:%DOA4_SDK%" > 
 set "PGO_RC=%errorlevel%"
 type out\pgo_check.txt
 if not "%PGO_RC%"=="0" exit /b 1
-for /f "usebackq tokens=1,2,*" %%a in ("out\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_C= -fprofile-use=%%c"
+for /f "usebackq tokens=1,2,*" %%a in ("out\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_C= -fprofile-use=%%c -mllvm -static-func-full-module-prefix=false"
 rem The guard: findstr reads the check's file apart from the for /f, so a 'pgo: use' line that set no flag stops here.
 set "PGO_USE_LINE="
 findstr /b /l /c:"pgo: use " out\pgo_check.txt >nul && set "PGO_USE_LINE=1"

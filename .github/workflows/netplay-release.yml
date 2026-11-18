@@ -88,13 +88,13 @@ jobs:
           call "%DOA4_VSDEVCMD%" -arch=amd64 -host_arch=amd64
           set "PATH=%DOA4_LLVM_BIN%;%PATH%"
           cd doa4-recomp
-          rem PGO (docs/PGO.md): pgo/doa4.profdata is used only when pgo/source.txt names this commit's game tree, the pinned SDK and this LLVM; half a profile or a mismatch stops the job here, no pgo/ files is a plain build
+          rem PGO (docs/PGO.md): pgo/doa4.profdata is used only when pgo/source.txt names this commit's game tree, the pinned SDK, this LLVM and this naming mode; half a profile or a mismatch stops the job here, no pgo/ files is a plain build
           python -I tools/pgo_source_id.py check --sdk-from pin > "%RUNNER_TEMP%\pgo_check.txt"
           set "PGO_RC=%errorlevel%"
           type "%RUNNER_TEMP%\pgo_check.txt"
           if not "%PGO_RC%"=="0" exit /b 1
           set "PGO_USE="
-          for /f "usebackq tokens=1,2,*" %%a in ("%RUNNER_TEMP%\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_USE= -fprofile-use=%%c"
+          for /f "usebackq tokens=1,2,*" %%a in ("%RUNNER_TEMP%\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_USE= -fprofile-use=%%c -mllvm -static-func-full-module-prefix=false"
           set "PGO_USE_LINE="
           findstr /b /l /c:"pgo: use " "%RUNNER_TEMP%\pgo_check.txt" >nul && set "PGO_USE_LINE=1"
           if defined PGO_USE_LINE if not defined PGO_USE echo pgo: use line read but no flag set

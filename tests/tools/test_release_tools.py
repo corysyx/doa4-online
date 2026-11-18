@@ -585,7 +585,7 @@ def test_pgo_source_id_stable(root):
     check(c1 == 0 and c2 == 0 and t1 == t2, f"source id: same tree twice, same output: exit {c1}/{c2}\n{t1}\n{t2}")
     want, n = oracle_game(repo)
     check(n == len(ID_FILES), f"source id oracle: the fixture has {len(ID_FILES)} tracked files under the seven paths: {n}")
-    check(t1 == f"game={want}\nsdk={SDK_A}\nllvm=23.1.4\n", f"source id: exactly the three lines of G3:\n{t1!r}\nwant game={want}")
+    check(t1 == f"game={want}\nsdk={SDK_A}\nllvm=23.1.4\nnames=basename\n", f"source id: exactly the four lines (G3 + names):\n{t1!r}\nwant game={want}")
     # without --sdk, the sdk line is the pin's commit
     c3, t3 = compute(repo, sdk=None)
     check(c3 == 0 and line_of(t3, "sdk=") == f"sdk={SDK_A}", f"source id without --sdk: the pin's commit: exit {c3}\n{t3}")
@@ -678,6 +678,18 @@ def test_pgo_mismatch_refuses(root):
     code, text = pgo("check", "--repo", repo, "--sdk-from", "pin")
     check(code == 1 and "pgo: refused:" in text and "pgo: use" not in text and "Traceback" not in text,
           f"check, source.txt without sdk=: refused: exit {code}\n{text}")
+    # the naming mode (names review F1): a profile from before the names line (game, sdk and llvm all matching) and one
+    # made in the other mode are refused; a profile made in one mode gives a build in the other mode nothing, silently
+    put_pgo(repo, source="".join(l + "\n" for l in src2.splitlines() if not l.startswith("names=")))
+    code, text = pgo("check", "--repo", repo, "--sdk-from", "pin")
+    check(code == 1 and "pgo: refused: source.txt malformed: no names line" in text and "pgo: use" not in text,
+          f"check, a three-line source.txt (made before the names line) with game, sdk and llvm right: refused: exit {code}\n{text}")
+    put_pgo(repo, source=src2.replace("names=basename", "names=path"))
+    code, text = pgo("check", "--repo", repo, "--sdk-from", "pin")
+    check(code == 1 and "pgo: refused: names differ" in text and "pgo: use" not in text, f"check, names=path: refused: exit {code}\n{text}")
+    put_pgo(repo, source=src2)
+    code, text = pgo("check", "--repo", repo, "--sdk-from", "pin")
+    check(code == 0 and text.strip() == use_line(repo), f"check, the same four lines again: used: exit {code}\n{text!r}")
 
 
 def test_pgo_sdk_differs(root):
@@ -773,7 +785,7 @@ def test_pgo_workflow_wiring(root):
     # the profile flag: one line in the whole workflow, gated on 'pgo: use', setting a variable reset before it
     flag_lines = [l.strip() for l in text.split("\n") if "-fprofile-use" in l]
     check(len(flag_lines) == 1 and '"pgo: use"' in flag_lines[0], f"workflow: -fprofile-use only in one line, gated on 'pgo: use': {flag_lines}")
-    m = re.search(r'set "(\w+)= -fprofile-use=%%c"', flag_lines[0]) if flag_lines else None
+    m = re.search(r'set "(\w+)= -fprofile-use=%%c' + re.escape(" " + NAMES) + '"', flag_lines[0]) if flag_lines else None
     var = m.group(1) if m else "?"
     i_flag = lines.index(flag_lines[0]) if flag_lines and flag_lines[0] in lines else None
     check(m is not None and i_flag is not None and i_check < i_flag < i_cmake, f"workflow Configure: the flag line sits between the check and cmake: {i_flag}")
@@ -819,6 +831,16 @@ def test_pgo_np_build_wiring(root):
     check(len(flag_lines) == 1 and '"pgo: use"' in flag_lines[0], f"np_build.bat: -fprofile-use only in one line gated on 'pgo: use': {flag_lines}")
     for needle in ("-fprofile-generate=", "-DDOA4_PGO_DUMP", "-Wl,/force:unresolved", "-Wl,/export:__llvm_profile_dump"):
         check(needle in text, f"np_build.bat: the instrumented mode passes {needle}")
+    # the profile names of file-local functions carry no source path in either mode (docs/PGO.md), so a build at
+    # another path (CI) finds them: the flag sits in the gen line and in the use line, and nowhere else
+    ids = load("pgo_source_id")
+    check(getattr(ids, "NAMES_FLAG", None) == NAMES and getattr(ids, "NAMES_MODE", None) == "basename",
+          f"pgo_source_id.py: NAMES_FLAG is the scripts' flag and NAMES_MODE is basename (source.txt's names= line): "
+          f"{getattr(ids, 'NAMES_FLAG', None)!r}, {getattr(ids, 'NAMES_MODE', None)!r}")
+    gen_lines = [l for l in lines if "-fprofile-generate=" in l]
+    names_lines = [l for l in lines if NAMES in l and not l.lower().startswith("rem ")]  # commands, not the comment
+    check(len(gen_lines) == 1 and len(flag_lines) == 1 and sorted(names_lines) == sorted(gen_lines + flag_lines),
+          f"np_build.bat: {NAMES!r} in exactly the gen and the use line: gen {gen_lines}, use {flag_lines}, with it {names_lines}")
     check(not any(l.rstrip().endswith("(") for l in lines), "np_build.bat: no parenthesised block (no errorlevel read inside one)")
 
 
@@ -830,6 +852,7 @@ BAT_VSDEVCMD = r'"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\C
 PLAIN = "-march=x86-64-v3"
 SHLINK = "-Wl,/force:unresolved -Wl,/export:__llvm_profile_dump"
 GUARD = "pgo: use line read but no flag set"
+NAMES = "-mllvm -static-func-full-module-prefix=false"  # path-free profile names for file-local functions
 
 
 def step_run_lines(text, step):
@@ -954,7 +977,8 @@ def test_pgo_wiring_cmd(root):
     def plain(what, f, args, bat_side):
         check(f.get("CMAKE_C_FLAGS") == PLAIN and f.get("CMAKE_CXX_FLAGS") == PLAIN,
               f"wiring {what}: plain C and C++ flags: {f.get('CMAKE_C_FLAGS')!r}, {f.get('CMAKE_CXX_FLAGS')!r}")
-        check(not any("-fprofile" in a or "-bogus" in a for a in args), f"wiring {what}: no -fprofile and nothing inherited anywhere: {args}")
+        check(not any("-fprofile" in a or "-bogus" in a or "static-func" in a for a in args),
+              f"wiring {what}: no -fprofile, no profile-name flag and nothing inherited anywhere: {args}")
         check(f.get("CMAKE_SHARED_LINKER_FLAGS", "") == "" and f.get("CMAKE_EXE_LINKER_FLAGS", "") == "",
               f"wiring {what}: linker flags empty: {f.get('CMAKE_SHARED_LINKER_FLAGS')!r}, {f.get('CMAKE_EXE_LINKER_FLAGS')!r}")
         if bat_side:
@@ -971,7 +995,7 @@ def test_pgo_wiring_cmd(root):
     gen_dir = os.path.join(root, "prof")
     res = run_side("np_build.bat", {"DOA4_PGO": "gen:" + gen_dir})
     f, args = reached("np_build.bat gen", res)
-    want = f"{PLAIN} -fprofile-generate={gen_dir.replace(os.sep, '/')} -DDOA4_PGO_DUMP"
+    want = f"{PLAIN} -fprofile-generate={gen_dir.replace(os.sep, '/')} -DDOA4_PGO_DUMP {NAMES}"
     check(f.get("CMAKE_C_FLAGS") == want and f.get("CMAKE_CXX_FLAGS") == want,
           f"wiring np_build.bat gen: C and C++ flags are {want!r}: {f.get('CMAKE_C_FLAGS')!r}, {f.get('CMAKE_CXX_FLAGS')!r}")
     check(f.get("CMAKE_SHARED_LINKER_FLAGS") == SHLINK, f"wiring np_build.bat gen: shared linker flags {SHLINK!r}: {f.get('CMAKE_SHARED_LINKER_FLAGS')!r}")
@@ -988,7 +1012,7 @@ def test_pgo_wiring_cmd(root):
         path = m.group(1) if m else ""
         check(m is not None and "\\" not in path and os.path.isabs(path) and os.path.isfile(path) and os.path.samefile(path, profile),
               f"wiring {side} use: 'pgo: use <absolute path, forward slashes>' names the fixture's profile: {path!r}\n{res[1]}")
-        want = f"{PLAIN} -fprofile-use={path}"
+        want = f"{PLAIN} -fprofile-use={path} {NAMES}"
         check(bool(path) and f.get("CMAKE_C_FLAGS") == want and f.get("CMAKE_CXX_FLAGS") == want,
               f"wiring {side} use: C and C++ flags are {want!r}: {f.get('CMAKE_C_FLAGS')!r}, {f.get('CMAKE_CXX_FLAGS')!r}")
         check("-fprofile" not in f.get("CMAKE_SHARED_LINKER_FLAGS", "") + f.get("CMAKE_EXE_LINKER_FLAGS", ""),
@@ -1102,7 +1126,7 @@ def test_pgo_docs(root):
     text = read(doc).decode("utf-8").replace("\r\n", "\n") if os.path.isfile(doc) else ""
     check(0 < text.count("\n") < 60, f"docs/PGO.md: exists, under 60 lines: {text.count(chr(10))}")
     for needle in ("tools/pgo_recipe.py", "pgo/source.txt", "pgo/doa4.profdata", "DOA4_PGO",
-                   "out/build/win-amd64-release", "ninja", "HEAD commit"):
+                   "out/build/win-amd64-release", "ninja", "HEAD commit", NAMES, "names=basename"):
         check(needle in text, f"docs/PGO.md names {needle}")
     building = read(os.path.join(REPO, "docs", "BUILDING.md")).decode("utf-8")
     s6 = building.split("## 6. Build", 1)[-1].split("## 7.", 1)[0]
@@ -1135,10 +1159,11 @@ def test_pgo_recipe_run_judge(root):
     for args, token in bad:
         ok, why = judge(*args)
         check(ok is False and token in why, f"run judge {args[0]}, {args[1]!r}, dump line {('dump' in (args[2] or ''))}, {args[3]} profraw: refused naming {token!r}: {ok} {why!r}")
-    # source.txt text: compute's three lines, normalised to LF; anything else refused
-    good = f"game={'a' * 64}\nsdk={SDK_B}\nllvm=23.1.4\n"
+    # source.txt text: compute's four lines, normalised to LF; anything else refused
+    good = f"game={'a' * 64}\nsdk={SDK_B}\nllvm=23.1.4\nnames=basename\n"
     check(rc.source_text(good.replace("\n", "\r\n")) == good, "recipe: source.txt text from compute's CRLF output is LF")
-    for wrong in (good.replace("llvm=23.1.4\n", ""), good.replace("a" * 64, "a" * 63), "pgo: refused: x\n", good + "x=1\n"):
+    for wrong in (good.replace("llvm=23.1.4\n", ""), good.replace("a" * 64, "a" * 63), "pgo: refused: x\n", good + "x=1\n",
+                  good.replace("names=basename\n", ""), good.replace("names=basename", "names=path")):
         try:
             rc.source_text(wrong)
             got = "accepted"

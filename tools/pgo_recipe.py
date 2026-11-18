@@ -35,7 +35,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = ("tag", "single", "single_c", "single_savanna")
 DUMP_RE = re.compile(r"pgo dump: exe 0, rexruntime\.dll 0\s*$")
-SOURCE_RE = re.compile(r"game=[0-9a-f]{64}\nsdk=[0-9a-f]{40}\nllvm=\d+\.\d+\.\d+\n")
+# names=basename: the instrumented build (np_build.bat gen) always names file-local functions by file name
+# (pgo_source_id.NAMES_FLAG), so a source id naming another mode is not one this recipe can have made
+SOURCE_RE = re.compile(r"game=[0-9a-f]{64}\nsdk=[0-9a-f]{40}\nllvm=\d+\.\d+\.\d+\nnames=basename\n")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -108,10 +110,10 @@ def toml_muted(text):
 
 
 def source_text(compute_output):
-    """pgo/source.txt's text from pgo_source_id.py compute's output: its three lines, LF; ValueError otherwise."""
+    """pgo/source.txt's text from pgo_source_id.py compute's output: its four lines, LF; ValueError otherwise."""
     text = compute_output.replace("\r\n", "\n")
     if not SOURCE_RE.fullmatch(text):
-        raise ValueError(f"not the three lines of a source id: {compute_output!r}")
+        raise ValueError(f"not the four lines of a source id: {compute_output!r}")
     return text
 
 
