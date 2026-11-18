@@ -71,6 +71,10 @@
 #endif
 #include <windows.h>
 
+#ifdef DOA4_PGO_DUMP
+extern "C" int __llvm_profile_dump(void);  // the clang profile runtime (docs/PGO.md, instrumented build only)
+#endif
+#line 74
 // Task 1 review M1 (carry 2l): the dot-product self-test is run-time evidence and depends on the CPU; this is the
 // compile-time half. The SDK's canonical-NaN redirect (rex/ppc/dot_product.h, reached through the generated init
 // header above) must be in effect in this translation unit, as in every generated one: the raw-product macro it
@@ -611,6 +615,23 @@ void Quit(State& s, const std::string& why, bool ask_host = true) {
   CloseFiles(s);
   det::Stop();
   g_active.store(false, std::memory_order_release);  // the hooks pass through from here on
+#ifdef DOA4_PGO_DUMP
+  // PGO (docs/PGO.md), instrumented build only: the shutdown watchdog ends the process with TerminateProcess, so the
+  // profile runtime's atexit writer never runs. Write the exe's profile here, and rexruntime.dll's through the dump
+  // function that build exports (-Wl,/export:__llvm_profile_dump on its DLL links). tools/pgo_recipe.py refuses a
+  // training run without the line 'pgo dump: exe 0, rexruntime.dll 0'. Without the define this block does not exist,
+  // and the #line after it keeps every later line's number (the SDK's log macros embed __LINE__).
+  {
+    const int exe_rc = __llvm_profile_dump();
+    int dll_rc = -100;
+    if (HMODULE dll = GetModuleHandleW(L"rexruntime.dll")) {
+      if (auto dump = reinterpret_cast<int (*)(void)>(GetProcAddress(dll, "__llvm_profile_dump"))) dll_rc = dump();
+      else dll_rc = -101;
+    }
+    Log("pgo dump: exe " + std::to_string(exe_rc) + ", rexruntime.dll " + std::to_string(dll_rc));
+  }
+#endif
+#line 614
   if (ask_host && s.host.quit) s.host.quit();
 }
 

@@ -136,6 +136,10 @@ tools\np_build.bat build
 old default was `netplay`) moves to `alpha` too; check `out\build\win-amd64-release\CMakeCache.txt` for
 `DOA4_RELEASE_CHANNEL:STRING=alpha`.
 
+`configure` also decides whether the build uses the profile in `pgo/` (profile-guided optimisation, `DOA4_PGO`);
+[PGO.md](PGO.md) says how, and how to make the profile. If it refuses (`pgo: refused:`), `set DOA4_PGO=off`
+builds without the profile; in CI, deleting `pgo/doa4.profdata` and `pgo/source.txt` does the same.
+
 `configure` runs once (or after deleting `out\build`); `build` every time. It expects Visual Studio's
 Build Tools at `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools` and LLVM at
 `C:\Program Files\LLVM`; for other install folders, run the commands by hand as below. `build` with a
