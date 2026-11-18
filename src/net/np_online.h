@@ -32,7 +32,8 @@
 //     one; if the peer's session Hello has not come by then, it gives up: Offline, Status::session_refused, event "The
 //     other player's game did not start the session." (I-1a; the app polls the flag - Task 12 ends the session and
 //     restarts offline; np_live's frame-0 limit stays the backstop).
-//   Ping -> Pong (peer only). Leave / Bye: no reply (one-way, sent 3 times).
+//   Ping -> Pong (peer only). Leave / Bye: no reply (one-way, sent 3 times; a session Leave asked for before the peer
+//     is seen is also kept and sent again: Lobby::SendLeave).
 // Authentication: Ping, Pong, Chunk, Ack, Leave, Bye and BootReply are taken only from the peer (else kSource) with
 // the peer's token (else kToken); a kGekko is the transport's to filter. Every reply to a datagram from anyone but an
 // authenticated peer (Welcome, the protocol answer) is at most one per datagram, never larger than that datagram (a
@@ -103,12 +104,23 @@ struct Status {
   // Task 5: which swimsuit case the two sides are in (rules::SuitStatusText): with another player in the lobby, from both
   // checksums; in a session process, from the hand-off's state. "" with nobody to compare with. status.txt: suits=.
   std::string suits_text;
+  // The frame-0 Leave (lockstep port Phase C fix, ledger L72), session process: a Leave asked for while the other game's
+  // session process is unseen (any state but kInSession: kConnecting, or the kOffline of a refused session) is kept, sent
+  // every kHelloMs while unseen and again when it comes; true while it is kept (the relaunch waits on it,
+  // np::Host::leave_kept). False for a Leave asked for while seen, after a kept one went to the seen peer (its 3 sends
+  // handed to the socket), and after Providers::leave_keep_ms.
+  bool leave_kept = false;
+  uint64_t leave_sends = 0;         // Leave datagrams handed to the socket so far (the 3 sends and a kept Leave's resends)
 };
+
+// How long a Leave asked for while the other game is unseen is kept (Status::leave_kept), from the request.
+inline constexpr uint32_t kLeaveKeepMs = 10000;
 
 struct Providers {
   std::function<uint64_t()> build;  // np::BuildIdValue() (0 = unreadable: Judge refuses it); a function, so the
                                     // host test can change it after connecting
   uint32_t connect_timeout_ms = 90000;  // the game's; the host test passes 2000
+  uint32_t leave_keep_ms = kLeaveKeepMs;  // the game's (the app leaves it); the host test's bound group passes less
   std::string release;              // DOA4_RELEASE_TAG
   std::function<std::string()> files;           // np_files Text of the game folder (may block on first use)
   std::function<std::string()> guest_settings;  // handoff::CaptureGuestSettings over rex::cvar
@@ -183,15 +195,23 @@ class Lobby {
   // the token from another address: counted kSource and logged, never taken - carry 2c: the hand-off's peer is the
   // address the lobby's socket saw, and the session accepts the peer only there), then SetPeer(peer, token) on the
   // transport so GekkoNet traffic flows; pings every 500 ms; a Leave or Bye from the peer calls on_peer_left(frame,
-  // reason) once (I/O thread; a Bye gives frame -1, kLeft). The frame-0 limit is np_live's, not the lobby's. The
-  // transport config is used as given except port/exact_port (the caller sets wifi_streaming for a session).
-  // State: kConnecting until the peer's Hello, then kInSession.
+  // reason) once (I/O thread; a Bye gives frame -1, kLeft), in any state (also before the peer's Hello). The frame-0
+  // limit is np_live's, not the lobby's. The transport config is used as given except port/exact_port (the caller sets
+  // wifi_streaming for a session).
+  // State: kConnecting until the peer's Hello, then kInSession ("seen": the peer's session process is bound and its
+  // Hello came from the hand-off's peer with the token).
   bool StartInSession(Providers providers, const net::Config& transport, const handoff::Handoff& h,
                       std::function<void(int32_t frame, wire::LeaveReason reason)> on_peer_left, std::string* error);
-  void SendLeave(int32_t frame, wire::LeaveReason reason);  // any thread; sent 3 times on the I/O thread
-  // Task 15 G2 (a session closed by the player): queues Leave(frame, kLeft) unless a Leave is already queued or being
-  // repeated (review M1: that one keeps its reason), waits until the Leave's 3 sends were handed to the socket or
-  // max_wait_ms passed, then stops the transport. Returns how many of the 3 sends were handed to the socket (a sendto at
+  // Any thread; sent 3 times on the I/O thread. Asked for while the peer is unseen (any state but kInSession: kConnecting,
+  // or the kOffline of a refused session), the Leave is also kept (Status::leave_kept): sent once more every kHelloMs
+  // while unseen, in either state, and 3 times more when the peer becomes seen, then no longer kept; kept at most
+  // Providers::leave_keep_ms from the request (the frame-0 Leave fix: an end before the other game's session process
+  // binds its port still reaches it). A later Leave replaces it.
+  void SendLeave(int32_t frame, wire::LeaveReason reason);
+  // Task 15 G2 (a session closed by the player): queues Leave(frame, kLeft) unless a Leave is already queued, being
+  // repeated or kept for an unseen peer (review M1, round 2 F10: that one keeps its frame and reason), waits until the
+  // Leave's 3 sends were handed to the socket or max_wait_ms passed (a kept Leave whose 3 sends are done gets only its
+  // kHelloMs resends meanwhile, so the wait runs to max_wait_ms), then stops the transport. Returns how many of the 3 sends were handed to the socket (a sendto at
   // once, or the network simulator's hold/drop when one is configured). Any thread but the I/O one.
   int QuitSession(int32_t frame, uint32_t max_wait_ms);
   net::Transport& transport();       // for the game thread's GekkoNet Send/Receive (PushGekko/PopGekko)

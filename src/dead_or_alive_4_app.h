@@ -824,6 +824,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.send_leave = [this](int32_t frame, doa4::np::wire::LeaveReason reason) {
       if (lobby_) lobby_->SendLeave(frame, reason);
     };
+    host.leave_kept = [this] { return lobby_ && lobby_->status().leave_kept; };  // the frame-0 Leave fix
     host.transport = [this]() -> doa4::np::net::Transport* { return lobby_ ? &lobby_->transport() : nullptr; };
     host.session_refused = [this] { return lobby_ && lobby_->status().session_refused; };
     host.quit_session = [this](int32_t frame) { return lobby_ ? lobby_->QuitSession(frame, 150) : 0; };

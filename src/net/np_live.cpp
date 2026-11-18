@@ -59,6 +59,11 @@ wire::LeaveReason LeaveReasonFor(End e) {
   }
 }
 
+bool RestartReady(End end, uint32_t ms_since_end, bool leave_kept) {
+  const uint32_t wait = end == End::kDesync ? kRestartDesyncMs : kRestartMs;
+  return ms_since_end >= wait && (!leave_kept || ms_since_end >= kRestartCapMs);
+}
+
 Session::Session(gekko::Session* gekko, exec::Executor* executor, Clock clock, Limits limits, Hooks hooks)
     : gekko_(gekko), executor_(executor), clock_(std::move(clock)), limits_(limits), hooks_(std::move(hooks)) {}
 

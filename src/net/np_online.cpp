@@ -330,6 +330,11 @@ struct Lobby::Impl {
   int leave_repeat = 0;
   uint64_t leave_sends = 0;  // Leaves sent so far (QuitSession waits on it; under mu)
   wire::Leave leave_out;
+  // the frame-0 Leave fix (Status::leave_kept): a Leave asked for while the peer is unseen (not kInSession) is kept from
+  // leave_kept_t0; leave_delivering = the peer became seen and the kept Leave's 3 sends to it are under way
+  bool leave_kept = false, leave_delivering = false;
+  uint32_t leave_kept_t0 = 0;
+  uint32_t leave_kept_sent = 0;  // round 2 F6: the last send of a kept Leave to the unseen peer (every kHelloMs, any state)
   uint32_t session_reply_sent = 0;
   bool session_reply_ever = false, wrong_source_logged = false;
   bool session_refusal_seen = false;  // R1-1: a kSession answer came from the peer; final after kSessionRefusalGraceMs
@@ -471,6 +476,8 @@ Status Lobby::Impl::SnapshotLocked() const {
   s.upnp = cfg.upnp ? (upnp_started ? upnp::Get().message : "UPnP: not asked yet") : "UPnP off";
   s.session_refused = session_refused;
   s.refusal = refusal;
+  s.leave_kept = leave_kept;
+  s.leave_sends = leave_sends;
   if (session) {
     s.suits_text = rules::SuitStatusText(sh.suit_state);
   } else if (has_peer && (state == State::kConnected || state == State::kStarting || state == State::kRestarting)) {
@@ -1055,6 +1062,12 @@ void Lobby::Impl::HandleSessionHello(const rules::Endpoint& from, const wire::Pa
     Log("[doa4][NET] the other player's game is back: in session (first session Hello from " + rules::EndpointText(from) +
         ", hand-off peer " + rules::EndpointText(sh.peer) + ")");
     SetEvent("The other player's game is back: the session runs.");
+    if (leave_kept && !leave_delivering) {  // the frame-0 Leave fix: the kept Leave goes to the peer now, 3 times (Tick)
+      leave_delivering = true;
+      leave_repeat = 3;
+      Log("[doa4][NET] the Leave went to the other player's game when it came (" + std::to_string(now - leave_kept_t0) +
+          " ms after the end)");
+    }
   }
   if (!session_reply_ever || now - session_reply_sent >= 100) {  // so it knows we are here too
     session_reply_ever = true;
@@ -1355,6 +1368,15 @@ void Lobby::Impl::Apply(const Command& c, uint32_t now) {
       if (!session) return;
       leave_out = c.leave;
       leave_repeat = 3;
+      // the frame-0 Leave fix: asked for while the peer is unseen (its session process may not have bound its port
+      // yet), the Leave is kept and sent again when the peer is seen (HandleSessionHello) and every kHelloMs while the
+      // peer is unseen, in any state but kInSession (Tick; kConnecting, and the kOffline of a refused session), for
+      // p.leave_keep_ms; asked for while seen, it is sent 3 times as before. A later Leave replaces it.
+      leave_kept = state != State::kInSession;
+      leave_delivering = false;
+      leave_kept_t0 = now;
+      leave_kept_sent = now;
+      status_dirty = true;
       return;
     case Cmd::kRestartFailed: {
       if (session || state != State::kRestarting) return;
@@ -1413,13 +1435,20 @@ void Lobby::Impl::Tick(uint32_t now) {
       session_refused = true;
       Log("[doa4][NET] the hand-off's peer answered as a lobby: the other game did not start the session; giving up");
       SetEvent("The other player's game did not start the session.", "session");
-      return;
+      // round 2 F6: no return here, so a kept Leave's sends and its keep run on this tick too (the state is kOffline now)
     }
     if (state == State::kConnecting && (!hello_ever || now - hello_sent >= kHelloMs)) {
       hello_ever = true;
       hello_sent = now;
       SendTo(sh.peer, wire::Type::kHello, sh.session_token, wire::EncodeHello(OwnHello(sh.session_token)));
       SendTo(sh.peer, wire::Type::kPunch, 0, {});
+    }
+    // the frame-0 Leave fix (round 2 F6): a kept Leave goes every kHelloMs while the peer is unseen, in any state but
+    // kInSession (kConnecting, and the kOffline of a refused session), until it is delivered or the keep ends
+    if (leave_kept && !leave_delivering && state != State::kInSession && now - leave_kept_sent >= kHelloMs) {
+      leave_kept_sent = now;
+      SendPeer(wire::Type::kLeave, wire::EncodeLeave(leave_out));
+      ++leave_sends;
     }
     if (state == State::kInSession && (!ping_ever || now - ping_sent >= kPingMs)) {
       ping_ever = true;
@@ -1430,6 +1459,20 @@ void Lobby::Impl::Tick(uint32_t now) {
       --leave_repeat;
       SendPeer(wire::Type::kLeave, wire::EncodeLeave(leave_out));
       ++leave_sends;
+    }
+    if (leave_kept) {  // the frame-0 Leave fix: a kept Leave ends with its 3 sends to the seen peer, or after the keep
+      if (leave_delivering) {
+        if (leave_repeat == 0) {
+          leave_kept = leave_delivering = false;
+          status_dirty = true;
+        }
+      } else if (now - leave_kept_t0 >= p.leave_keep_ms) {
+        leave_kept = false;
+        status_dirty = true;
+        const uint32_t k = p.leave_keep_ms;
+        Log("[doa4][NET] the other player's game did not come within " +
+            (k % 1000 == 0 ? std::to_string(k / 1000) + " s" : std::to_string(k) + " ms") + ": the Leave was not delivered");
+      }
     }
     return;
   }
@@ -1652,7 +1695,7 @@ int Lobby::QuitSession(int32_t frame, uint32_t max_wait_ms) {
     std::lock_guard<std::mutex> lock(impl_->mu);
     base = impl_->leave_sends;
     const bool queued = std::any_of(impl_->cmds.begin(), impl_->cmds.end(), [](const Command& c) { return c.cmd == Cmd::kLeave; });
-    pending = queued || impl_->leave_repeat > 0;
+    pending = queued || impl_->leave_repeat > 0 || impl_->leave_kept;  // round 2 F10: a kept Leave keeps its frame and reason
     if (!queued && impl_->leave_repeat > 0) expected = impl_->leave_repeat;  // the rest of a Leave already being sent
   }
   if (!pending) SendLeave(frame, wire::LeaveReason::kLeft);

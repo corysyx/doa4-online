@@ -939,6 +939,39 @@ static void TestEndTexts() {
   CHECK(live::TerminalReason(fr, false) == "peer left");
 }
 
+// The frame-0 Leave fix (lockstep port Phase C, ledger L72): the offline relaunch waits 5 s (8 s for a desync) as before;
+// a Leave the session lobby still keeps for an unseen peer holds it on, to 10 s after the end at most.
+static void TestRestartReady() {
+  Group("restart rule: RestartReady over every end, with and without a kept Leave");
+  CHECKF(live::kRestartMs == 5000 && live::kRestartDesyncMs == 8000 && live::kRestartCapMs == 10000, "constants %u %u %u",
+         live::kRestartMs, live::kRestartDesyncMs, live::kRestartCapMs);
+  const live::End ends[] = {live::End::kNone,   live::End::kLeft,          live::End::kPeerLeft, live::End::kLost,
+                            live::End::kDesync, live::End::kFrame0Timeout, live::End::kInternal, live::End::kWorkerOrder};
+  for (const live::End e : ends) {
+    const uint32_t wait = e == live::End::kDesync ? 8000 : 5000;
+    // no Leave kept: as before (5 s, 8 s for a desync)
+    CHECKF(!live::RestartReady(e, wait - 1, false), "%s, not kept: ready at %u ms", EndName(e), wait - 1);
+    CHECKF(live::RestartReady(e, wait, false), "%s, not kept: not ready at %u ms", EndName(e), wait);
+    CHECKF(live::RestartReady(e, 60000, false), "%s, not kept: not ready at 60 s", EndName(e));
+    // a kept Leave: not before the end's own wait either
+    CHECKF(!live::RestartReady(e, wait - 1, true), "%s, kept: ready at %u ms", EndName(e), wait - 1);
+    // kept at the end's wait -> not ready; kept to 9.99 s -> not ready; kept at exactly 10 s -> ready (the cap)
+    CHECKF(!live::RestartReady(e, wait, true), "%s, kept: ready at %u ms", EndName(e), wait);
+    CHECKF(!live::RestartReady(e, 9990, true), "%s, kept: ready at 9990 ms", EndName(e));
+    CHECKF(!live::RestartReady(e, 9999, true), "%s, kept: ready at 9999 ms", EndName(e));
+    CHECKF(live::RestartReady(e, 10000, true), "%s, kept: not ready at exactly 10000 ms", EndName(e));
+    CHECKF(live::RestartReady(e, 60000, true), "%s, kept: not ready at 60 s", EndName(e));
+  }
+  // the Leave stops being kept at 6.2 s (it went to the peer): kept at 6199 -> not ready, not kept at 6200 -> ready
+  CHECK(!live::RestartReady(live::End::kWorkerOrder, 6199, true));
+  CHECK(live::RestartReady(live::End::kWorkerOrder, 6200, false));
+  // a desync: kept at 8 s -> not ready; no longer kept at 8.5 s -> ready; kept to the cap -> ready at 10 s
+  CHECK(!live::RestartReady(live::End::kDesync, 8000, true));
+  CHECK(live::RestartReady(live::End::kDesync, 8500, false));
+  CHECK(!live::RestartReady(live::End::kDesync, 9990, true));
+  CHECK(live::RestartReady(live::End::kDesync, 10000, true));
+}
+
 static void TestDesyncFrameOwn() {
   Group("own desync names desync_frame");
   World w;
@@ -1314,6 +1347,7 @@ int main(int argc, char** argv) {
   TestPeerReason();
   TestPeerWorkerOrder();
   TestEndTexts();
+  TestRestartReady();
   TestDesyncFrameOwn();
   TestLoad();
   TestPacer();
