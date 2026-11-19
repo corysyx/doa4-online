@@ -75,6 +75,13 @@ std::string TerminalReason(const FrameResult& r, bool refused);
 // the reason of the Leave this side sends the other when it ends (np_session.cpp EndOnline).
 wire::LeaveReason LeaveReasonFor(End e);
 
+// The offline relaunch after an end (np_session.cpp EndOnline's restarter, the frame-0 Leave fix): it waits
+// kRestartMs (kRestartDesyncMs for a desync, R16); if the session lobby still keeps a Leave for an unseen peer then
+// (online::Status::leave_kept), it waits on until the Leave is no longer kept, and never past kRestartCapMs after the end.
+inline constexpr uint32_t kRestartMs = 5000, kRestartDesyncMs = 8000, kRestartCapMs = 10000;
+// True when the relaunch may go: ms_since_end >= the end's wait and (no Leave kept, or ms_since_end >= kRestartCapMs).
+bool RestartReady(End end, uint32_t ms_since_end, bool leave_kept);
+
 // A hold = the waiting inside one Frame call, from its first wait_packet; it is REPORTED (events, holds) once it
 // reaches hold_report_ms, with the begin time it really had. Deadlines are whole milliseconds since the hold
 // began (frame 0: since the first Frame(0) call): elapsed_ms = (now_us() - begin_us) / 1000.

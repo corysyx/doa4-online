@@ -5,19 +5,18 @@
 **Dead or Alive 4 Online** is a native Windows build of **Dead or Alive 4** (Xbox 360) with two-player
 online play, statically recompiled with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). It
 also builds **34 swimsuits from Dead or Alive Xtreme 2** (DOAX2) on your PC from your own disc, as extra
-costumes. This is **alpha 0.3.5**: it works and is used, but it is still an alpha, and the
+costumes. This is **alpha 0.3.6**: it works and is used, but it is still an alpha, and the
 [known issues](#known-issues) are listed below. **No game data is included.** You need your own copy of
 the game, and the swimsuits need your own DOAX2 disc.
 
 It is a fork of [parkerallan/doa4-recomp](https://github.com/parkerallan/doa4-recomp), published at
 [Dwreckgg/doa4-online](https://github.com/Dwreckgg/doa4-online). On top of it: two-player **online
-play**, frame pacing, an Esc menu (Game / Controls / Photo / Extras / Online tabs), graphics and display
-options (exclusive fullscreen, VSync, output size), the game's text language and subtitles saved between
-starts, an option to skip the boot intro, a notice on the title screen when a new version is out,
-full-quality photos, the DOAX2 swimsuits, and a first-run setup that finds or extracts the game files.
+play**, the DOAX2 swimsuits, a first-run setup that finds or extracts the game files, an Esc menu with
+graphics and display options, an option to skip the boot intro, full-quality photos, a toggle to unlock all
+in-game content, and more.
 Building it yourself is for contributors: see [docs/BUILDING.md](docs/BUILDING.md).
 
-## Easy setup: play online with a friend
+## Easy setup and how to play online with a friend
 
 You do not need to build anything. Each player does steps 1-3 once.
 
@@ -50,7 +49,7 @@ folder; and, only for the swimsuits, your own **USA** copy of *Dead or Alive Xtr
    - **Windows Firewall:** when Windows asks, tick **both Private and Public** and allow the game
      (both players). If the prompt is hidden behind the game, press **Alt+Tab**.
 5. **Play.** When both show *Connected*, the host presses **Start online session**. Both games
-   restart into the session (host = player 1). At the title screen **the host presses Start**, so the game loads the host's profile; the friend's controller is ignored until the menus appear. Pick **Versus**, your characters and a stage, and
+   restart into the session (host = player 1). Pick **Versus**, your characters and a stage, and
    fight. Everything is unlocked in a session and your own save is never changed.
 6. **Finish.** **Leave online session** in the Online tab; both games restart offline.
 
@@ -75,7 +74,15 @@ original DOA4 costumes.
 **Game** tab, **Performance**, **Batch GPU uploads (for slower graphics cards)**. It can raise the frame rate; as a
 side effect, hair and other moving parts can be drawn one frame late now and then. It does not help a slow CPU,
 which is what slows online play down above. Online, the host's choice is used for both players, so the host ticks
-it.
+it. If the game ran slowly for you before 0.3.6 because of the graphics card, please try it and tell us how it goes
+in [issue #20](https://github.com/dwreckgg/doa4-online/issues/20): your graphics card, the frame rate with it off
+and on, and anything that looks wrong.
+
+**Worker order (host only):** since 0.3.6 an online session runs the game's job workers side by side, in one fixed
+order that both PCs follow (`netplay_worker_order = "lanes"` in `dead_or_alive_4.toml`, the default). The host can
+set it to `"serial"` to run them one at a time as 0.3.5 did; the host's choice is used for both players. Try it only
+if sessions end with "could not keep the session's timing" or go out of sync where 0.3.5 did not, and say so in an
+issue.
 
 Both players need the **same** release: the online handshake compares the compiled code, so two
 different builds refuse each other. The releases are built by GitHub Actions and published as
@@ -107,6 +114,7 @@ until the router restarts or you remove it in the router's own settings.
 | "A direct connection is not possible between your networks; relay arrives with lobbies." | The routers change the port per destination (symmetric NAT), or every attempt to connect failed: the two PCs cannot reach each other directly yet. |
 | "Waiting for the other player..." | The other player's input is late and the game holds. After 10 s: "The other player stopped responding. The session ended; both games restart." |
 | "The games went out of sync. The session ended; both games restart." | A desync. Both games wrote diagnostics: send the session logs (below). |
+| "This PC could not keep the session's timing. The session ended; both games restart." / "The other player's PC could not keep the session's timing. ..." | One PC fell more than 8 seconds behind in a frame (a long hitch: a virus scan, another heavy program) and ended the session cleanly before the games could go out of sync. Close other heavy programs and start a new session. If it happens again, send the session logs (below) of the PC that shows "This PC". A hitch longer than 10 s can show "The other player stopped responding" on the other PC instead. |
 
 **Session logs:** **Open session logs** in the Online tab opens `<saves folder>\netplay\sessions`
 (the saves folder is the one the Game tab shows, [Saves, settings, photos and logs](#saves-settings-photos-and-logs)). After a
@@ -322,7 +330,7 @@ that the game ran fine. Solo offline play does not seem to work under Linux for 
 | Alpha-152: her model does not show on character select in an online match where the two players' DOAX2 swimsuit imports differ, or in Tag's second-fighter panel. | She is still playable there; only the select-screen model is missing. A fix is planned. |
 | The game's own online menus (Xbox Live) do not work. | Play online through the Esc menu's Online tab ([how it works](#online-play-in-more-detail)). |
 | Online: on a CPU with fewer cores (for example 4 cores) the game can slow down a lot, because both games run at the speed of the slower PC. | Avoid the CPU-heavy stages, such as Savannah Safari and Experimental Playground, when playing online. Avoid the DOAX2 swimsuits online too: they take more CPU than the original DOA4 costumes. If the graphics card rather than the CPU is the slow part, the host can tick **Batch GPU uploads** (Esc menu, **Game** tab). |
-| Untested so far (one PC only): the same swimsuits on two different PCs and a match with them over a real network; the frame rate with the swimsuits on a slower PC; other USA pressings of DOAX2 (they read as a wrong disc). | Reports welcome. |
+| Keeping the game folder inside OneDrive (for example on a Desktop or in Documents that OneDrive backs up) can make the game crash when it starts or fail to save. | Keep the whole game folder, with its saves, outside OneDrive, for example in `C:\Games\Dead or Alive 4 Online`. |
 | Linux (Proton / Wine): the game starts to a black screen instead of opening as intended (reported by one player on GE-Proton11-12). | Joining an online session with another player is reported to still work, and the game runs fine after that. Solo offline play does not seem to work yet. |
 
 ## Roadmap
@@ -330,11 +338,29 @@ that the game ran fine. Solo offline play does not seem to work under Linux for 
 Planned, no dates:
 
 - Rollback netcode for online play.
-- Online lobbies with up to 4 players.
-- Costumes imported from other DOA titles, for example Dead or Alive 2 Ultimate (each from your own disc, as
-  with DOAX2).
+- Online lobbies.
+- More costumes, including importing existing costumes from other DOA games, for example Dead or Alive 2 Ultimate
+  (each from your own disc, as with DOAX2).
 - A free camera / noclip mode.
 - A toggle to show hitboxes and hurtboxes.
+
+## Community
+
+The subreddit [r/doa4online](https://www.reddit.com/r/doa4online) is the place to share feedback and to find
+other players to play with online. Bugs should still be reported on the Issues page (next section).
+
+## Reporting bugs
+
+Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-online/issues):
+
+1. Search the open issues first. If yours is already there, add what you saw to it.
+2. Otherwise press **New issue** and describe:
+   - which release you run (the Esc menu's **About** shows it);
+   - what you did, what you expected, and what happened instead;
+   - whether it happened offline or online, and whether you have the DOAX2 swimsuits imported.
+3. Attach the newest log, `logs\dead_or_alive_4_NNN.log` next to the exe. For a problem online, also
+   attach the newest folder from **Open session logs** in the Online tab. Both players' logs help most.
+4. Do not attach game files, disc images or anything extracted from them.
 
 ## Credits
 
@@ -361,31 +387,14 @@ Planned, no dates:
   DOA4 was found on the XeNTaX forums; it could load a basic armature and the models. sheikproject
   heavily modified and updated it, and the swimsuit converter's recipe is built on that version. The
   original script's author is not known.
-- Thanks to everyone who helped playtest the online play.
+- Thanks to everyone who helped playtest the online play, all users who downloaded the recomp, and everyone who
+  has taken the time to report the bugs they found.
 
 The same names, and the licences of the code taken, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Contributing
 
 Pull requests are welcome. To build the game yourself, see [docs/BUILDING.md](docs/BUILDING.md).
-
-## Community
-
-The subreddit [r/doa4online](https://www.reddit.com/r/doa4online) is the place to share feedback and to find
-other players to play with online. Bugs should still be reported on the Issues page (next section).
-
-## Reporting bugs
-
-Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-online/issues):
-
-1. Search the open issues first. If yours is already there, add what you saw to it.
-2. Otherwise press **New issue** and describe:
-   - which release you run (the Esc menu's **About** shows it);
-   - what you did, what you expected, and what happened instead;
-   - whether it happened offline or online, and whether you have the DOAX2 swimsuits imported.
-3. Attach the newest log, `logs\dead_or_alive_4_NNN.log` next to the exe. For a problem online, also
-   attach the newest folder from **Open session logs** in the Online tab. Both players' logs help most.
-4. Do not attach game files, disc images or anything extracted from them.
 
 ## License
 

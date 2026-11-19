@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.3.6 (2026-11-18)
+
+### New
+- **Online: the game's background jobs run side by side.** An online session used to run the game's 25 job workers
+  (the threads that do cloth and other per-frame work) one at a time, and the game waited for them every frame. They now run
+  in two lanes side by side, in one fixed order that both PCs follow, so both games still compute the same fight. On
+  the developer's PC, in tests on a development build of the same order, the game's wait for the workers fell from
+  1.8 to 7.7 ms a frame to 1.4 to 2.7 ms. It has not been measured on a slower PC yet: reports welcome. The host can
+  go back to 0.3.5's order for a session with `netplay_worker_order = "serial"` in `dead_or_alive_4.toml`.
+- **Batch GPU uploads.** The Esc menu's Game tab has a **Batch GPU uploads (for slower graphics cards)** checkbox
+  under **Performance**. It is off by default. It can raise the frame rate when the graphics card is the slow part;
+  as a side effect, hair and other moving parts can be drawn one frame late now and then. Online, the host's choice
+  is used for both players. On the developer's PC, in tests on a development build of the same change over four
+  scripted fights, the graphics card's work fell from 3.4 to 4.5 ms a frame to 1.7 to 2.2 ms (37 to 52 % less): the
+  same data goes up in 6 to 23 times fewer uploads, the main thread's cost did not get worse, and every fight came out
+  the same as without it. That PC's graphics card was far from its limit, so it shows no frame-rate change there;
+  the gain on a slower graphics card has not been measured yet. **If an earlier version ran slowly for you because
+  of the graphics card (high GPU usage, a low frame rate), please turn it on and tell us how it goes in
+  [issue #20](https://github.com/dwreckgg/doa4-online/issues/20)**: your graphics card, the frame rate with it off
+  and on, and anything that looks wrong.
+
+### Fixed
+- Kyoto in Bloom (day and night): after a fall into the canal, the water could stay flat and streaked for the rest of
+  the fight, mostly on the first starts while the shader cache was still empty. The game now prepares each effect
+  before drawing it; the cost is a short hitch the first time an effect is drawn, until the shader cache holds it.
+- Online: when a session ended right at its start, before the other player's game had connected, the other player's
+  game waited a minute and then said the other player did not connect. It is now told at once, and both games
+  restart.
+
+### Notes
+- Online: a new message, "This PC could not keep the session's timing. The session ended; both games restart." (and
+  "The other player's PC could not keep the session's timing. ..." on the other PC). It shows when one PC falls more
+  than 8 seconds behind in one frame, for example during a virus scan or another heavy program, and ends the session
+  cleanly before the games could go out of sync. A hitch longer than 10 seconds can show "The other player stopped
+  responding" on the other PC instead.
+- Both players need 0.3.6: it does not connect to 0.3.5.
+
 ## 0.3.5 (2026-11-17)
 
 ### New

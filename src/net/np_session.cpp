@@ -33,11 +33,13 @@
 #include <xmmintrin.h>
 
 #include <rex/cvar.h>
+#include <rex/graphics/graphics_system.h>
 #include <rex/hash.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/memory.h>
 #include <rex/ppc/context.h>
+#include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
@@ -147,6 +149,7 @@ struct State {
   uint32_t shot_every = 0;
   std::vector<uint32_t> dump_frames;
   bool heap_dump = false;  // DOA4_NP_HEAPDUMP=1: each dump also writes the guest heaps' committed pages
+  std::vector<uint32_t> gpu_trace_frames;  // DOA4_NP_GPUTRACE=f,f,...: a one-frame GPU trace at each frame (record and replay)
 
   // hashes
   std::vector<Region> regions;
@@ -926,7 +929,8 @@ void LogNetStats(State& s, const std::string& when) {
 }
 
 // The end of an online session (game thread, or Abort before the first frame): the terminal lines, the Leave, the
-// det layer off, the overlay, and the offline relaunch after 5 s (8 s for a desync, R16).
+// det layer off, the overlay, and the offline relaunch after 5 s (8 s for a desync, R16), or later while the session
+// lobby keeps the Leave for a peer it has not seen (the frame-0 Leave fix; 10 s after the end at most).
 void LogGeneratorSync(State& s) {
   if (s.gen_sync_frames.load() || s.gen_sync_locked.load()) Log("scene generator made equal on " + std::to_string(s.gen_sync_frames.load()) + " frames, its lock held on " + std::to_string(s.gen_sync_locked.load()));
 }
@@ -950,7 +954,12 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   // GekkoNet's one checksum message)
   // Task 15 G1: a desync's Leave carries the DESYNC frame (wire.h Leave: for kDesync the frame is the desync frame), so
   // the other side, which ends on it as a desync too, names the same frame
-  if (s.host.send_leave && r.end != live::End::kPeerLeft)
+  // Round 2 F5 (review I1): a refused end (the hand-off's peer answered as a lobby; WatchLoop ends it as kPeerLeft) sends
+  // Leave(0, kInternal) like any other end, so the other game's session process, if it binds late, still ends with it
+  // (the lobby keeps it for the unseen peer); a kPeerLeft end from the peer's own Leave or Bye still sends none.
+  if (s.host.send_leave && refused && r.end == live::End::kPeerLeft)
+    s.host.send_leave(0, wire::LeaveReason::kInternal);
+  else if (s.host.send_leave && r.end != live::End::kPeerLeft)
     s.host.send_leave(r.end == live::End::kDesync && r.desync_frame >= 0 ? r.desync_frame : f, live::LeaveReasonFor(r.end));
   {
     std::lock_guard lk(s.result_mu);
@@ -966,13 +975,32 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   g_active.store(false, std::memory_order_release);
   s.quitting = true;
   if (s.host.overlay_changed) s.host.overlay_changed();
-  const int delay_ms = r.end == live::End::kDesync ? 8000 : 5000;
+  const int delay_ms = int(r.end == live::End::kDesync ? live::kRestartDesyncMs : live::kRestartMs);
   Log("offline restart in " + std::to_string(delay_ms / 1000) + " s");
-  s.restarter = std::thread([delay_ms] {
+  const live::End end_kind = r.end;
+  const auto ended_at = std::chrono::steady_clock::now();
+  s.restarter = std::thread([delay_ms, end_kind, ended_at] {
     State& st = S();
     std::unique_lock lk(st.watch_mu);
     if (st.watch_cv.wait_for(lk, std::chrono::milliseconds(delay_ms), [&] { return st.watch_stop; })) return;
+    // The frame-0 Leave fix: a Leave the session lobby still keeps for a peer it has not seen holds the relaunch on,
+    // polled every 100 ms, to 10 s after the end at most (live::RestartReady); the lobby is asked without watch_mu held.
+    bool waited = false;
+    uint32_t since = 0;
+    for (;;) {
+      lk.unlock();
+      since = uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ended_at).count());
+      const bool ready = live::RestartReady(end_kind, since, st.host.leave_kept && st.host.leave_kept());
+      lk.lock();
+      if (ready) {  // round 2 F9 (review M3): a stop asked for during the last poll wins over the relaunch
+        if (st.watch_stop) return;
+        break;
+      }
+      waited = true;
+      if (st.watch_cv.wait_for(lk, std::chrono::milliseconds(100), [&] { return st.watch_stop; })) return;
+    }
     lk.unlock();
+    if (waited) Log("offline restart waited " + std::to_string(since - uint32_t(delay_ms)) + " ms for the Leave");
     Log("offline restart");
     if (st.host.restart) st.host.restart(false);
   });
@@ -1530,6 +1558,16 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
   }
   if (s.shot_every && f % s.shot_every == 0) shot = true;
   if (shot) Enqueue({Job::kShot, f, {}});
+  // DOA4_NP_GPUTRACE=f,f,... (a debug test switch, record and replay runs): the SDK writes one frame of the GPU command stream as
+  // an .xtr file under --trace_gpu_prefix, from the next swap. Issue #10's verification raises the slit rate with it.
+  while (!s.gpu_trace_frames.empty() && s.gpu_trace_frames.front() <= f) {
+    if (s.gpu_trace_frames.front() == f) {
+      auto* graphics = dynamic_cast<rex::graphics::GraphicsSystem*>(rex::Runtime::instance()->graphics_system());
+      if (graphics) graphics->RequestFrameTrace();
+      Log("gpu trace at frame " + std::to_string(f) + (graphics ? ": requested" : ": NOT requested, no graphics system"));
+    }
+    s.gpu_trace_frames.erase(s.gpu_trace_frames.begin());
+  }
   if (f >= s.quit_frame) {
     Quit(s, "quit frame");
     return;
@@ -2016,6 +2054,7 @@ void Start(Host host) {
   s.shot_every = std::strtoul(Env("DOA4_NP_SHOT_EVERY").c_str(), nullptr, 10);
   s.dump_frames = FrameList(Env("DOA4_NP_DUMP"));
   s.heap_dump = Env("DOA4_NP_HEAPDUMP") == "1";
+  s.gpu_trace_frames = FrameList(Env("DOA4_NP_GPUTRACE"));
 
   OpenHashFiles(s);
   det::Start(s.seed, s.dir);

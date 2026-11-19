@@ -53,7 +53,8 @@
 // injection hooks), (7) shots, (8) the 600-frame timing line. The session writes into Host::session_dir: np_log.txt,
 // rec.d4r (the confirmed-input tap), digest.d4d, sweep.d4s, counters.d4k (rows of the frames that advanced), events.txt.
 // At the end: "session ended at frame F: <reason>", "checksums handed to GekkoNet: N", the Leave to the peer, the det
-// layer stopped, and after 5 s (8 s for a desync) Host::restart(false) (the offline relaunch).
+// layer stopped, and after 5 s (8 s for a desync) Host::restart(false) (the offline relaunch); later, to 10 s after the
+// end at most, while the session lobby still keeps the Leave for a peer it has not seen (Host::leave_kept).
 
 namespace doa4::np {
 
@@ -78,6 +79,9 @@ struct Host {
   std::function<void()> overlay_changed;             // the banner or session state changed (posts to the UI thread)
   const GuestBytes* guest = nullptr;                 // for unlocks::FindProfile / ApplyUnlock
   std::function<void(int32_t frame, wire::LeaveReason reason)> send_leave;  // Lobby::SendLeave of the session lobby
+  // The session lobby's Status::leave_kept (the frame-0 Leave fix): while it is true at the end's 5 s (8 s), the offline
+  // relaunch waits on, to 10 s after the end at most (live::RestartReady). Empty: nothing is waited for.
+  std::function<bool()> leave_kept;
   std::function<net::Transport*()> transport;        // the session lobby's transport, asked for at the first frame hook
                                                      // (the app starts the lobby right after np::Start)
   // Additions (Task 12):
