@@ -13,8 +13,9 @@
   where the processor is the slow part). Parts of the game no training fight plays (story, menus, other characters)
   are compiled as before. How the profile is made: `docs/PGO.md`.
 - **One frame less input lag with a pad.** The game now reads the pads just before it uses them, instead of using
-  what was read up to one frame earlier. On the developer's PC with four different pads, the time from a press to
-  the game's read fell from about 16.6 ms to under 0.1 ms. That frame counts online too, at any distance: it is the
+  what was read up to one frame earlier. On the developer's PC with four different pads (Xbox One S, 8BitDo in
+  XInput mode, Switch Pro and a hitbox), the time from a press to the game's read fell from about 16.6 ms to under
+  0.1 ms. That frame counts online too, at any distance: it is the
   same as one frame less input delay. The automatic input delay adds a frame for about every 33 ms of round-trip
   ping, so a connection one step farther away now feels about as responsive as the nearer one did in 0.3.6. If
   anything feels wrong with a pad, `pad_fresh_read = false` in `dead_or_alive_4.toml` goes back to 0.3.6's
