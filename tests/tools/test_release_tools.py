@@ -498,6 +498,23 @@ def test_table_matches_sources(root):
               f"table: {bat} ({kind}) prints one of {want} in {os.path.basename(src) or '?'}")
 
 
+def test_runners_use_the_pinned_llvm(root):
+    # every real runner compiles with the LLVM the release workflow pins (DOA4_LLVM_BIN, set to C:\LLVM\bin there): a
+    # runner that puts a literal LLVM folder first on PATH compiles with the image's own LLVM in CI, which a newer Visual
+    # Studio STL refuses (0.3.7's first release run: run_afs_overlay_test.bat, clang 20 against STL 14.52)
+    bats = sorted(f for f in os.listdir(HOST) if re.fullmatch(r"run_\w+_test\.bat", f))
+    check(len(bats) >= 30, f"llvm: the real runners are found: {len(bats)}")
+    for bat in bats:
+        text = read(os.path.join(HOST, bat)).decode("utf-8", "replace")
+        lines = [l.strip() for l in text.splitlines()]
+        default = any(l.lower().startswith('if not defined doa4_llvm_bin set "doa4_llvm_bin=') for l in lines)
+        uses = any(l.startswith('set "PATH=%DOA4_LLVM_BIN%;') for l in lines)
+        literal = [l for l in lines if re.match(r'set "PATH=[A-Za-z]:', l)]
+        check(default and uses and not literal,
+              f"llvm: {bat} defaults DOA4_LLVM_BIN, puts it first on PATH and no literal folder before it"
+              + ("" if default and uses and not literal else f" (default {default}, uses {uses}, literal {literal})"))
+
+
 # ---- PGO: pgo_source_id.py, pgo_recipe.py, the workflow and np_build.bat wiring ------------------------------------
 
 PGO_ID = os.path.join(TOOLS, "pgo_source_id.py")
