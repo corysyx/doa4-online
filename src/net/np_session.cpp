@@ -33,11 +33,13 @@
 #include <xmmintrin.h>
 
 #include <rex/cvar.h>
+#include <rex/graphics/graphics_system.h>
 #include <rex/hash.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/memory.h>
 #include <rex/ppc/context.h>
+#include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
@@ -143,6 +145,7 @@ struct State {
   uint32_t shot_every = 0;
   std::vector<uint32_t> dump_frames;
   bool heap_dump = false;  // DOA4_NP_HEAPDUMP=1: each dump also writes the guest heaps' committed pages
+  std::vector<uint32_t> gpu_trace_frames;  // DOA4_NP_GPUTRACE=f,f,...: a one-frame GPU trace at each frame (record and replay)
 
   // hashes
   std::vector<Region> regions;
@@ -1534,6 +1537,16 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
   }
   if (s.shot_every && f % s.shot_every == 0) shot = true;
   if (shot) Enqueue({Job::kShot, f, {}});
+  // DOA4_NP_GPUTRACE=f,f,... (a debug test switch, record and replay runs): the SDK writes one frame of the GPU command stream as
+  // an .xtr file under --trace_gpu_prefix, from the next swap. Issue #10's verification raises the slit rate with it.
+  while (!s.gpu_trace_frames.empty() && s.gpu_trace_frames.front() <= f) {
+    if (s.gpu_trace_frames.front() == f) {
+      auto* graphics = dynamic_cast<rex::graphics::GraphicsSystem*>(rex::Runtime::instance()->graphics_system());
+      if (graphics) graphics->RequestFrameTrace();
+      Log("gpu trace at frame " + std::to_string(f) + (graphics ? ": requested" : ": NOT requested, no graphics system"));
+    }
+    s.gpu_trace_frames.erase(s.gpu_trace_frames.begin());
+  }
   if (f >= s.quit_frame) {
     Quit(s, "quit frame");
     return;
@@ -2020,6 +2033,7 @@ void Start(Host host) {
   s.shot_every = std::strtoul(Env("DOA4_NP_SHOT_EVERY").c_str(), nullptr, 10);
   s.dump_frames = FrameList(Env("DOA4_NP_DUMP"));
   s.heap_dump = Env("DOA4_NP_HEAPDUMP") == "1";
+  s.gpu_trace_frames = FrameList(Env("DOA4_NP_GPUTRACE"));
 
   OpenHashFiles(s);
   det::Start(s.seed, s.dir);
