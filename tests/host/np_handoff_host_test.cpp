@@ -234,6 +234,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"native_stencil_value_output", "gpu-backend"},
     {"native_stencil_value_output_d3d12_intel", "gpu-backend"},
     {"non_seamless_cube_map", "gpu-render"},
+    {"pad_fresh_read", "input"},
     {"pad_remap_p1", "input"},
     {"pad_remap_p2", "input"},
     {"pad_remap_p3", "input"},
@@ -338,7 +339,7 @@ static constexpr size_t kSdkCount = sizeof(kSdkNames) / sizeof(kSdkNames[0]);
 static constexpr size_t kSdkNotCarriedCount = sizeof(kSdkNotCarried) / sizeof(kSdkNotCarried[0]);
 static constexpr size_t kPortNotCarriedCount = sizeof(kPortNotCarried) / sizeof(kPortNotCarried[0]);
 static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
-static constexpr size_t kSdkTotal = 203;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c, +1 audio_volume, +2 GPU trial diagnostics, +1 gpu_upload_prefetch)
+static constexpr size_t kSdkTotal = 204;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c, +1 audio_volume, +2 GPU trial diagnostics, +1 gpu_upload_prefetch, +1 pad_fresh_read)
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
 // The port's own carried settings beyond the tweaks: they change guest memory and are no trust matter (np_handoff.cpp
