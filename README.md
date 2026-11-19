@@ -383,6 +383,11 @@ Report bugs on the [Issues page](https://github.com/Dwreckgg/doa4-online/issues)
   [Xenia Canary netplay](https://github.com/AdrianCassar/xenia-canary) (AdrianCassar),
   [RMG-K](https://github.com/Jay-Day/RMG-K), [3SX](https://github.com/crowded-street/3sx) and
   [Giuroll](https://github.com/Hagb/giuroll).
+- [Project Slippi](https://github.com/project-slippi/Ishiiruka) and Arte
+  ([JulienBernard3383279](https://github.com/JulienBernard3383279)): the one-frame input lag fix in 0.3.7 was found
+  by checking Slippi 3.7.0's "input suggestions" (Arte's "subframe rollback" idea) against this game. The fix
+  itself is different (Slippi sends mid-frame inputs to the other player; this reads your own pad fresh); no code
+  taken.
 - [sheikproject](https://github.com/sheikproject): the original Blender script to import models into
   DOA4 was found on the XeNTaX forums; it could load a basic armature and the models. sheikproject
   heavily modified and updated it, and the swimsuit converter's recipe is built on that version. The

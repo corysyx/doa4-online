@@ -309,6 +309,9 @@ The same names are in the README's Credits section.
   Flycast (https://github.com/flyinghead/flycast), Xenia Canary netplay by AdrianCassar
   (https://github.com/AdrianCassar/xenia-canary), RMG-K (https://github.com/Jay-Day/RMG-K), 3SX
   (https://github.com/crowded-street/3sx) and Giuroll (https://github.com/Hagb/giuroll).
+- Project Slippi (https://github.com/project-slippi/Ishiiruka) and Arte (https://github.com/JulienBernard3383279):
+  0.3.7's pad read fix (one frame less input lag) was found by checking Slippi 3.7.0's "input suggestions" (Arte's
+  "subframe rollback" idea) against this game. A different mechanism; no code taken.
 - sheikproject (https://github.com/sheikproject): the DOAX2 swimsuit converter is built on their version of the
   original Blender script to import models into DOA4, found on the XeNTaX forums. That script could load a basic
   armature and the models; sheikproject heavily modified and updated it, and the converter's recipe follows their

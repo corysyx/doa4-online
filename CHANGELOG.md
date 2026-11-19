@@ -2,19 +2,26 @@
 
 ## 0.3.7 (2026-11-19)
 
-<!-- DRAFT for the user's look before release: wording, and the PGO figures after round 2's spot check. -->
-
 ### New
 - **A faster build of the game (profile-guided optimisation).** The game is now compiled with a profile of how it
   actually runs: four scripted fights were played on an instrumented build, and the compiler used what they recorded
-  to lay out and inline the code that runs most. On the developer's PC, over seven scripted fights (four of them the
-  training fights, three not), the main thread's work per frame took 1.8 to 5.7 % less CPU time on all seven, and the
-  game's background jobs 0.8 to 6.2 % less on six of seven (the seventh unchanged). Parts of the game no training
-  fight plays (story, menus, other characters) are compiled as before. How the profile is made: `docs/PGO.md`.
+  to lay out and inline the code that runs most. On the developer's PC, over seven scripted fights on a development
+  build (four of them the training fights, three not), the main thread's work per frame took 1.8 to 5.7 % less CPU
+  time on all seven, and the game's background jobs 0.8 to 6.2 % less on six of seven (the seventh unchanged). This
+  release's own build, checked on two of those fights: 3.4 and 4.5 % less for the main thread, 1.0 and 3.8 % less
+  for the background jobs. It is CPU time saved each frame; how much of it shows as frame rate depends on the PC (most
+  where the processor is the slow part). Parts of the game no training fight plays (story, menus, other characters)
+  are compiled as before. How the profile is made: `docs/PGO.md`.
 - **One frame less input lag with a pad.** The game now reads the pads just before it uses them, instead of using
   what was read up to one frame earlier. On the developer's PC with four different pads, the time from a press to
-  the game's read fell from about 16.6 ms to under 0.1 ms. If anything feels wrong with a pad, `pad_fresh_read =
-  false` in `dead_or_alive_4.toml` goes back to 0.3.6's behaviour.
+  the game's read fell from about 16.6 ms to under 0.1 ms. That frame counts online too, at any distance: it is the
+  same as one frame less input delay. The automatic input delay adds a frame for about every 33 ms of round-trip
+  ping, so a connection one step farther away now feels about as responsive as the nearer one did in 0.3.6. If
+  anything feels wrong with a pad, `pad_fresh_read = false` in `dead_or_alive_4.toml` goes back to 0.3.6's
+  behaviour. Thanks to [Project Slippi](https://github.com/project-slippi/Ishiiruka) and Arte
+  ([JulienBernard3383279](https://github.com/JulienBernard3383279)): this fix was found by checking Slippi 3.7.0's
+  "input suggestions" (Arte's "subframe rollback" idea) against this game. The change itself is a different one:
+  Slippi sends mid-frame inputs to the other player, this reads your own pad fresh. No code was taken.
 - **Intel graphics: playable menus** ([issue #21](https://github.com/dwreckgg/doa4-online/issues/21)). On Intel GPUs
   the game now uses its faster drawing mode, with a fix for an Intel driver problem that left half the screen black
   in that mode. If anything looks wrong on an Intel GPU, `d3d12_clear_depth_via_drawing_intel = false` in
