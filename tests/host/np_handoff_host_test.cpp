@@ -143,6 +143,8 @@ static const NotCarried kSdkNotCarried[] = {
     {"d3d12_bindless", "gpu-budget"},
     {"d3d12_break_on_error", "gpu-backend"},
     {"d3d12_break_on_warning", "gpu-backend"},
+    {"d3d12_clear_depth_via_drawing", "gpu-backend"},
+    {"d3d12_clear_depth_via_drawing_intel", "gpu-backend"},
     {"d3d12_debug", "gpu-backend"},
     {"d3d12_dxbc_disasm", "log"},
     {"d3d12_dxbc_disasm_dxilconv", "log"},
@@ -339,7 +341,7 @@ static constexpr size_t kSdkCount = sizeof(kSdkNames) / sizeof(kSdkNames[0]);
 static constexpr size_t kSdkNotCarriedCount = sizeof(kSdkNotCarried) / sizeof(kSdkNotCarried[0]);
 static constexpr size_t kPortNotCarriedCount = sizeof(kPortNotCarried) / sizeof(kPortNotCarried[0]);
 static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
-static constexpr size_t kSdkTotal = 204;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c, +1 audio_volume, +2 GPU trial diagnostics, +1 gpu_upload_prefetch, +1 pad_fresh_read)
+static constexpr size_t kSdkTotal = 206;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c, +1 audio_volume, +2 GPU trial diagnostics, +1 gpu_upload_prefetch, +1 pad_fresh_read, +2 Intel depth clear)
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
 // The port's own carried settings beyond the tweaks: they change guest memory and are no trust matter (np_handoff.cpp
