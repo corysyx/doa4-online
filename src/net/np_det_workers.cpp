@@ -64,11 +64,13 @@
 #include "np_det_lanes.h"
 #include "np_lanes_pure.h"
 #include "np_session.h"
+#include "np_stage_wait_pure.h"
 
 extern "C" {
 REX_EXTERN(__imp__sub_827921C0);
 REX_EXTERN(__imp__sub_82792140);
 REX_EXTERN(__imp__sub_82791190);
+REX_EXTERN(__imp__sub_82566920);
 REX_EXTERN(__imp__sub_827922E0);
 REX_EXTERN(__imp__sub_82732950);
 }
@@ -219,6 +221,89 @@ void AddMainWait(uint64_t us) {
   g_main_wait_max_us = std::max(g_main_wait_max_us, double(us));
 }
 
+// Issue #10 (np_stage_wait_pure.h): before the main thread runs the stage update (sub_82566920) between the pool's mid event and
+// the join, it waits for the ten stage workers of the round. The stage's own update (the indirect call at 82566A44 inside it)
+// moves Safari's herd; the stage workers build the herd's part buffers from the herd as it stands, so a part built after the move
+// is one step ahead of the rest: the slit. Placement found by a bisect over the call sites (ledger ou_runs/i10/fix/LEDGER.md
+// F7): a wait before the call at 824F4974 is clean, after it is not; the calls between the mid event and the stage update (about
+// 0.4 ms on Safari) still run beside the workers. The stage update has other main-thread callers in that window (824F4E90's own
+// states, at 824F4F5C, 824F5004 and 824F5124; review ou_runs/i10/fix/review/review.md): the wait covers every call the main
+// thread makes inside the window (g_stage_window), and each call site is logged once.
+// It acts wherever the workers may run beside the main thread: no np session, or a session's mode 0, 1 or 2 (1 and 2, test
+// modes, only order the workers among themselves); modes 3 and 4 already keep the stage workers away from the main thread.
+// Mode() is read only inside a session: outside one it would decide the process's mode before a session gave its inputs. The test
+// switch DOA4_I10_STAGEWAIT=0 turns the wait off (the before-half of a verification on one build). The wait polls up to
+// kStageWaitSpin, then blocks (the core goes to the workers); a wait longer than kStageWaitCap stands down for that round, is
+// counted and (the first 20) logged.
+stage_wait::Rounds g_stage;
+thread_local int t_stage = -1;  // -1 not looked at yet, 0 another thread, 1 a stage worker
+constexpr auto kStageWaitSpin = std::chrono::microseconds(50);
+constexpr auto kStageWaitCap = std::chrono::milliseconds(50);
+std::atomic<bool> g_stage_window{false};  // written by the main thread only: from its set of the mid event to the join
+uint32_t g_stage_rounds = 0, g_stage_waits = 0, g_stage_timeouts = 0, g_stage_odd = 0;  // main thread only
+double g_stage_us = 0, g_stage_max_us = 0;  // since the last 600-wait line
+std::vector<uint32_t> g_stage_sites;        // main thread only: the stage update's call sites seen in the window
+
+bool StageWaitSwitchOn() {
+  static const bool on = [] {
+    const char* e = TestSwitch("DOA4_I10_STAGEWAIT");
+    const bool v = !(e && e[0] == '0');
+    LogLine(v ? "stage wait: on (the main thread waits for the stage workers before the stage update)"
+              : "stage wait: OFF (test switch DOA4_I10_STAGEWAIT=0)");
+    return v;
+  }();
+  return on;
+}
+
+// A worker at its loop top, before the original call signals its done event.
+void StageArrive() {
+  if (t_stage < 0) {
+    t_stage = stage_wait::IsStageEntry(ThreadStart()) ? 1 : 0;
+    rex::system::XThread* thread = rex::system::XThread::IsInThread() ? rex::system::XThread::GetCurrentThread() : nullptr;
+    const uint32_t tid = thread ? thread->thread_id() : 0;
+    if (t_stage == 1 && !g_stage.Register(tid)) {
+      LogLine(fmt::format("stage wait: an eleventh stage worker thread (id {}, start {:08X}): the wait stands down", tid,
+                          ThreadStart()));
+    }
+  }
+  if (t_stage == 1) g_stage.Arrive();
+}
+
+// Main thread, before its set of the pool's first start event (so no arrival of the new round can be cleared).
+void StageRoundStart() {
+  const int prev = g_stage.RoundStart();
+  if (prev >= 0 && prev != stage_wait::kStageWorkers && ++g_stage_odd <= 20 && g_stage.Armed()) {
+    LogLine(fmt::format("stage wait: round {} counted {} stage worker arrivals, not 10", g_stage_rounds, prev));
+  }
+  ++g_stage_rounds;
+}
+
+// Main thread, right before a call of the stage update (lr = its call site) inside the window.
+void StageWaitBeforeUpdate(uint32_t lr) {
+  if (doa4::np::Active() && Mode() >= 3) return;
+  if (std::find(g_stage_sites.begin(), g_stage_sites.end(), lr) == g_stage_sites.end() && g_stage_sites.size() < 16) {
+    g_stage_sites.push_back(lr);
+    LogLine(fmt::format("stage wait: the stage update called at {:08X} inside the update half (round {})", lr, g_stage_rounds));
+  }
+  if (!g_stage.MustWait() || !StageWaitSwitchOn()) return;
+  const auto t0 = std::chrono::steady_clock::now();
+  const bool ok = g_stage.WaitDone(kStageWaitSpin, kStageWaitCap);
+  const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+  g_stage_us += us;
+  g_stage_max_us = std::max(g_stage_max_us, us);
+  if (!ok && ++g_stage_timeouts <= 20) {
+    LogLine(fmt::format("stage wait: timed out after {} ms in round {} (site {:08X}, {} of 10 stage workers back); the round "
+                        "goes on without it",
+                        kStageWaitCap.count(), g_stage_rounds, lr, g_stage.Arrivals()));
+  }
+  if (++g_stage_waits % 600 == 0) {
+    LogLine(fmt::format("stage wait: {} waits in {} rounds; the last 600 waits avg {:.1f} us a wait, max {:.1f} us; "
+                        "timeouts {}, rounds not ten {}",
+                        g_stage_waits, g_stage_rounds, g_stage_us / 600, g_stage_max_us, g_stage_timeouts, g_stage_odd));
+    g_stage_us = g_stage_max_us = 0;
+  }
+}
+
 }  // namespace
 
 void WorkersSetInputs(bool workers_fix_on, bool online, bool handoff_serial, bool replay, const std::string& meta_workers) {
@@ -300,6 +385,7 @@ REX_HOOK_RAW(sub_827921C0) {
     t_held = false;
     g_serial_mu.unlock();
   }
+  StageArrive();  // issue #10: counted before the original call signals this worker's done event
   if (!doa4::np::Active()) {
     __imp__sub_827921C0(ctx, base);
     return;
@@ -396,7 +482,11 @@ REX_HOOK_RAW(sub_82792140) {
   // Mode 4 only: the mid event is marked before the original call (design 5); every other mode keeps today's order below.
   const bool lanes_main = doa4::np::Active() && (lr == 0x824F48ACu || lr == 0x824F491Cu) && Mode() == 4 && IsMainThread();
   if (lanes_main && lr == 0x824F491Cu) eng::MainReachedMid();
+  // Issue #10: the round opens at the first start event (+20; the five are set in order +20 to +36). The call site is read first,
+  // so other SetEvent calls pay one compare.
+  if (lr == 0x824F48ACu && handle == Be32(base, kPool + 20) && IsMainThread()) StageRoundStart();
   __imp__sub_82792140(ctx, base);
+  if (lr == 0x824F491Cu && IsMainThread()) g_stage_window = true;  // issue #10: the stage update waits from here to the join
   if (lanes_main) {
     if (lr == 0x824F48ACu && handle == Be32(base, kPool + 36)) {
       AddMainWait(eng::MainWait(false));  // the first wait, after the fifth start event (rule 3)
@@ -446,6 +536,7 @@ REX_HOOK_RAW(sub_82791190) {
 // five chains (call site 0x824F4AE8) is timed on the main thread, in every mode,
 // so the cost of the ordered modes can be read beside the parallel one.
 REX_HOOK_RAW(sub_827922E0) {
+  if (uint32_t(ctx.lr) == 0x824F4AE8u && IsMainThread()) g_stage_window = false;  // issue #10: the window ends at the join
   if (!doa4::np::Active() || uint32_t(ctx.lr) != 0x824F4AE8u) {
     __imp__sub_827922E0(ctx, base);
     return;
@@ -471,4 +562,22 @@ REX_HOOK_RAW(sub_82732950) {
   __imp__sub_82732950(ctx, base);
   if (!doa4::np::Active() || Mode() != 4) return;
   eng::VsmAfterReset(ctx, base, manager, lr);
+}
+
+// sub_82566920: the stage update (its indirect call at 82566A44 runs the stage object's own update; Safari's moves the herd).
+// Issue #10: a main-thread call between the pool's mid event and the join (824F4974, or 824F4E90's own calls) first waits for
+// the round's stage workers (StageWaitBeforeUpdate). Every other call, and modes 3 and 4: the original only.
+REX_HOOK_RAW(sub_82566920) {
+  if (g_stage_window) {
+    if (IsMainThread()) {
+      StageWaitBeforeUpdate(uint32_t(ctx.lr));
+    } else {
+      static std::atomic<bool> told{false};  // not seen in any run (review 2, minor 3): said once, never waited for
+      if (!told.exchange(true)) {
+        doa4::np::LogLine(fmt::format("stage wait: the stage update called off the main thread at {:08X} (start {:08X}); not waited for",
+                            uint32_t(ctx.lr), ThreadStart()));
+      }
+    }
+  }
+  __imp__sub_82566920(ctx, base);
 }
