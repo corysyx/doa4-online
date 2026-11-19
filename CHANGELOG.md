@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.7 (2026-11-19)
+
+<!-- DRAFT for the user's look before release: wording, and the PGO figures after round 2's spot check. -->
+
+### New
+- **A faster build of the game (profile-guided optimisation).** The game is now compiled with a profile of how it
+  actually runs: four scripted fights were played on an instrumented build, and the compiler used what they recorded
+  to lay out and inline the code that runs most. On the developer's PC, over seven scripted fights (four of them the
+  training fights, three not), the main thread's work per frame took 1.8 to 5.7 % less CPU time on all seven, and the
+  game's background jobs 0.8 to 6.2 % less on six of seven (the seventh unchanged). Parts of the game no training
+  fight plays (story, menus, other characters) are compiled as before. How the profile is made: `docs/PGO.md`.
+- **One frame less input lag with a pad.** The game now reads the pads just before it uses them, instead of using
+  what was read up to one frame earlier. On the developer's PC with four different pads, the time from a press to
+  the game's read fell from about 16.6 ms to under 0.1 ms. If anything feels wrong with a pad, `pad_fresh_read =
+  false` in `dead_or_alive_4.toml` goes back to 0.3.6's behaviour.
+- **Intel graphics: playable menus** ([issue #21](https://github.com/dwreckgg/doa4-online/issues/21)). On Intel GPUs
+  the game now uses its faster drawing mode, with a fix for an Intel driver problem that left half the screen black
+  in that mode. If anything looks wrong on an Intel GPU, `d3d12_clear_depth_via_drawing_intel = false` in
+  `dead_or_alive_4.toml` goes back to 0.3.6's behaviour.
+
+### Fixed
+- Savanna Safari: slits could show through the buffaloes
+  ([issue #10](https://github.com/dwreckgg/doa4-online/issues/10)).
+
+### Notes
+- Both players need 0.3.7: it does not connect to 0.3.6.
+
 ## 0.3.6 (2026-11-18)
 
 ### New
