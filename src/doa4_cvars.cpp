@@ -73,6 +73,11 @@ REXCVAR_DEFINE_INT32(netplay_delay, 2, "DOA4",
     .range(1, 8);
 REXCVAR_DEFINE_STRING(netplay_last_join, "", "DOA4",
                       "Online play: the last code joined");
+// Lockstep port B3 (design section 4): the order of the game's job workers in a session this PC hosts. Read once by the host's lobby
+// when it builds the hand-off at Start; the session processes take the order from the hand-off's byte, never from this key. Any
+// text other than lanes or serial counts as lanes and is logged. No menu entry.
+REXCVAR_DEFINE_STRING(netplay_worker_order, "lanes", "DOA4",
+                      "Online play (host): job worker order of a session, lanes or serial");
 REXCVAR_DEFINE_BOOL(netplay_show_stats, false, "DOA4",
                     "Online play: show the connection stats line");
 REXCVAR_DEFINE_BOOL(netplay_upnp, true, "DOA4",

@@ -62,7 +62,7 @@ inline constexpr const char* kSuitsBusyText = "The swimsuits are being imported.
 View Describe(const In& in);
 
 // The one notion of "locked": this process is in a session, or its lobby is Starting / Restarting into one (the
-// host pressed Start, the joiner accepted: the games are about to restart). The six controls below and the input delay
+// host pressed Start, the joiner accepted: the games are about to restart). The seven controls below and the input delay
 // all read it (fix round M2).
 bool SessionLocks(const In& in);
 // Whether the build id (a hash of the exe and rexruntime.dll, seconds of disk reads) is needed: the Online tab draws,
@@ -71,7 +71,9 @@ bool NeedsBuildId(bool tab_shown, bool lobby_open, bool in_session);
 
 // The game-state controls a session locks (spec 6): every one of them reads its disabled state from here, and the
 // refusal behind them (Refuse) reads the same answer, so the UI and the refusal cannot disagree.
-enum class Control : uint8_t { kExtras, kVideoRestart, kAudioRestart, kLanguage, kGameChange, kUpdateRestart };
+// kGpuUploads: the Game tab's "Batch GPU uploads" checkbox (gpu_upload_prefetch, carried from the host by the hand-off);
+// drawn disabled with kLockedText beneath it, so Refuse is never called for it.
+enum class Control : uint8_t { kExtras, kVideoRestart, kAudioRestart, kLanguage, kGameChange, kUpdateRestart, kGpuUploads };
 bool LockedInSession(Control control, bool in_session);
 inline constexpr const char* kLockedText = "Not during an online session";
 // True = refused: *status (may be null) gets kLockedText and `log` (may be empty) gets
@@ -79,14 +81,18 @@ inline constexpr const char* kLockedText = "Not during an online session";
 bool Refuse(Control control, bool in_session, std::string_view action, std::string* status,
             const std::function<void(const std::string&)>& log);
 // The one line the menu logs when in_session turns true:
-// "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 language=1 game_change=1".
+// "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 language=1 game_change=1 gpu_uploads=1".
 std::string LockedLine(bool in_session);
 
 // The banner (spec 7): how a session ended, as the overlay's own enum (the overlay maps live::End onto it).
-enum class Ending : uint8_t { kNone, kLeft, kPeerLeft, kPeerQuit, kPeerNotStarted, kLost, kDesync, kFrame0Timeout, kInternal };
+// kWorkerOrder: this PC ended the session because it could not keep worker mode 4's order (live::End::kWorkerOrder);
+// kPeerWorkerOrder: the other PC did (its Leave with reason 4, wire::LeaveReason::kWorkerOrder). Lockstep port B3.
+enum class Ending : uint8_t { kNone, kLeft, kPeerLeft, kPeerQuit, kPeerNotStarted, kLost, kDesync, kFrame0Timeout, kInternal,
+                              kWorkerOrder, kPeerWorkerOrder };
 // Review I2: the ending of a peer-left end by its reason (wire::LeaveReason as a number: 0 left, 1 desync, 2 timeout,
-// 3 internal), its frame (-1: a Bye) and whether the other game answered as a lobby (the refused-session path):
-// refused -> kPeerNotStarted; a kLeft Leave with a frame -> kPeerQuit; anything else -> kPeerLeft.
+// 3 internal, 4 worker order), its frame (-1: a Bye) and whether the other game answered as a lobby (the refused-session path):
+// refused -> kPeerNotStarted; reason 4 -> kPeerWorkerOrder (every frame); a kLeft Leave with a frame -> kPeerQuit; anything
+// else -> kPeerLeft.
 Ending PeerLeftEnding(int reason, int32_t frame, bool refused);
 // "" = no banner. An ending wins over a hold; a hold (waiting) is "Waiting for the other player...".
 std::string BannerText(bool waiting, Ending ending);

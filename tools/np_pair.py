@@ -63,10 +63,13 @@ import np_run  # noqa: E402
 CREATE_NO_WINDOW = 0x08000000
 CREATE_SUSPENDED = 0x00000004
 SAVE_DIR = "B13EBABEBABEBABE"
-EXPECTS = ("ok", "desync", "lost", "quit", "refused-build", "refused-files", "refused-busy", "refused-session", "lobby")
+EXPECTS = ("ok", "desync", "lost", "quit", "refused-build", "refused-files", "refused-busy", "refused-session", "lobby", "worker-order")
 # --expect refused-session (Task 15 carry f, gate S8d): the joiner said yes but stayed a lobby (DOA4_NP_TEST_NO_RESTART=1), so
 # the host's session Hello reached a lobby; np_session.cpp ends the host's session with this reason at frame 0.
 REFUSED_SESSION_REASON = "internal: the other player's game did not start the session"
+# --expect worker-order (lockstep port B3, Phase C row C10): np_live.cpp TerminalReason of End::kWorkerOrder, and ReasonText of Leave
+# reason 4 in the other copy's "session end: peer left (the other player left at frame N (worker order))" line.
+WORKER_ORDER_REASON = "worker order"
 DUMP0 = os.path.join("dumps", "data_000000.bin")  # the frame-0 .data dump in a session folder (DOA4_NP_DUMP=0)
 TERMINAL = re.compile(r"^session ended at frame (\d+): (.*)$")
 SESSION_SWEEP = re.compile(r"^session on: online, \w+, sweep (\d+) blocks/frame")  # np_session.cpp StartOnline's last line
@@ -74,7 +77,8 @@ SESSION_SUITS = re.compile(r"^session: .*, swimsuits (\w+)(?:, holders (\d+))?\s
 SESSION_GATE = re.compile(r"^fight gate open on (\d+) frames\s*$")  # np_session.cpp, at the session's end
 SESSION_RESYNC = re.compile(r"^scene generator made equal on (\d+) frames, its lock held on (\d+)\s*$")  # the same place, a mixed session
 # np_digest.h DigestRegions, pinned against the source by test_digest_regions_match_source; the two the hunting switch adds are left out.
-REGIONS_TODAY = ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr"]
+REGIONS_TODAY = ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020", "mt_8321B198", "frame_ctr",
+                 "fight_state", "side0", "side1"]  # since lockstep port B4 (Ruling R57): the last three are the fight state and the records behind it
 REGIONS_MIXED = ["netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_83420020", "mt_8321B198", "frame_ctr", "cache_flag", "fight_state", "side0", "side1"]
 REGIONS_HUNT = ("stage_fx", "ctr_831A7AC0")
 SESSION_DIGESTS = (("costume tables", re.compile(r"session: costume tables digest ([0-9A-Fa-f]+) ")),  # dead_or_alive_4_app.h, game.log
@@ -799,9 +803,11 @@ class Pair:
             return f"side {fall[0]}'s life fell at frame {fall[1]}"
         return None
 
-    def gate_check(self, lines, host, joiner, state):
+    def gate_check(self, lines, host, joiner, state, ended_before_resync=False):
         """A mixed session's side records count only while the gate is open: one that never opened through a fight has checked no fighter
-        and looks clean. Every expect comes through here. A copy that was ended hard wrote no terminal line, and so no gate line."""
+        and looks clean. Every expect comes through here. A copy that was ended hard wrote no terminal line, and so no gate line. Only a
+        mixed session is judged: since lockstep port B4 a session with no suits or the same import gates its side rows too, and nothing
+        here judges that its gate opened (a pair brief reads both logs' fight gate line for that)."""
         if state != "mixed":
             return
         for s in (host, joiner):
@@ -826,10 +832,15 @@ class Pair:
             # Task 7c M7: every boundary is either made equal or skipped for a held lock, so the two counts add up to at least the terminal
             # frame plus one (frame 0 has a boundary: real logs say made equal on 8049 frames, terminal frame 8048, and the session ending at
             # frame f has run f's). A resync that ran for a few frames, or stopped part-way, passed a bare `\d+`.
+            # Lockstep port B3 (ended_before_resync): the copy that ended `worker order` may have ended at the top of frame t's hook,
+            # before its resync, so its frames 0..t-1 are the ones that must be covered; the copy that ended `peer left` ended inside
+            # live->Frame, after its own resync of frame t, and keeps t + 1.
             t = s.terminal()
-            if t is not None and int(sync[0].group(1)) + int(sync[0].group(2)) < t[0] + 1:
+            short = ended_before_resync and t is not None and t[1] == WORKER_ORDER_REASON
+            need = None if t is None else t[0] + (0 if short else 1)
+            if need is not None and int(sync[0].group(1)) + int(sync[0].group(2)) < need:
                 self.problems.append(f"the {s.name}: the scene generator was made equal on {sync[0].group(1)} frames and found locked on "
-                                     f"{sync[0].group(2)}, fewer than the {t[0] + 1} frames the session ran: the resync did not run on every frame")
+                                     f"{sync[0].group(2)}, fewer than the {need} frames the session ran: the resync did not run on every frame")
 
     def compare(self, host, joiner):
         """(exit code, output lines, first differing digest frame or None) of np_compare.py on the two session folders."""
@@ -858,9 +869,23 @@ class Pair:
         state = self.suit_state(lines, host, joiner)
         self.mixed = state == "mixed"
         self.tables_check(lines, host, joiner, state)
-        self.frame0_check(lines, host, joiner, fail=True, mixed=state == "mixed")
-        self.gate_check(lines, host, joiner, state)
         th, tj = host.terminal(), joiner.terminal()
+        # lockstep port B3: a worker-order pair may end at frame 0, before anything was hashed, dumped or made equal (the end request is
+        # read before step 1 of the frame hook): no frame-0 dump and no scene generator line exist, so those two checks apply only to a
+        # session that ended after frame 0. suit_state and tables_check hold at frame 0 (StartOnline's lines, the digest header and
+        # SetUpSuits' lines are written before the first frame hook).
+        at0 = expect == "worker-order" and not (th and tj and min(th[0], tj[0]) > 0)
+        if at0:
+            lines.append("frame-0 dump check not applied: a worker-order pair that ended at frame 0 (or has no terminal line) hashed "
+                         "and dumped nothing")
+        else:
+            self.frame0_check(lines, host, joiner, fail=True, mixed=state == "mixed")
+        if at0 and state == "mixed":
+            lines.append("fight gate check not applied: a worker-order pair that ended at frame 0 made no boundary equal and wrote no "
+                         "scene generator line")
+        elif not at0:
+            # a worker-order end comes at the top of the frame hook, before that frame's resync: the resync covers the frames before it
+            self.gate_check(lines, host, joiner, state, ended_before_resync=expect == "worker-order")
         if expect == "lost":  # the joiner was ended hard: it writes no terminal line
             self.judge_lost(lines, host, joiner, th, tj)
             return
@@ -871,6 +896,9 @@ class Pair:
             self.judge_quit(lines, host, joiner, th, tj)
             return
         if th is None or tj is None:
+            return
+        if expect == "worker-order":  # lockstep port B3, after the generic terminal check
+            self.judge_worker_order(lines, host, joiner, th, tj)
             return
         if expect == "desync":
             self.judge_desync(lines, host, joiner, th, tj)
@@ -934,6 +962,38 @@ class Pair:
                 self.problems.append(f"the host ended {delta} ms after the close request, expected 0..{QUIT_TO_END_MS}")
         if not any(p[1] == "offline" for p in read_pids(host.ctl)):
             self.problems.append("the host did not relaunch offline")
+
+    def judge_worker_order(self, lines, host, joiner, th, tj):
+        """Lockstep port B3 (Phase C row C10): exactly one copy could not keep worker mode 4's order and ended `worker order`
+        (np_live.cpp TerminalReason); the other ended `peer left` on its Leave with reason 4, and its np_log's `session end: peer left (`
+        line ends `(worker order))` (np_live.cpp's why "the other player left at frame N (worker order)"); both terminal frames are the
+        same number (np_live.h: the Leave's frame is "the same number on both sides"); both copies relaunched offline."""
+        ends = {"host": th, "joiner": tj}
+        lines.append(f"host ended {th[1]!r} at frame {th[0]}, joiner ended {tj[1]!r} at frame {tj[0]}")
+        failed = [name for name, t in ends.items() if t[1] == WORKER_ORDER_REASON]
+        if len(failed) != 1:
+            self.problems.append(f"{len(failed)} copies ended {WORKER_ORDER_REASON!r}, expected exactly one "
+                                 f"(host {th[1]!r}, joiner {tj[1]!r})")
+        else:
+            other = joiner if failed[0] == "host" else host
+            if ends[other.name][1] != "peer left":
+                self.problems.append(f"the {other.name} copy ended {ends[other.name][1]!r}, expected 'peer left'")
+            else:
+                said = next((l.rstrip() for l in other.np_log() if l.startswith("session end: peer left (")), None)
+                lines.append(f"{other.name}: {said!r}")
+                if said is None:
+                    self.problems.append(f"the {other.name}'s np_log has no 'session end: peer left (' line")
+                elif not said.endswith("(" + WORKER_ORDER_REASON + "))"):
+                    self.problems.append(f"the {other.name}'s 'session end: peer left' line does not end '({WORKER_ORDER_REASON}))': {said!r}")
+        if th[0] != tj[0]:
+            self.problems.append(f"the sessions ended at different frames: host {th[0]}, joiner {tj[0]}")
+        for s in (host, joiner):
+            if not any(p[1] == "offline" for p in read_pids(s.ctl)):
+                self.problems.append(f"the {s.name} did not relaunch offline")
+            # an online end request writes no WARN line (np_det_lanes.cpp RaiseEnd: the WARN only offline), so one is another fault
+            warn = next((l for l in s.np_log() if l.startswith(np_run.WARN_PREFIX)), None)
+            if warn:
+                self.problems.append(f"the {s.name} np_log holds a WARN line: {warn}")
 
     def judge_desync(self, lines, host, joiner, th, tj):
         """Task 15 R-S7. An expected desync is ALL of: (1) both copies end `desync at frame F` with the same F (= the frame
@@ -1067,6 +1127,9 @@ class Pair:
         for s in self.sides:
             after = hash_saves(s.ud)
             total += len(s.saves_before)
+            if not s.saves_before and a.allow_empty_save:  # D3: an empty test profile, nothing to compare
+                self.notes.append(f"the {s.name} copy: no save before the run: {', '.join(sorted(after)) or 'none'}")
+                continue
             if not s.saves_before:
                 self.problems.append(f"the {s.name} copy has no files under ud/{SAVE_DIR}: the unchanged-save check would be vacuous")
             changed = sorted(k for k in set(after) | set(s.saves_before) if after.get(k) != s.saves_before.get(k))
@@ -1120,6 +1183,9 @@ def main(argv=None):
     ap.add_argument("--orphan-watch", type=float, default=10, help="seconds pids.txt must stay unchanged after the last kill")
     ap.add_argument("--show-host", action="store_true",
                     help="start the host with the window state it asks for (a measurement of presentation); the joiner stays hidden")
+    ap.add_argument("--allow-empty-save", action="store_true",
+                    help="a copy with no save files is reported as 'no save before the run: <files after, or none>' instead of "
+                         "refused as vacuous (an empty test profile); every copy that had a save keeps the unchanged-save check")
     a = ap.parse_args(argv)
     if a.kill_joiner_at_frame is not None and a.quit_joiner_at_frame is not None:
         sys.exit("--kill-joiner-at-frame and --quit-joiner-at-frame exclude each other")

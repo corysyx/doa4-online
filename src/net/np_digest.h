@@ -1,7 +1,20 @@
 // src/net/np_digest.h - what the sync check hashes (no SDK, no Windows; host test: np_core_host_test.cpp TestMixedMasksOnlyWhenMixed).
 //
 // Every session frame the check folds two rows into one checksum: the digest (DigestRegions, hashed every frame) and the sweep (rolling
-// 64 KB blocks of .data, minus SweepRanges). A session with no suits, or with the same import on both PCs, hashes what v1.0.9 hashes.
+// 64 KB blocks of .data, minus SweepRanges). A session with no suits, or with the same import on both PCs, hashed what v1.0.9 hashes (10
+// regions) until lockstep port B4 (Ruling R57); since then it also hashes the fight state and the two fighter records behind its gate: 13
+// regions, the 10 first and in the old order. Every record and replay process takes this list too (np_session.cpp OpenHashFiles: kNone).
+// Three things follow:
+//  - a recording made by a build before this change hashed 10 regions, and np_compare.py refuses it against a new one ("the runs hashed
+//    different regions"): references are recorded again on the port build;
+//  - the online check of such a session hashes the same 13 (np_session.cpp HashRows), so its checksum is not an older build's. Two PCs on
+//    builds before and after this change never meet in one session: the build id hashes the exe and rexruntime.dll (np_session.cpp
+//    ComputeBuildId); the host refuses a joiner whose build id differs (np_rules.cpp:625, Judge: Refusal::kBuild), a joiner refuses a
+//    host's hand-off whose build differs (np_online.cpp:1201, OnBootMessage), and the session process starts offline on a hand-off of
+//    another build (dead_or_alive_4_app.h ReadHandoff);
+//  - a fighter's position, life and state are checked on every round frame in every session.
+// Why: the sweep reaches a fighter's record only one frame in 41 (block 83030000), so a divergence in it shorter than that passed. The
+// mixed list below is unchanged.
 //
 // A mixed session (one player has an import the other lacks or has differently, so each PC draws a fighter from its own files) runs no
 // sweep and hashes a positive list instead. Measured over 8 whole runs: what two such PCs differ in has no end, each new scenario added thousands of words, and Tag added 16 blocks inside its
@@ -87,6 +100,11 @@ inline std::vector<Region> DigestRegions(rules::SuitSession state) {
     r.push_back({"mt_83420020", 0x83420020, 2504, {}});
     r.push_back({"mt_8321B198", 0x8321B198, 2504, {}});
     r.push_back({"frame_ctr", 0x831013E4, 4, {}});
+    // Lockstep port B4 (Ruling R57): the same three rows the mixed list ends with, in the same form (the gate byte is hashed by fight_state,
+    // its own region, as np_core.h RegionCopy requires; tools/np_pair.py REGIONS_TODAY lists these 13 names).
+    r.push_back({"fight_state", kFightState, 1, {}});
+    r.push_back({"side0", 0x83033B40, 0x78, {}, kFightState, kFightRound});
+    r.push_back({"side1", 0x83033BDC, 0x78, {}, kFightState, kFightRound});
     return r;
   }
   // Each slot's fiber pointer (+8, sub_824F3340 stores CreateFiber's result): a heap address, moved by what the loads before it took. The
@@ -148,12 +166,14 @@ inline void DeriveSceneGenerator(const uint8_t* main_state, uint32_t frame, uint
 }
 
 // The resync of one frame boundary: false, and nothing written, while any thread holds the generator's lock (the count at scene + 2520 is -1, four
-// 0xFF bytes, when it is free). np_det_workers mode 3 gives main a 2 s wait after which the workers run beside it, which on a slower PC can happen;
+// 0xFF bytes, when it is free). In the serial order (np_det_workers mode 3) main's wait gives up after 2 s and the workers then run beside it, which on a
+// slower PC can happen; in the lanes order (mode 4) no worker runs beside main (one found inside a section at the frame hook ends the session);
 // a write under a holder would hand it a state it is halfway through using. So a skip corrupts nothing, but it isn't free: the PC that skips holds the
 // last frame's stream and the other this frame's, so they differ from the frame's FIRST draw, the camera's included, and a skip on a tag-out frame could
 // move a fighter and end in a desync. The next boundary makes them equal again. np_pair fails a pair on any skip; none has been seen. The caller counts
 // the two answers apart. The test and the write aren't atomic: a worker running beside main can take the lock between them, so this narrows the window
-// and doesn't close it. The workers run beside main only after that wait times out or when a worker has no rank (kFbUnranked, np_det_workers.cpp).
+// and doesn't close it. In mode 3 the workers run beside main only after that wait times out or when a worker has no rank (kFbUnranked,
+// np_det_workers.cpp); in mode 4 never.
 inline bool ResyncSceneGenerator(const uint8_t* main_mt, uint32_t frame, uint8_t* scene) {
   const uint8_t* lock = scene + (kSceneMtLockCount - kSceneMt);
   if (lock[0] != 0xFF || lock[1] != 0xFF || lock[2] != 0xFF || lock[3] != 0xFF) return false;

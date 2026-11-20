@@ -271,6 +271,7 @@ struct FakePeer {
   std::vector<Rx> rx;
   std::atomic<uint32_t> pong_token{0};  // non-zero: every kPing is answered with a kPong carrying this token
   FakePeer() { Begin(); }
+  explicit FakePeer(uint16_t port) : sock(port) { Begin(); }  // on a given port (round 2, F6: a stand-in for a lobby there)
   ~FakePeer() { End(); }
   void Begin() {
     th = std::thread([this] {
@@ -353,19 +354,24 @@ struct Side {
   std::function<void()> on_restart;
   LogSink log;
   uint32_t timeout_ms = 2000;
+  uint32_t leave_keep_ms = online::kLeaveKeepMs;  // Providers::leave_keep_ms (the bound group passes less)
   fs::path test_dir;
   std::map<std::string, std::string> test;
+  bool has_worker_order = false;  // B3: Providers::worker_order is set (to return worker_order) only when true
+  std::string worker_order;
   explicit Side(const char* tag) : dir(NewDir(tag)) {}
   online::Providers P() {
     online::Providers p;
     p.build = [this] { return build.load(); };
     p.connect_timeout_ms = timeout_ms;
+    p.leave_keep_ms = leave_keep_ms;
     p.release = release;
     p.files = [this] {
       files_tid = GetCurrentThreadId();
       return files;
     };
     p.guest_settings = [this] { return guest; };
+    if (has_worker_order) p.worker_order = [this] { return worker_order; };  // B3: no provider unless a group sets one
     p.suits = suits;
     p.save_files = [this](std::string* e) {
       std::lock_guard<std::mutex> lock(save_mu);
@@ -1093,6 +1099,45 @@ static void TestSuitStates() {
               "Swimsuits: both, from different imports");
 }
 
+// Lockstep port B3: the host's netplay_worker_order text (Providers::worker_order) decides the hand-off's worker_order byte of
+// both sides; the joiner's own provider is never asked. Real lobbies over the real transport, in the pattern of OneSuitCase.
+static void OneWorkerOrderCase(const char* name, bool host_has, const std::string& host_text, bool joiner_has,
+                               const std::string& joiner_text, uint8_t want, bool want_log) {
+  Side hs((std::string("order_h_") + name).c_str()), js((std::string("order_j_") + name).c_str());
+  hs.has_worker_order = host_has;
+  hs.worker_order = host_text;
+  js.has_worker_order = joiner_has;
+  js.worker_order = joiner_text;
+  online::Lobby host, joiner;
+  if (!StartLobby(host, hs) || !StartLobby(joiner, js)) return;
+  CHECK(ConnectPair(host, joiner));
+  CHECK(WaitCanStart(host));
+  host.StartSession();
+  CHECK(WaitFor([&] { return hs.restarts.load() == 1 && js.restarts.load() == 1; }, 3000));
+  Bytes hb, jb;
+  handoff::Handoff h, j;
+  CHECK(ReadFile(hs.HandoffPath(), &hb) && ReadFile(js.HandoffPath(), &jb));
+  CHECK(handoff::Unpack(hb, &h).empty() && handoff::Unpack(jb, &j).empty());
+  CHECKF(h.worker_order == want && j.worker_order == want, "%s: hand-offs say worker order %d and %d, want %d", name,
+         int(h.worker_order), int(j.worker_order), int(want));
+  const std::string line = "[doa4][NET] netplay_worker_order '" + host_text + "' is not lanes or serial: lanes";
+  CHECKF(hs.log.Count(line) == (want_log ? 1 : 0), "%s: the host logged '%s' %d times", name, line.c_str(), hs.log.Count(line));
+  CHECKF(hs.log.Count("netplay_worker_order") == (want_log ? 1 : 0), "%s: the host has %d lines naming netplay_worker_order", name,
+         hs.log.Count("netplay_worker_order"));
+  CHECKF(js.log.Count("netplay_worker_order") == 0, "%s: the joiner has %d lines naming netplay_worker_order", name,
+         js.log.Count("netplay_worker_order"));
+  host.Stop();
+  joiner.Stop();
+}
+
+static void TestWorkerOrders() {
+  if (!Group("worker order (B3): the host's text makes both hand-offs' byte; an unknown text is lanes and logged once")) return;
+  OneWorkerOrderCase("serial", true, "serial", false, "", 1, false);
+  OneWorkerOrderCase("lanes", true, "lanes", true, "serial", 0, false);       // the joiner's own value is never read
+  OneWorkerOrderCase("none", false, "", true, "serial", 0, false);            // no provider: lanes, no log line
+  OneWorkerOrderCase("Serial", true, "Serial", false, "", 0, true);           // not exact: lanes, and the line once
+}
+
 // A session process shows the state its hand-off carries and sends no checksum (like files: the lobby has compared).
 static void TestSuitsInSession() {
   if (!Group("swimsuits: a session process reads the state from the hand-off, and its Hello carries no checksum")) return;
@@ -1464,6 +1509,293 @@ static void TestSessionSpoof() {
   std::lock_guard<std::mutex> lock(mu);
   CHECKF(left.size() == 1, "on_peer_left ran %zu times", left.size());
   if (!left.empty()) CHECKF(left[0].first == -1 && left[0].second == wire::LeaveReason::kDesync, "frame %d reason %d", left[0].first, int(left[0].second));
+}
+
+// =====================================================================================================
+// The frame-0 Leave (lockstep port Phase C fix, ledger L72; pair c10_refuse): an end before the other game's session
+// process is seen must still reach it. A Leave asked for while the peer is unseen is kept (Status::leave_kept) and sent
+// again when the peer becomes seen and with each session Hello, for Providers::leave_keep_ms (kLeaveKeepMs = 10 s).
+// =====================================================================================================
+struct LeftLog {
+  std::mutex mu;
+  std::vector<std::pair<int32_t, wire::LeaveReason>> v;
+  int64_t first_us = 0;
+  std::function<void(int32_t, wire::LeaveReason)> Fn() {
+    return [this](int32_t f, wire::LeaveReason r) {
+      std::lock_guard<std::mutex> lock(mu);
+      if (v.empty()) first_us = NowUs();
+      v.emplace_back(f, r);
+    };
+  }
+  size_t Size() {
+    std::lock_guard<std::mutex> lock(mu);
+    return v.size();
+  }
+};
+
+static const char kLeaveWentLog[] = "the Leave went to the other player's game when it came (";
+static const char kLeaveLostLog[] = ": the Leave was not delivered";
+
+// (1) the host ends first / (2) the joiner ends first: the side that ends asks for Leave(0, worker order) before the
+// other side's session process exists; that one starts 300 ms later and must end `peer left` with it.
+static void OneEarlyLeave(bool host_ends) {
+  const char* name = host_ends ? "host ends first" : "joiner ends first";
+  handoff::Handoff H, J;
+  CHECK(!g_handoffs.host.empty() && handoff::Unpack(g_handoffs.host, &H).empty() && handoff::Unpack(g_handoffs.joiner, &J).empty());
+  if (g_handoffs.host.empty()) return;
+  const handoff::Handoff& E = host_ends ? H : J;  // the side that ends
+  const handoff::Handoff& L = host_ends ? J : H;  // the side that comes later
+  Side es(host_ends ? "early_host" : "early_join"), ls(host_ends ? "late_join" : "late_host");
+  LeftLog left_e, left_l;
+  online::Lobby ender, later;
+  std::string e;
+  CHECKF(ender.StartInSession(es.P(), LoopCfg(), E, left_e.Fn(), &e), "%s: StartInSession of the side that ends: %s", name, e.c_str());
+  const int64_t t_end = NowUs();
+  ender.SendLeave(0, wire::LeaveReason::kWorkerOrder);
+  // (5) a Leave asked for while the peer is unseen is kept
+  CHECKF(WaitFor([&] { return ender.status().leave_kept; }, 200), "%s: Status::leave_kept never true after a Leave while unseen", name);
+  const bool three = WaitFor([&] { return ender.status().leave_sends >= 3; }, 250);
+  std::printf("info: frame-0 Leave, %s: the 3 immediate sends were handed to the socket %lld ms after SendLeave (leave_sends %llu)\n",
+              name, (long long)((NowUs() - t_end) / 1000), (unsigned long long)ender.status().leave_sends);
+  CHECKF(three, "%s: the 3 immediate Leave sends did not happen within 250 ms", name);
+  while (NowUs() - t_end < 300'000) SleepMs(2);
+  const int64_t t_late = NowUs();
+  CHECKF(later.StartInSession(ls.P(), LoopCfg(), L, left_l.Fn(), &e), "%s: StartInSession of the later side: %s", name, e.c_str());
+  const bool got = WaitFor([&] { return left_l.Size() >= 1; }, 2000);
+  {
+    std::lock_guard<std::mutex> lock(left_l.mu);
+    std::printf("info: frame-0 Leave, %s: the later side's on_peer_left ran %zu times within 2 s of its start%s%lld ms)\n", name,
+                left_l.v.size(), got ? " (the first " : " (", got ? (long long)((left_l.first_us - t_late) / 1000) : -1LL);
+  }
+  CHECKF(got, "%s: the later side's on_peer_left ran %zu times within 2 s of its start (want 1)", name, left_l.Size());
+  SleepMs(500);
+  {
+    std::lock_guard<std::mutex> lock(left_l.mu);
+    CHECKF(left_l.v.size() == (got ? 1u : 0u) && (!got || (left_l.v[0].first == 0 && left_l.v[0].second == wire::LeaveReason::kWorkerOrder)),
+           "%s: the later side got %zu on_peer_left calls, the first (%d, reason %d); want one, (0, worker order)", name, left_l.v.size(),
+           left_l.v.empty() ? -9 : left_l.v[0].first, left_l.v.empty() ? -9 : int(left_l.v[0].second));
+  }
+  CHECKF(left_e.Size() == 0, "%s: the side that ended got on_peer_left %zu times (want none)", name, left_e.Size());
+  // (5) delivered: no longer kept; one log line names the delay
+  CHECKF(WaitFor([&] { return !ender.status().leave_kept; }, 1000), "%s: Status::leave_kept still true after the Leave went", name);
+  CHECKF(es.log.Count(kLeaveWentLog) == 1 && es.log.Count(kLeaveLostLog) == 0, "%s: log lines went %d, not delivered %d", name,
+         es.log.Count(kLeaveWentLog), es.log.Count(kLeaveLostLog));
+  CHECK(later.status().state == State::kInSession && ender.status().state == State::kInSession);
+  ender.Stop();
+  later.Stop();
+}
+
+static void TestEarlyLeave() {
+  if (!Group("frame-0 Leave: a Leave asked for before the other game is seen reaches it when it comes (host first, joiner first)")) return;
+  OneEarlyLeave(true);
+  OneEarlyLeave(false);
+}
+
+// (3) the bound: a kept Leave is sent again while kept, stops after the keep (a test keep of 3000 ms, round 2 F8; the
+// shipped value is pinned by the first two checks), and a peer that starts after it gets nothing. Round 2 F7: the lobby
+// idles 1 s before the Leave, so a keep counted from the lobby's start (not from the request) ends 1 s early and fails.
+static void TestEarlyLeaveBound() {
+  if (!Group("frame-0 Leave: a kept Leave stops after the keep; a peer that comes later gets nothing")) return;
+  CHECKF(online::kLeaveKeepMs == 10000, "kLeaveKeepMs = %u, want 10000", online::kLeaveKeepMs);
+  CHECKF(online::Providers{}.leave_keep_ms == online::kLeaveKeepMs, "Providers::leave_keep_ms defaults to %u", online::Providers{}.leave_keep_ms);
+  handoff::Handoff H, J;
+  CHECK(!g_handoffs.host.empty() && handoff::Unpack(g_handoffs.host, &H).empty() && handoff::Unpack(g_handoffs.joiner, &J).empty());
+  if (g_handoffs.host.empty()) return;
+  Side hs("bound_host"), js("bound_join");
+  hs.leave_keep_ms = 3000;
+  LeftLog left_h, left_j;
+  online::Lobby host, joiner;
+  std::string e;
+  CHECKF(host.StartInSession(hs.P(), LoopCfg(), H, left_h.Fn(), &e), "host StartInSession: %s", e.c_str());
+  SleepMs(1000);  // F7: the lobby idles before the Leave; the keep counts from the request
+  const int64_t t_end = NowUs();
+  host.SendLeave(0, wire::LeaveReason::kWorkerOrder);
+  SleepMs(1000);  // inside the keep: still kept, and sent again with the session Hellos
+  const online::Status in = host.status();
+  CHECKF(in.leave_kept, "1 s into a 3 s keep: Status::leave_kept is false");
+  CHECKF(in.leave_sends > 3, "1 s into a 3 s keep: %llu Leave sends (want more than the 3 immediate ones)", (unsigned long long)in.leave_sends);
+  const bool gone = WaitFor([&] { return !host.status().leave_kept; }, 4000);
+  const long long gone_ms = (long long)((NowUs() - t_end) / 1000);
+  std::printf("info: frame-0 Leave, bound: kept for %lld ms after the request (test keep 3000 ms, lobby idle 1 s before it), %llu sends\n",
+              gone_ms, (unsigned long long)host.status().leave_sends);
+  CHECKF(gone && gone_ms >= 3000 && gone_ms < 4000, "the kept Leave went after %lld ms of the request (want [3000, 4000))", gone_ms);
+  CHECKF(hs.log.Count("did not come within 3 s: the Leave was not delivered") == 1 && hs.log.Count(kLeaveWentLog) == 0,
+         "log lines: not delivered %d, went %d", hs.log.Count(kLeaveLostLog), hs.log.Count(kLeaveWentLog));
+  const uint64_t sends = host.status().leave_sends;
+  SleepMs(900);  // two more Hello periods: no more sends
+  CHECKF(host.status().leave_sends == sends, "Leave sends grew after the keep: %llu -> %llu", (unsigned long long)sends,
+         (unsigned long long)host.status().leave_sends);
+  // a peer that comes after the keep: no Leave, no on_peer_left on either side
+  CHECKF(joiner.StartInSession(js.P(), LoopCfg(), J, left_j.Fn(), &e), "joiner StartInSession: %s", e.c_str());
+  CHECK(WaitFor([&] { return host.status().state == State::kInSession && joiner.status().state == State::kInSession; }, 2000));
+  SleepMs(1000);
+  CHECKF(left_j.Size() == 0 && left_h.Size() == 0, "on_peer_left after the keep: joiner %zu, host %zu (want none)", left_j.Size(), left_h.Size());
+  CHECKF(host.status().leave_sends == sends && !host.status().leave_kept, "after the peer came late: sends %llu (was %llu), kept %d",
+         (unsigned long long)host.status().leave_sends, (unsigned long long)sends, int(host.status().leave_kept));
+  host.Stop();
+  joiner.Stop();
+}
+
+// (4) seen first (unchanged): a Leave asked for in kInSession is sent exactly 3 times, is never kept, and on_peer_left
+// runs once on the other side.
+static void TestSeenLeave() {
+  if (!Group("frame-0 Leave: a Leave asked for while the peer is seen is sent 3 times and never kept")) return;
+  handoff::Handoff H, J;
+  CHECK(!g_handoffs.host.empty() && handoff::Unpack(g_handoffs.host, &H).empty() && handoff::Unpack(g_handoffs.joiner, &J).empty());
+  if (g_handoffs.host.empty()) return;
+  Side hs("seen_host"), js("seen_join");
+  LeftLog left_h, left_j;
+  online::Lobby host, joiner;
+  std::string e;
+  CHECKF(host.StartInSession(hs.P(), LoopCfg(), H, left_h.Fn(), &e), "host StartInSession: %s", e.c_str());
+  CHECKF(joiner.StartInSession(js.P(), LoopCfg(), J, left_j.Fn(), &e), "joiner StartInSession: %s", e.c_str());
+  CHECK(WaitFor([&] { return host.status().state == State::kInSession && joiner.status().state == State::kInSession; }, 3000));
+  const uint64_t s0 = host.status().leave_sends;
+  host.SendLeave(77, wire::LeaveReason::kLeft);
+  bool ever_kept = false;
+  for (int i = 0; i < 40; ++i) {  // (5) never kept: sampled through the 3 sends
+    ever_kept = ever_kept || host.status().leave_kept;
+    SleepMs(5);
+  }
+  CHECK(WaitFor([&] { return left_j.Size() >= 1; }, 1000));
+  SleepMs(1000);  // more than two Hello periods: a kept Leave would be sent again
+  const online::Status st = host.status();
+  CHECKF(st.leave_sends - s0 == 3, "a Leave while seen: %llu sends (want 3)", (unsigned long long)(st.leave_sends - s0));
+  CHECKF(!ever_kept && !st.leave_kept, "a Leave while seen was kept (sampled %d, after 1 s %d)", int(ever_kept), int(st.leave_kept));
+  {
+    std::lock_guard<std::mutex> lock(left_j.mu);
+    CHECKF(left_j.v.size() == 1 && left_j.v[0].first == 77 && left_j.v[0].second == wire::LeaveReason::kLeft,
+           "the joiner got %zu on_peer_left calls (want one, (77, left))", left_j.v.size());
+  }
+  CHECK(left_h.Size() == 0);
+  CHECK(hs.log.Count(kLeaveWentLog) == 0 && hs.log.Count(kLeaveLostLog) == 0);
+  host.Stop();
+  joiner.Stop();
+}
+
+static handoff::Handoff SessionHandoff(uint16_t peer_port, uint32_t token);  // below (fix I-1a's groups)
+
+// (6) a peer that stays unseen (its Hellos do not reach this side: a scripted socket that never sends one) still gets the
+// kept Leave with each session Hello, after the 3 immediate sends.
+static void TestUnseenLeaveResent() {
+  if (!Group("frame-0 Leave: a peer that is never seen gets the kept Leave with each session Hello")) return;
+  Side ss("unseen");
+  FakePeer fake;
+  handoff::Handoff h = SessionHandoff(fake.sock.port, 0x5E55BBBBu);
+  online::Lobby lobby;
+  std::string e;
+  CHECKF(lobby.StartInSession(ss.P(), LoopCfg(), h, [](int32_t, wire::LeaveReason) {}, &e), "StartInSession: %s", e.c_str());
+  CHECK(fake.Wait(wire::Type::kHello, 1000));
+  lobby.SendLeave(0, wire::LeaveReason::kWorkerOrder);
+  SleepMs(200);
+  const int n0 = fake.Count(wire::Type::kLeave);
+  SleepMs(1300);  // three Hello periods
+  const std::vector<Rx> leaves = fake.Of(wire::Type::kLeave);
+  const int n1 = int(leaves.size());
+  std::printf("info: frame-0 Leave, unseen peer: %d Leaves in the first 200 ms, %d in the next 1300 ms\n", n0, n1 - n0);
+  CHECKF(n0 >= 3, "the 3 immediate Leave sends: %d arrived", n0);
+  CHECKF(n1 - n0 >= 2, "a kept Leave to an unseen peer: %d more in 1300 ms (want one per 400 ms Hello)", n1 - n0);
+  bool all_ok = !leaves.empty();
+  for (const Rx& r : leaves) {
+    wire::Leave l;
+    all_ok = all_ok && r.token == h.session_token && wire::DecodeLeave(r.body, &l) && l.frame == 0 && l.reason == wire::LeaveReason::kWorkerOrder;
+  }
+  CHECK(all_ok);
+  CHECK(lobby.status().state == State::kConnecting && lobby.status().leave_kept);
+  lobby.Stop();
+}
+
+// Round 2 F6 (review I1, M2): a refused session (the hand-off's peer answered our session Hello as a lobby, kSession,
+// past the 3 s grace: kOffline with session_refused) still keeps the Leave asked for then, sends it every kHelloMs while
+// the peer is unseen, and a real session lobby that starts on the peer's port within the keep ends with it.
+static bool AllLeaves(const std::vector<Rx>& leaves, uint32_t token, int32_t frame, wire::LeaveReason reason) {
+  bool ok = !leaves.empty();
+  for (const Rx& r : leaves) {
+    wire::Leave l;
+    ok = ok && r.token == token && wire::DecodeLeave(r.body, &l) && l.frame == frame && l.reason == reason;
+  }
+  return ok;
+}
+
+static void TestRefusedLeave() {
+  if (!Group("frame-0 Leave: a refused session's Leave is kept and resent while unseen, and reaches a session that comes late")) return;
+  handoff::Handoff H, J;
+  CHECK(!g_handoffs.host.empty() && handoff::Unpack(g_handoffs.host, &H).empty() && handoff::Unpack(g_handoffs.joiner, &J).empty());
+  if (g_handoffs.host.empty()) return;
+  Side hs("rleave_host"), js("rleave_join");
+  LeftLog left_h, left_j;
+  auto lobby_there = std::make_unique<FakePeer>(J.local_port);  // the other PC's lobby, still on the session's port
+  CHECKF(lobby_there->sock.ok(), "the stand-in lobby could not bind port %u", unsigned(J.local_port));
+  online::Lobby host, joiner;
+  std::string e;
+  CHECKF(host.StartInSession(hs.P(), LoopCfg(), H, left_h.Fn(), &e), "host StartInSession: %s", e.c_str());
+  CHECK(lobby_there->Wait(wire::Type::kHello, 1000));
+  const Bytes ks = WelcomeBody(wire::Refusal::kSession, 1, "", "no", 0);
+  lobby_there->sock.SendTo(H.local_port, wire::Encode(wire::Type::kWelcome, 0, ks));
+  CHECKF(WaitFor([&] { return host.status().session_refused; }, 4500), "not refused after the grace (state %s)",
+         online::StateName(host.status().state));
+  CHECK(host.status().state == State::kOffline);
+  host.SendLeave(0, wire::LeaveReason::kInternal);  // what EndOnline now sends on a refused end (F5)
+  SleepMs(200);
+  const int n0 = lobby_there->Count(wire::Type::kLeave);
+  SleepMs(1300);  // three Hello periods
+  const std::vector<Rx> leaves = lobby_there->Of(wire::Type::kLeave);
+  const int n1 = int(leaves.size());
+  std::printf("info: frame-0 Leave, refused: %d Leaves in the first 200 ms, %d in the next 1300 ms (state %s)\n", n0, n1 - n0,
+              online::StateName(host.status().state));
+  CHECKF(n0 >= 3, "refused: the 3 immediate Leave sends: %d arrived", n0);
+  CHECKF(n1 - n0 >= 2, "refused: a kept Leave in kOffline: %d more in 1300 ms (want one per 400 ms)", n1 - n0);
+  CHECKF(AllLeaves(leaves, H.session_token, 0, wire::LeaveReason::kInternal), "refused: a Leave was not (0, internal) on the session token");
+  CHECKF(host.status().leave_kept && host.status().state == State::kOffline, "refused: kept %d, state %s", int(host.status().leave_kept),
+         online::StateName(host.status().state));
+  lobby_there.reset();  // the other PC's session process takes its port, within the keep
+  const int64_t t_late = NowUs();
+  CHECKF(joiner.StartInSession(js.P(), LoopCfg(), J, left_j.Fn(), &e), "joiner StartInSession: %s", e.c_str());
+  const bool got = WaitFor([&] { return left_j.Size() >= 1; }, 2000);
+  std::printf("info: frame-0 Leave, refused: the late session's on_peer_left %s %lld ms after its start\n", got ? "ran" : "did not run",
+              got ? (long long)((left_j.first_us - t_late) / 1000) : -1LL);
+  SleepMs(500);
+  {
+    std::lock_guard<std::mutex> lock(left_j.mu);
+    CHECKF(left_j.v.size() == 1 && left_j.v[0].first == 0 && left_j.v[0].second == wire::LeaveReason::kInternal,
+           "refused: the late session got %zu on_peer_left calls, the first (%d, reason %d); want one, (0, internal)", left_j.v.size(),
+           left_j.v.empty() ? -9 : left_j.v[0].first, left_j.v.empty() ? -9 : int(left_j.v[0].second));
+  }
+  CHECKF(WaitFor([&] { return !host.status().leave_kept; }, 1000), "refused: Status::leave_kept still true after the Leave went");
+  CHECK(hs.log.Count(kLeaveWentLog) == 1 && hs.log.Count(kLeaveLostLog) == 0);
+  host.Stop();
+  joiner.Stop();
+}
+
+// Round 2 F10 (review M4): QuitSession treats a kept Leave as pending, so it keeps its frame and reason. QuitSession
+// stops the transport after its wait, so a late peer can never come; the check is on the wire instead: every Leave the
+// unseen peer receives, before, during and after the call, is the kept (0, worker order), none is (5, left).
+static void TestQuitKeepsKeptLeave() {
+  if (!Group("frame-0 Leave: QuitSession keeps a kept Leave's frame and reason")) return;
+  Side ss("quit_kept");
+  FakePeer fake;
+  handoff::Handoff h = SessionHandoff(fake.sock.port, 0x5E55CCCCu);
+  online::Lobby lobby;
+  std::string e;
+  CHECKF(lobby.StartInSession(ss.P(), LoopCfg(), h, [](int32_t, wire::LeaveReason) {}, &e), "StartInSession: %s", e.c_str());
+  CHECK(fake.Wait(wire::Type::kHello, 1000));
+  lobby.SendLeave(0, wire::LeaveReason::kWorkerOrder);
+  CHECK(WaitFor([&] { return lobby.status().leave_sends >= 3; }, 250));
+  CHECK(fake.Wait(wire::Type::kLeave, 500, nullptr, 2));
+  CHECK(lobby.status().leave_kept);
+  const int n = lobby.QuitSession(5, 150);
+  SleepMs(200);
+  const std::vector<Rx> leaves = fake.Of(wire::Type::kLeave);
+  int quit_leaves = 0;
+  for (const Rx& r : leaves) {
+    wire::Leave l;
+    if (wire::DecodeLeave(r.body, &l) && l.frame == 5 && l.reason == wire::LeaveReason::kLeft) ++quit_leaves;
+  }
+  std::printf("info: frame-0 Leave, quit while kept: QuitSession returned %d; %zu Leaves arrived, %d of them (5, left)\n", n,
+              leaves.size(), quit_leaves);
+  CHECKF(quit_leaves == 0 && AllLeaves(leaves, h.session_token, 0, wire::LeaveReason::kWorkerOrder),
+         "QuitSession replaced the kept Leave: %d of %zu Leaves were (5, left)", quit_leaves, leaves.size());
+  lobby.Stop();
 }
 
 // =====================================================================================================
@@ -2419,11 +2751,13 @@ static void TestConcurrentStop() {
 struct ProbeSink {
   std::atomic<online::Lobby*> lobby{nullptr};
   std::atomic<int> lines{0}, blocked{0};
+  std::atomic<int> order_lines{0};  // B3: lines naming netplay_worker_order that went through the probe
   std::mutex mu;
   std::vector<std::string> blocked_lines;
   std::function<void(const std::string&)> Fn() {
     return [this](const std::string& line) {
       ++lines;
+      if (line.find("netplay_worker_order") != std::string::npos) ++order_lines;
       online::Lobby* l = lobby;
       if (!l) return;
       auto done = std::make_shared<std::atomic<bool>>(false);
@@ -2446,6 +2780,8 @@ static void TestNoLogUnderLock() {
   online::Lobby host, joiner;
   ph.lobby = &host;
   pj.lobby = &joiner;
+  hs.has_worker_order = true;  // B3: a text that is neither word, so the hand-off's build logs its line through the probe
+  hs.worker_order = "Serial";
   online::Providers p1 = hs.P(), p2 = js.P();
   p1.log = ph.Fn();
   p2.log = pj.Fn();
@@ -2459,6 +2795,7 @@ static void TestNoLogUnderLock() {
   std::printf("info: no-lock probe: host %d lines (%d blocked), joiner %d lines (%d blocked)\n", ph.lines.load(), ph.blocked.load(),
               pj.lines.load(), pj.blocked.load());
   CHECK(ph.lines >= 5 && pj.lines >= 5);  // the probe saw the session start's lines
+  CHECKF(ph.order_lines == 1, "host: the probe saw %d netplay_worker_order lines, want 1", ph.order_lines.load());  // B3: it was logged
   {
     std::lock_guard<std::mutex> lock(ph.mu);
     CHECKF(ph.blocked == 0, "host: %d lines logged under the mutex, first '%s'", ph.blocked.load(),
@@ -2515,6 +2852,7 @@ int main(int argc, char** argv) {
   TestStartSession();
   TestJoinerRefusesBoot();
   TestSuitStates();
+  TestWorkerOrders();
   TestSuitsInSession();
   TestSuitsForgotten();
   TestWelcomeCarriesSuits();
@@ -2524,6 +2862,12 @@ int main(int argc, char** argv) {
   TestSessionQuit();
   TestSessionQuitPending();
   TestSessionSpoof();
+  TestEarlyLeave();
+  TestEarlyLeaveBound();
+  TestSeenLeave();
+  TestUnseenLeaveResent();
+  TestRefusedLeave();
+  TestQuitKeepsKeptLeave();
   TestRequestFiles();
   TestConnectTimeout();
   TestReplyBounds();

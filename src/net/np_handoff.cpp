@@ -16,12 +16,12 @@
 namespace doa4::np::handoff {
 namespace {
 
-constexpr uint16_t kVersion = 3;
+constexpr uint16_t kVersion = 4;  // 4: the worker order byte (lockstep port B3)
 constexpr char kMagic[4] = {'D', '4', 'H', 'O'};
 // Everything but the release text, the guest settings text and the files: magic 4, version 2, build 8, release
-// length 2, role 1, delay 1, local port 2, peer ip 4, peer port 2, token 4, seed 8, suit state 1, suit holders 1, guest
-// length 4, file count 4.
-constexpr size_t kFixedBytes = 48;
+// length 2, role 1, delay 1, local port 2, peer ip 4, peer port 2, token 4, seed 8, suit state 1, suit holders 1, worker
+// order 1, guest length 4, file count 4.
+constexpr size_t kFixedBytes = 49;
 constexpr uint8_t kMinDelay = 1;
 constexpr uint8_t kMaxDelay = 8;
 
@@ -43,6 +43,8 @@ constexpr const char* kSdkSettings[] = {
     "readback_resolve", "readback_resolve_half_pixel_offset", "readback_memexport", "readback_memexport_fast",
     "d3d12_readback_resolve", "d3d12_readback_memexport", "vulkan_readback_resolve", "vulkan_readback_memexport",
     "query_occlusion_fake_sample_count", "occlusion_query_enable", "clear_memory_page_state",
+    // decides which pages are re-uploaded at a frame's end; a stale page reaches guest memory by the readbacks above
+    "gpu_upload_prefetch",
     // a draw whose pipeline is not created yet is skipped, which drops its memexport, resolve and occlusion work
     "async_shader_compilation",
     // guest audio callbacks
@@ -226,6 +228,8 @@ bool SuitHoldersOk(uint8_t state, uint8_t holders) {
   }
   return false;
 }
+// The worker order: 0 lanes, 1 serial (lockstep port B3).
+bool WorkerOrderOk(uint8_t v) { return v <= 1; }
 
 size_t PackedSize(const Handoff& h) {
   size_t n = kFixedBytes + h.release.size() + h.guest_settings.size();
@@ -314,7 +318,7 @@ std::string ParseSettings(std::string_view text, std::vector<std::optional<std::
 // True if Pack may write `h`: every limit and range Unpack enforces.
 bool Packable(const Handoff& h) {
   if (!RoleOk(uint8_t(h.role)) || !DelayOk(h.delay) || !SuitStateOk(uint8_t(h.suit_state)) ||
-      !SuitHoldersOk(uint8_t(h.suit_state), h.suit_holders) || h.session_token == 0) {
+      !SuitHoldersOk(uint8_t(h.suit_state), h.suit_holders) || !WorkerOrderOk(h.worker_order) || h.session_token == 0) {
     return false;
   }
   if (h.local_port == 0 || h.peer.port == 0 || !PeerAddressOk(h.peer.ip)) return false;
@@ -352,6 +356,11 @@ bool NameOk(std::string_view name) {
   return components <= kMaxNameComponents;
 }
 
+uint8_t WorkerOrderFromText(std::string_view text) {
+  if (text == "serial") return 1;
+  return 0;  // "lanes", and every other text
+}
+
 std::vector<uint8_t> Pack(const Handoff& h) {
   if (!Packable(h)) return {};
   std::vector<uint8_t> out;
@@ -371,6 +380,7 @@ std::vector<uint8_t> Pack(const Handoff& h) {
   w.U64(h.seed);
   w.U8(uint8_t(h.suit_state));
   w.U8(h.suit_holders);
+  w.U8(h.worker_order);
   w.U32(uint32_t(h.guest_settings.size()));
   w.Text(h.guest_settings);
   w.U32(uint32_t(h.files.size()));
@@ -429,6 +439,8 @@ std::string Unpack(std::span<const uint8_t> bytes, Handoff* out) {
   h.suit_state = rules::SuitSession(suit_state);
   if (!r.U8(&h.suit_holders)) return kCut;
   if (!SuitHoldersOk(suit_state, h.suit_holders)) return "swimsuit holders that do not match the swimsuit state";
+  if (!r.U8(&h.worker_order)) return kCut;
+  if (!WorkerOrderOk(h.worker_order)) return "an unknown worker order";
 
   uint32_t guest_len = 0;
   if (!r.U32(&guest_len)) return kCut;

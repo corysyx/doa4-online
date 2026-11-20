@@ -30,6 +30,7 @@
 #include "doa4_title_word.h"
 #include "doa4_update_notice.h"
 #include "generated/default/dead_or_alive_4_init.h"
+#include "net/np_session.h"
 
 
 namespace {
@@ -88,6 +89,9 @@ REX_HOOK_RAW(sub_823BB470) {
   // MODE SELECT's DOA ONLINE caption on screen: the pad read drops A and START (doa4_online_item_block.h).
   doa4::online_item_block::Get().NoteDraw(sprite, (rex::memory::load<uint8_t>(base + draw + 23) & 0x08) != 0,
                                           doa4::intro_skip::Frames());
+  // The netplay title mask's latch (net/np_title_mask.h): the title logo arms it, Mode Select's item captions disarm it.
+  // Nothing outside an np session.
+  doa4::np::NoteTitleMaskSprite(sprite, (rex::memory::load<uint8_t>(base + draw + 23) & 0x08) != 0);
   // The first title logo draw of the run (doa4_intro_skip.h): the intro skip's latch, set once, never reset.
   if (doa4::intro_skip::NoteSpriteDraw(sprite)) {
     auto* thread = rex::system::XThread::IsInThread() ? rex::system::XThread::GetCurrentThread() : nullptr;

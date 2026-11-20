@@ -3,7 +3,8 @@ name: Netplay release
 # CMakeLists.txt, set by hand; a version whose release exists fails the Version step) that both online players
 # download: the online handshake compares the compiled code, so players need the same exe.
 # PUBLISH RULE (the user's decision): a push to main publishes a release only when the GAME changes, so the paths
-# below are the game's inputs only (src, generated, third_party, the CMake files, hints, the manifest, the SDK pin).
+# below are the game's inputs only (src, generated, third_party, the CMake files, hints, the manifest, the SDK pin,
+# and pgo/: a new profile publishes a release).
 # A change to the launcher, the tests, the tools, the README or this workflow publishes nothing, so players are not
 # made to update for it. Such a change reaches players only by pushing a tag netplay-publish-<n> (after the user's
 # yes), which publishes the same code again, provided DOA4_NETPLAY_VERSION was raised (the tag is alpha-v<x.y.z>).
@@ -11,7 +12,7 @@ on:
   push:
     branches: [main]
     paths: ['src/**', 'generated/**', 'third_party/**', 'CMakeLists.txt', 'CMakePresets.json', 'hints.toml',
-            'dead_or_alive_4_manifest.toml', 'netplay_sdk.txt']
+            'dead_or_alive_4_manifest.toml', 'netplay_sdk.txt', 'pgo/**']
     tags: ['netplay-publish-*']
   workflow_dispatch:   # corysyx/doa4-online: a "Run workflow" button on the Actions page builds and publishes main
 permissions:
@@ -88,7 +89,20 @@ jobs:
           call "%DOA4_VSDEVCMD%" -arch=amd64 -host_arch=amd64
           set "PATH=%DOA4_LLVM_BIN%;%PATH%"
           cd doa4-recomp
-          cmake --preset win-amd64-release -DREXSDK_DIR=%GITHUB_WORKSPACE:\=/%/rexglue-sdk "-DCMAKE_C_FLAGS=-march=x86-64-v3" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3" -DDOA4_RELEASE_TAG=${{ steps.version.outputs.tag }} -DDOA4_RELEASE_REPO=${{ github.repository }} -DDOA4_RELEASE_CHANNEL=alpha
+          rem PGO (docs/PGO.md): pgo/doa4.profdata is used only when pgo/source.txt names this commit's game tree, the pinned SDK, this LLVM and this naming mode; half a profile or a mismatch stops the job here, no pgo/ files is a plain build
+          rem corysyx: the fork's tree never matches the upstream profile; a tree mismatch alone is allowed (tools/pgo_source_id.py)
+          set "DOA4_PGO_STALE_OK=1"
+          python -I tools/pgo_source_id.py check --sdk-from pin > "%RUNNER_TEMP%\pgo_check.txt"
+          set "PGO_RC=%errorlevel%"
+          type "%RUNNER_TEMP%\pgo_check.txt"
+          if not "%PGO_RC%"=="0" exit /b 1
+          set "PGO_USE="
+          for /f "usebackq tokens=1,2,*" %%a in ("%RUNNER_TEMP%\pgo_check.txt") do if "%%a %%b"=="pgo: use" set "PGO_USE= -fprofile-use=%%c -mllvm -static-func-full-module-prefix=false -fmacro-prefix-map=%GITHUB_WORKSPACE:\=/%/doa4-recomp=/doa4 -fmacro-prefix-map=%GITHUB_WORKSPACE:\=/%/rexglue-sdk=/rexglue-sdk"
+          set "PGO_USE_LINE="
+          findstr /b /l /c:"pgo: use " "%RUNNER_TEMP%\pgo_check.txt" >nul && set "PGO_USE_LINE=1"
+          if defined PGO_USE_LINE if not defined PGO_USE echo pgo: use line read but no flag set
+          if defined PGO_USE_LINE if not defined PGO_USE exit /b 1
+          cmake --preset win-amd64-release -DREXSDK_DIR=%GITHUB_WORKSPACE:\=/%/rexglue-sdk "-DCMAKE_C_FLAGS=-march=x86-64-v3%PGO_USE%" "-DCMAKE_CXX_FLAGS=-march=x86-64-v3%PGO_USE%" -DDOA4_RELEASE_TAG=${{ steps.version.outputs.tag }} -DDOA4_RELEASE_REPO=${{ github.repository }} -DDOA4_RELEASE_CHANNEL=alpha
           if errorlevel 1 exit /b 1
           cmake --build --preset win-amd64-release -- -j 2
           if errorlevel 1 exit /b 1

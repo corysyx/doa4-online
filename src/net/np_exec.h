@@ -83,4 +83,12 @@ class Executor {
 // little-endian bytes, every sweep-row u64 likewise), folded to 32 bits as (h ^ (h >> 32)). R19.
 uint32_t FoldChecksum(int32_t frame, std::span<const uint64_t> digest_row, std::span<const uint64_t> sweep_row);
 
+// The checksum a session hands GekkoNet: FoldChecksum's value with the worker mode this process decided mixed in (lockstep port
+// B3, design section 4 / P20): checksum XOR (mode * 0x9E3779B9 mod 2^32). For one mode it is one-to-one over the 32 bits (an XOR
+// with a constant is its own inverse), so two PCs that decided alike compare exactly what FoldChecksum compares; for one checksum
+// the modes 0 to 4 give five different values (the constants 0, 9E3779B9, 3C6EF372, DAA66D2B, 78DDE6E4 differ: the product by an
+// odd number is one-to-one), mode 0 gives the checksum itself and modes 3 and 4 never do, so two PCs that decided differently
+// disagree at the first compared frame.
+uint32_t WithWorkerMode(uint32_t checksum, int mode);
+
 }  // namespace doa4::np::exec

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 #include <rex/ppc/context.h>
 
@@ -21,7 +22,7 @@ enum Fix : uint32_t {
   kLoader = 1u << 6,    // loader thread jobs only at the frame boundary
   kCri = 1u << 7,       // CRI server passes on the main thread (+ spin steps)
   kCriJob = 1u << 8,    // CRI job-thread jobs inline
-  kWorkers = 1u << 9,   // job workers one at a time in a fixed order
+  kWorkers = 1u << 9,   // job workers in a fixed order (mode 3 one at a time, mode 4 in two lanes: np_lanes_pure.h DecideMode)
   kNotify = 1u << 10,   // system notifications visible at frame boundaries (nothing dropped: the SDK posts none about the host's controllers)
   kKeepAlive = 1u << 11,  // the D3D kick thread's timeout re-present does nothing (np_core.h ClassifyKeepAlive)
   kReader = 1u << 12,     // the save manager's one-shot file thread runs to its end before the game polls it
@@ -60,6 +61,9 @@ enum Counter : int {
   kFbCriReady,       // the CRI server thread was not in its loop 2 s after it was created
   kFbAudioStart,     // the first audio callbacks were not done after 250 ms
   kFbReader,         // the save manager's file thread was not found or had not ended 2 s after it was started
+  kFbLaneStall,      // worker mode 4: a wait in order (a worker's turn, the main thread's first or second wait) lasted 2 s
+  kFbLaneEnd,        // worker mode 4: an end request (the session ends; design section 6)
+  kFbVsmStandDown,   // worker mode 4: the vertex-stream list pass stood down
   kPrCriPasses,      // CRI server passes run on the main thread
   kPrSpinSteps,      // of those, spin steps
   kPrLoaderJobs,     // loader jobs run
@@ -84,8 +88,16 @@ void MiddlewareStop();
 void SpinRead(PPCContext& ctx, uint8_t* base, uint32_t lr);
 
 // np_det_workers.cpp
-void WorkersFrame();
+// Called by OnFrame with the guest memory: the cpu marks read the fight byte there (modes 3 and 4).
+void WorkersFrame(const uint8_t* base);
 void WorkersStop();
+// det::SetWorkerInputs's part: the decision's inputs (the workers fix as Start will compute it).
+void WorkersSetInputs(bool workers_fix_on, bool online, bool handoff_serial, bool replay, const std::string& meta_workers);
+// det::PreFrame's part: mode 4 only (np_det_lanes.cpp eng::PreFrame); returns at once otherwise.
+void WorkersPreFrame(uint32_t frame, uint8_t* base);
+// np_det.cpp: whether the workers fix will be on in this session, computed as Start computes the fix set (so it can be asked before
+// Start: SessionFixes over DOA4_NP_FIX and AllowFileTimes, which clears only the file-times bit).
+bool WorkersFixAtStart();
 // A thread the game created through its CreateThread path (np_det.cpp, hook on sub_82793B68), in
 // creation order; start = its guest entry point, tid = XThread::thread_id().
 void ThreadCreated(uint32_t start, uint32_t tid);

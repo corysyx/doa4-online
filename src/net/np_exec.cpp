@@ -124,4 +124,8 @@ uint32_t FoldChecksum(int32_t frame, std::span<const uint64_t> digest_row, std::
   return uint32_t(h ^ (h >> 32));
 }
 
+uint32_t WithWorkerMode(uint32_t checksum, int mode) {
+  return checksum ^ (uint32_t(mode) * 0x9E3779B9u);
+}
+
 }  // namespace doa4::np::exec

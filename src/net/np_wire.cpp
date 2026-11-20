@@ -14,7 +14,7 @@ constexpr size_t kChunkFieldBytes = 10;  // u32 msg_id, u8 msg_type, u8 count, u
 constexpr size_t kAckBytes = 4 + 4 * 8;  // u32 msg_id, 4 x u64
 constexpr uint8_t kLastType = 11;        // Type::kBootReply
 constexpr uint8_t kLastRefusal = 5;      // Refusal::kSession
-constexpr uint8_t kLastLeave = 3;        // LeaveReason::kInternal
+constexpr uint8_t kLastLeave = 4;        // LeaveReason::kWorkerOrder (lockstep port B3)
 
 // The largest Hello body (every field at its limit) must leave room for the header in one datagram.
 static_assert(kHeaderBytes + 8 + (2 + kMaxText) + (2 + kMaxFilesText) + 1 + 1 + 4 + (2 + kMaxSuitsText) <= kMaxDatagram);

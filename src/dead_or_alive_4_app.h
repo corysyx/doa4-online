@@ -25,6 +25,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/input/input_system.h>
+#include <rex/kernel/xam/module.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/entry.h>
 #include <rex/filesystem/vfs.h>
@@ -44,6 +45,7 @@
 #include <rex/system/xthread.h>
 
 #include "doa4_config.h"
+#include "doa4_cpu_info.h"
 #include "doa4_diag_overlay.h"
 #include "doa4_discord.h"
 #include "doa4_picture_fx.h"
@@ -88,6 +90,7 @@
 #include "net/np_restart.h"
 #include "net/np_rules.h"
 #include "net/np_session.h"
+#include "net/np_start_rules.h"
 #include "net/np_transport.h"
 #include "net/np_upnp.h"
 
@@ -343,6 +346,15 @@ class DeadOrAlive4App : public rex::ReXApp {
         fmt::format("[doa4][NET] session user data: {} (save from the host: {} files, {} bytes), cache {}",
                     doa4::Utf8Generic(session), session_->files.size(), bytes, doa4::Utf8Generic(paths->cache_root));
     doa4::np::EarlyLog(line);
+    // Starting rules (ruling S14 d): decided once, here, before any guest code, from the hand-off's files, which both
+    // sides hold byte-equal (the host packed them, the joiner unpacked the same bytes): a save that already holds the
+    // rules (the host's lobby edited its packed copy, np_start_rules.h ApplyToSaveFiles) gets no in-memory write.
+    const bool armed = !doa4::np::start_rules::RulesHeld(session_->files);
+    doa4::np::start_rules::ArmMemoryWrite(armed);
+    doa4::np::EarlyLog(armed ? "[doa4][NET] start rules: the session's save does not hold them (no profile record, one "
+                               "too short, or one whose option bytes are not at the targets): written in memory at the "
+                               "first match-rule load"
+                             : "[doa4][NET] start rules: the session's save holds them: no in-memory write");
   }
 
   const std::filesystem::path& UserData() const {
@@ -470,6 +482,8 @@ class DeadOrAlive4App : public rex::ReXApp {
     // The netplay release identity (CMakeLists.txt: DOA4_RELEASE_*; "dev" for local builds). A [LIFE] line, so an
     // offline run still has no [NET]/[NP] line (gate S9); plan 1b reads it.
     REXLOG_INFO("[doa4][LIFE] version {} ({} releases of {})", DOA4_RELEASE_TAG, DOA4_RELEASE_CHANNEL, DOA4_RELEASE_REPO);
+    // The machine's processor and memory (the GPU has its own "DXGI adapter" lines): a slowdown report needs both.
+    REXLOG_INFO("[doa4][LIFE] cpu: {}", doa4::cpu_info::LogLine(doa4::cpu_info::Read()));
     // Task 12 review A Minor 1 (spec G1, "the log names the value it ignored"): a doa4_language / doa4_subtitles value in the
     // settings file the SDK did not take as written ("fr", 2.5, true). The SDK loaded this file (ConfigPath() = its
     // config_path) before logging started, so its own WARN never reached the log.
@@ -682,6 +696,18 @@ class DeadOrAlive4App : public rex::ReXApp {
     doa4::ReserveLowGuestMemory(runtime() ? runtime()->memory() : nullptr);
     SetUpExtras();  // before any guest code runs: the tweaks patch tables read at boot
     SetUpSnapshotWatcher();  // before the first guest swap, so the swap counts start together
+    // Kyoto in Bloom water (ou_runs/kyoto/REPORT.md): with asynchronous compilation the SDK skips a draw whose pipeline
+    // is not created yet but still carries out the resolve after it. The canal's ripple simulation feeds each frame from
+    // the last, so the one frame it meets its pipelines cold (the fall into the canal, fresh shader cache) copies
+    // leftover memory into it and the water stays flat and streaked for the rest of the fight. Compile before drawing
+    // instead: a short hitch the first time each new pipeline appears, until the shader cache holds it. Here, before
+    // StartNetplaySession and before any guest code runs: a session's host captures this value, and the value a joiner
+    // applies from the host's hand-off is the one that stays (OnPostSetup runs after this hook).
+    if (rex::cvar::SetFlagByName("async_shader_compilation", "false")) {
+      REXLOG_INFO("[doa4][GPU] async_shader_compilation=false (no skipped draws on a pipeline's first use)");
+    } else {
+      REXLOG_WARN("[doa4][GPU] failed to set async_shader_compilation cvar");
+    }
     StartNetplaySession();   // DOA4_NP only: record / replay / hash from the first frame
     // Skip the boot intro (doa4_intro_skip.h): the start-up value, before any guest code runs; a later change in the menu applies
     // at the next start. In a session the session's movie gate decides alone.
@@ -805,6 +831,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     host.send_leave = [this](int32_t frame, doa4::np::wire::LeaveReason reason) {
       if (lobby_) lobby_->SendLeave(frame, reason);
     };
+    host.leave_kept = [this] { return lobby_ && lobby_->status().leave_kept; };  // the frame-0 Leave fix
     host.transport = [this]() -> doa4::np::net::Transport* { return lobby_ ? &lobby_->transport() : nullptr; };
     host.session_refused = [this] { return lobby_ && lobby_->status().session_refused; };
     host.quit_session = [this](int32_t frame) { return lobby_ ? lobby_->QuitSession(frame, 150) : 0; };
@@ -889,8 +916,22 @@ class DeadOrAlive4App : public rex::ReXApp {
       return doa4::np::handoff::CaptureGuestSettings(
           [](const std::string& name) { return rex::cvar::Query<std::string>(name); });
     };
+    // Lockstep port B3: the host's worker order text, read by the lobby once where it builds the hand-off (the form of the text keys
+    // read elsewhere in this file, e.g. doa4_photo_dir); a session process never asks for it.
+    p.worker_order = [] { return rex::cvar::Query<std::string>("netplay_worker_order"); };
     const std::filesystem::path real = user_data_;
-    p.save_files = [real](std::string* error) { return SaveFilesOf(real, error); };
+    // Starting rules (np_start_rules.h): the hand-off carries the save with the three match options set, in this packed
+    // copy only (the files on disk are never written). A record too short to edit goes unedited (logged); the session
+    // then writes the rules in memory instead.
+    p.save_files = [real](std::string* error) {
+      std::vector<doa4::np::handoff::File> files = SaveFilesOf(real, error);
+      if (error->empty()) {
+        if (const std::string e = doa4::np::start_rules::ApplyToSaveFiles(&files); !e.empty()) {
+          REXLOG_WARN("[doa4][NET] start rules: {}; the session writes them in memory instead", e);
+        }
+      }
+      return files;
+    };
     p.suits = suits_checksum_;  // set in SetUpSuits, before any lobby of a process that is not a session (a session sends none)
     p.handoff_path = restart::HandoffPath(user_data_);
     p.restart_into_session = [this] {
@@ -1220,6 +1261,7 @@ class DeadOrAlive4App : public rex::ReXApp {
         case doa4::np::live::End::kDesync: ending = ov::Ending::kDesync; break;
         case doa4::np::live::End::kFrame0Timeout: ending = ov::Ending::kFrame0Timeout; break;
         case doa4::np::live::End::kInternal: ending = ov::Ending::kInternal; break;
+        case doa4::np::live::End::kWorkerOrder: ending = ov::Ending::kWorkerOrder; break;  // lockstep port B3
         case doa4::np::live::End::kNone: break;
       }
     }
@@ -1460,6 +1502,7 @@ class DeadOrAlive4App : public rex::ReXApp {
     in.setup_open = setup_open_.load(std::memory_order_acquire);
     in.sdk_overlay_open = HasSdkOverlayOpen();
     in.mnk_mode = rex::cvar::Query<bool>("mnk_mode");
+    in.xam_dialog_open = rex::kernel::xam::xeXamIsUIActive();
     const doa4::display::CursorAction action = doa4::display::DecideCursor(in);
     if (action == cursor_action_) return;
     cursor_action_ = action;

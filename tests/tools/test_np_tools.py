@@ -318,9 +318,12 @@ def test_counter_names_match_source(root):
     table = re.search(r"kCounterNames\[\]\s*=\s*\{(.*?)\};", src, re.S)
     names = re.findall(r'"([^"]*)"', table.group(1)) if table else []
     # 16 since Task 11c: fb_reader (the reader fix's fallback) - a fallback counter, so np_compare's "no fallbacks"
-    # judges it (NOT a pr_ name, which would only be compared between runs)
-    check(len(names) == 16, f"np_det.cpp: expected 16 counter names, found {len(names)}")
+    # judges it (NOT a pr_ name, which would only be compared between runs). 19 since the lockstep port's B2: worker
+    # mode 4's three fallbacks (a stall over 2 s, an end request, a stand-down of the list pass), after fb_reader
+    check(len(names) == 19, f"np_det.cpp: expected 19 counter names, found {len(names)}")
     check("fb_reader" in names, f"np_det.cpp: the reader fix's fallback counter fb_reader: {names}")
+    check(names[10:13] == ["fb_lane_stall", "fb_lane_end", "fb_vsm_stand_down"],
+          f"np_det.cpp: mode 4's three fallback counters right after fb_reader: {names}")
     check(all(re.fullmatch(r"(fb|pr)_[a-z_]+", n) and len(n) <= 23 for n in names),
           f"np_det.cpp: every name is fb_/pr_ and fits the file's 23 characters: {names}")
     enum = re.search(r"enum Counter : int \{(.*?)kCounterCount", open(os.path.join(net, "np_det_internal.h"),
@@ -332,6 +335,26 @@ def test_counter_names_match_source(root):
     fake = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fake)
     check(fake.COUNTERS == names, f"fake_game.COUNTERS vs np_det.cpp:\n{fake.COUNTERS}\n{names}")
+
+
+def test_worker_order_texts_match_source(root):
+    # Lockstep port B6 (review B finding 2): np_pair judges a worker-order end by texts np_live.cpp writes, and the stand-in
+    # session writes copies of them. Pin all three sides against the C++ source, so a rewording there fails here and not
+    # first in a real pair (Phase C row C10).
+    src = open(os.path.join(HERE, "..", "..", "src", "net", "np_live.cpp"), encoding="utf-8").read()
+    leave = re.findall(r'case wire::LeaveReason::kWorkerOrder: return "([^"]*)";', src)  # ReasonText of Leave reason 4
+    end = re.findall(r'case End::kWorkerOrder: return "([^"]*)";', src)  # EndText, then TerminalReason
+    check(len(leave) == 1 and len(end) == 2, f"np_live.cpp: one ReasonText and two End texts of the worker order, found {leave} {end}")
+    if len(leave) != 1 or len(end) != 2:
+        return
+    end_text, terminal = end
+    mod = load("np_pair")
+    check(terminal == mod.WORKER_ORDER_REASON, f"np_pair.WORKER_ORDER_REASON {mod.WORKER_ORDER_REASON!r} vs TerminalReason {terminal!r}")
+    check(leave[0] == mod.WORKER_ORDER_REASON, f"np_pair.WORKER_ORDER_REASON {mod.WORKER_ORDER_REASON!r} vs ReasonText {leave[0]!r}")
+    fake = open(os.path.join(HERE, "fake_online.py"), encoding="utf-8").read()
+    check(f'reason = "{terminal}"' in fake, f"fake_online.py: the ending copy's terminal reason {terminal!r}")
+    check(f'"session end: " + "{end_text}"' in fake, f"fake_online.py: the ending copy's session end text {end_text!r}")
+    check(f'"FAKE_ONLINE_PEER_REASON", "{leave[0]}"' in fake, f"fake_online.py: the other copy's default Leave reason {leave[0]!r}")
 
 
 def fake_game_module():
@@ -935,8 +958,9 @@ def test_compare_final_progress(root):
 def test_gate_final_progress(root):
     # the gate prints every run's final progress counters once (not once per pair), so the values a good
     # build ends with are in the gate's own output. The stand-in's counter at COUNTERS index i ends at
-    # (i + 1) * 100 + 11 (12 frames); pr_cri_passes is index 10 since fb_reader (index 9) came in (Task 11c).
-    final = "pr_cri_passes=1111 pr_spin_steps=1211 pr_loader_jobs=1311 pr_cri_jobs=1411 pr_reseeds=1511 pr_notify=1611"
+    # (i + 1) * 100 + 11 (12 frames); pr_cri_passes is index 13 since fb_lane_stall, fb_lane_end and
+    # fb_vsm_stand_down (indexes 10 to 12) came in after fb_reader (index 9; lockstep port B2).
+    final = "pr_cri_passes=1411 pr_spin_steps=1511 pr_loader_jobs=1611 pr_cri_jobs=1711 pr_reseeds=1811 pr_notify=1911"
     code, out, runs = gate(root, "fp", "--script", SCRIPT, "--replays", "1", "--concurrent", "1")
     check(code == 0, f"gate, final progress: exit {code}\n{out}")
     for n in ("fp_rec", "fp_rep1", "fp_con1"):
@@ -949,12 +973,12 @@ def test_gate_final_progress(root):
     check(code == 1, f"gate, final progress, an unreadable recording: exit {code}\n{out}")
     check("fq_rep1 final progress: none (no counters.d4k)\n" in out, f"gate, final progress: the run without counters\n{out}")
     check(f"fq_rec final progress: {final}\n" in out, f"gate, final progress: the good run still printed\n{out}")
-    # each line comes from its own run: one concurrent replay ends with pr_notify 1612 (+1 at its last row only),
-    # the others with 1611; the pairs that include it differ and fail the gate
+    # each line comes from its own run: one concurrent replay ends with pr_notify 1912 (+1 at its last row only),
+    # the others with 1911; the pairs that include it differ and fail the gate
     code, out, runs = gate(root, "fr", "--script", SCRIPT, "--replays", "1", "--concurrent", "2", FAKE_GAME_PROGRESS_END="_con2")
     check(code == 1 and "pr_notify first differs at frame 11" in out, f"gate, final progress, runs that end apart: exit {code}\n{out}")
-    for n, notify in (("fr_rec", 1611), ("fr_rep1", 1611), ("fr_con1", 1611), ("fr_con2", 1612)):
-        line = final.replace("pr_notify=1611", f"pr_notify={notify}")
+    for n, notify in (("fr_rec", 1911), ("fr_rep1", 1911), ("fr_con1", 1911), ("fr_con2", 1912)):
+        line = final.replace("pr_notify=1911", f"pr_notify={notify}")
         check(f"{n} final progress: {line}\n" in out, f"gate, final progress, runs that end apart: the line of {n}\n{out}")
     # the helper alone: runs of different values, a missing file, a file that is not a counters file
     gate_final_progress = load("np_gate").final_progress
@@ -1149,6 +1173,25 @@ def test_crosscheck(root):
         f.write("ra\nrb\n")
     code, out = crosscheck_run(res, local)
     check(code == 0 and "rx" in out and "not in recordings.txt" in out, f"crosscheck, an unlisted extra run: exit {code}\n{out}")
+
+
+FRIEND_LOG_LANES = "\n".join([  # lines of a real np_log.txt of the lockstep port's order (np_runs/lp/b/merge/runs/mg_r1/out, build lp-b4)
+    "workers: lanes, table s6v1, cs 4, vsm sort",
+    "workers placed: chain 0: 0 1 6 7 12 16 20; chain 1: 2 8 13 17 21; chain 2: 3 9 14 18 22; chain 3: 4 10 23; chain 4: 5 11 15 19 24; table: yes",
+    "frame 599: hook avg 32.3 us max 696.2 us, hash avg 20.8 us max 357.5 us, det wait avg 173.5 us max 7280.0 us, "
+    "frame period avg 16.766 ms (59.64 fps) max 101.53 ms"]) + "\n"
+
+
+def test_crosscheck_workers_line(root):
+    """A lanes log has no 'job workers: one at a time' line: the friend's decision line ('workers: ...') is printed instead
+    (lockstep port task B5, ledger 1074-1080)."""
+    res, local = make_results(os.path.join(root, "t1"), dpps=fixture_text("dpps_canon_sample.txt"))
+    with open(os.path.join(res, "out", "ra", "out", "np_log.txt"), "w") as f:
+        f.write(FRIEND_LOG_LANES)
+    code, out = crosscheck_run(res, local)
+    check("friend: workers: lanes, table s6v1, cs 4, vsm sort" in out and "frame period avg 16.766 ms" in out,
+          f"crosscheck: the friend's decision line of a lanes log is printed\n{out}")
+    check("friend: workers placed:" not in out, f"crosscheck: the placement line is not one of the friend lines\n{out}")
 
 
 def pattern(n, mul, add):
@@ -2566,6 +2609,22 @@ def test_pair_saves(root):
                         "--runs", runs, "--exe", FAKE_EXE, "--end-grace", "1", "--step-timeout", "30", "--timeout", "60"],
                        capture_output=True, text=True, env=stand_in_env(), timeout=240)
     check(p.returncode == 1 and "vacuous" in p.stdout, f"np_pair, no save files to hash: exit {p.returncode}\n{p.stdout}{p.stderr}")
+    check("no save before the run" not in p.stdout, f"np_pair, no save files, without --allow-empty-save: no empty-save note\n{p.stdout}")
+    # --allow-empty-save (D3): the same empty pristine passes and says so, once per copy
+    runs = os.path.join(root, "earuns")
+    p = subprocess.run([sys.executable, "-I", os.path.join(TOOLS, "np_pair.py"), "eva", "--script", pair_script(root), "--userdata", empty,
+                        "--runs", runs, "--exe", FAKE_EXE, "--end-grace", "1", "--step-timeout", "30", "--timeout", "60",
+                        "--allow-empty-save"],
+                       capture_output=True, text=True, env=stand_in_env(), timeout=240)
+    check(p.returncode == 0 and "verdict ok" in p.stdout, f"np_pair --allow-empty-save, no save files: exit {p.returncode}\n{p.stdout}{p.stderr}")
+    check("vacuous" not in p.stdout, f"np_pair --allow-empty-save: not refused as vacuous\n{p.stdout}")
+    check("note: the host copy: no save before the run: none" in p.stdout and "note: the joiner copy: no save before the run: none" in p.stdout,
+          f"np_pair --allow-empty-save: each empty copy is reported\n{p.stdout}")
+    # a copy that had a save keeps the check with the flag: its changed save still fails the pair
+    code, out, runs = np_pair(root, "sva", "--allow-empty-save", "--env-joiner", "FAKE_ONLINE_WRITE_SAVE=1")
+    check(code == 1 and "joiner copy's real save changed" in out and "save0.bin" in out,
+          f"np_pair --allow-empty-save, a session wrote a non-empty copy's real save: exit {code}\n{out}")
+    check("no save before the run" not in out, f"np_pair --allow-empty-save, copies with saves: no empty-save note\n{out}")
 
 
 def test_pair_own_processes(root):
@@ -2790,6 +2849,61 @@ def test_pair_quit(root):
     check(code == 1 and "the joiner relaunched offline" in out, f"np_pair, quit: the joiner relaunched offline: exit {code}\n{out}")
     code, out, runs = np_pair(root, "pqk", "--expect", "quit", "--env-host", "FAKE_ONLINE_PEER_LEFT_WATCH=1", *slow)
     check(code == 1 and "needs --quit-joiner-at-frame" in out, f"np_pair, --expect quit without --quit-joiner-at-frame: exit {code}\n{out}")
+
+
+def test_pair_worker_order(root):
+    # Lockstep port B3 (Phase C row C10): one copy could not keep worker mode 4's order and ended `worker order`; the other ended
+    # `peer left` on its Leave with reason 4 and its np_log's `session end:` line ends "(worker order))"; both name the same terminal
+    # frame and both relaunch offline. Two shapes: an end after frame 0 and an end at frame 0 (nothing hashed, no frame-0 dump).
+    wo = ("--expect", "worker-order")
+    host_fails = ("--env-host", "FAKE_ONLINE_END=worker-order", "--env-joiner", "FAKE_ONLINE_END=peer-leave")
+    joiner_fails = ("--env-joiner", "FAKE_ONLINE_END=worker-order", "--env-host", "FAKE_ONLINE_END=peer-leave")
+    at0 = ("--env-host", "FAKE_ONLINE_QUIT_AT=0", "--env-joiner", "FAKE_ONLINE_QUIT_AT=0",
+           "--env-host", "FAKE_ONLINE_NO_DUMP=1", "--env-joiner", "FAKE_ONLINE_NO_DUMP=1")
+    code, out, runs = np_pair(root, "wo", *wo, *host_fails)
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order: the host could not keep the order: exit {code}\n{out}")
+    check("host ended 'worker order' at frame 10, joiner ended 'peer left' at frame 10" in out, f"np_pair, worker-order: the ends are named\n{out}")
+    code, out, runs = np_pair(root, "woj", *wo, *joiner_fails)
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order: the joiner could not keep the order: exit {code}\n{out}")
+    # the end at frame 0: no frame-0 dump, so the dump check is not applied, and the verdict lines say so
+    code, out, runs = np_pair(root, "wo0", *wo, *host_fails, *at0)
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order at frame 0: exit {code}\n{out}")
+    check("frame-0 dump check not applied" in out, f"np_pair, worker-order at frame 0: the unapplied check is named\n{out}")
+    # (control of that exemption: after frame 0 the dump check is a rule, so a missing frame-0 dump fails the pair)
+    code, out, runs = np_pair(root, "wod", *wo, *host_fails, "--env-host", "FAKE_ONLINE_NO_DUMP=1")
+    check(code == 1 and "wrote no frame-0 dump" in out, f"np_pair, worker-order after frame 0 without a frame-0 dump: exit {code}\n{out}")
+    # either side's reason `left` fails it
+    code, out, runs = np_pair(root, "wol", *wo, "--env-host", "FAKE_ONLINE_END=worker-order")
+    check(code == 1 and "the joiner copy ended 'left', expected 'peer left'" in out, f"np_pair, worker-order, the joiner left: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "wolh", *wo, "--env-joiner", "FAKE_ONLINE_END=peer-leave")
+    check(code == 1 and "0 copies ended 'worker order'" in out, f"np_pair, worker-order, the host left: exit {code}\n{out}")
+    # the other side's `session end:` line names another reason
+    code, out, runs = np_pair(root, "wor", *wo, *host_fails, "--env-joiner", "FAKE_ONLINE_PEER_REASON=timeout")
+    check(code == 1 and "does not end '(worker order))'" in out, f"np_pair, worker-order, the Leave's reason is another: exit {code}\n{out}")
+    # a mixed session: at frame 0 no scene generator line is written (no boundary ran), so the gate check is not applied; after
+    # frame 0 an end at the frame hook comes before that frame's resync, so the resync covers the frames before the terminal frame
+    mixed = ("--env-host", "FAKE_ONLINE_SUITS=mixed", "--env-joiner", "FAKE_ONLINE_SUITS=mixed") + tuple(
+        x for side in ("--env-host", "--env-joiner") for x in (side, "FAKE_ONLINE_TABLES=aa", side, "FAKE_ONLINE_LABELS=bb"))
+    code, out, runs = np_pair(root, "wom0", *wo, *host_fails, *at0, *mixed)
+    check(code == 0 and "fight gate check not applied" in out, f"np_pair, worker-order at frame 0, mixed: exit {code}\n{out}")
+    resync = lambda h, j: ("--env-host", f"FAKE_ONLINE_RESYNC_FRAMES={h}", "--env-joiner", f"FAKE_ONLINE_RESYNC_FRAMES={j}")  # noqa: E731
+    # the bound is one frame lower only for the copy that ended `worker order` (the host here); the `peer left` copy ended inside
+    # live->Frame, after its own resync of the terminal frame, and keeps terminal + 1
+    code, out, runs = np_pair(root, "wom", *wo, *host_fails, *mixed, *resync(10, 11))
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order at frame 10, mixed, resync 10 / 11: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "wom9", *wo, *host_fails, *mixed, *resync(9, 11))
+    check(code == 1 and "the host: the scene generator was made equal on 9" in out,
+          f"np_pair, worker-order, mixed, the worker-order copy's resync on 9 frames: exit {code}\n{out}")
+    code, out, runs = np_pair(root, "womp", *wo, *host_fails, *mixed, *resync(10, 10))
+    check(code == 1 and "the joiner: the scene generator was made equal on 10" in out and "fewer than the 11 frames" in out,
+          f"np_pair, worker-order, mixed, the peer-left copy's resync on the terminal frame only: exit {code}\n{out}")
+    # (the rule follows the copy's own reason, not its role: with the joiner as the copy that ended `worker order`, joiner 10 / host 11 passes;
+    # a rule keyed on the host would ask 11 of the joiner)
+    code, out, runs = np_pair(root, "womj", *wo, *joiner_fails, *mixed, *resync(11, 10))
+    check(code == 0 and "verdict worker-order" in out, f"np_pair, worker-order, mixed, the joiner failed, resync 11 / 10: exit {code}\n{out}")
+    # an online end request writes no WARN line, so a WARN in either copy is another fault
+    code, out, runs = np_pair(root, "wow", *wo, *host_fails, "--env-joiner", "FAKE_ONLINE_WARN=1")
+    check(code == 1 and "the joiner np_log holds a WARN line" in out, f"np_pair, worker-order, a WARN line in the joiner: exit {code}\n{out}")
 
 
 def test_pair_lost_s6(root):
@@ -3179,7 +3293,11 @@ def test_digest_regions_match_source(root):
     flat = lambda text: ["task_slots" if b else a for a, b in names(text)]
     check(flat(today) == mod.REGIONS_TODAY, f"np_pair.REGIONS_TODAY vs np_digest.h:\n{flat(today)}\n{mod.REGIONS_TODAY}")
     check(flat(mixed) == mod.REGIONS_MIXED, f"np_pair.REGIONS_MIXED vs np_digest.h:\n{flat(mixed)}\n{mod.REGIONS_MIXED}")
-    check(len(mod.REGIONS_TODAY) == 10 and len(mod.REGIONS_MIXED) == 12, f"region counts {len(mod.REGIONS_TODAY)} {len(mod.REGIONS_MIXED)}")
+    check(len(mod.REGIONS_TODAY) == 13 and len(mod.REGIONS_MIXED) == 12, f"region counts {len(mod.REGIONS_TODAY)} {len(mod.REGIONS_MIXED)}")
+    # lockstep port B4 (Ruling R57): the non-mixed list is the old 10 in the old order, then the three the mixed list also carries
+    check(mod.REGIONS_TODAY[:10] == ["game_obj", "netmatch", "pad_entries", "pad_mgr", "task_slots", "mt_833F7600", "mt_8357B5C0", "mt_83420020",
+                                     "mt_8321B198", "frame_ctr"] and mod.REGIONS_TODAY[10:] == ["fight_state", "side0", "side1"],
+          f"np_pair.REGIONS_TODAY's order: {mod.REGIONS_TODAY}")
 
 
 def test_pair_regions_state(root):
@@ -3190,7 +3308,8 @@ def test_pair_regions_state(root):
     check(code == 0, f"np_pair, mixed, the mixed list: exit {code}\n{out}")
     code, out, runs = np_pair(root, "rg2", *both("FAKE_ONLINE_SUITS", "same"), *dig())
     check(code == 0, f"np_pair, same, today's list: exit {code}\n{out}")
-    today = "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr"
+    old10 = "game_obj,netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_8357B5C0,mt_83420020,mt_8321B198,frame_ctr"
+    today = old10 + ",fight_state,side0,side1"  # lockstep port B4: the non-mixed list is the 10 and the fight state and the two records
     code, out, runs = np_pair(root, "rg3", *both("FAKE_ONLINE_SUITS", "mixed"), *both("FAKE_ONLINE_REGIONS", today), *dig())
     check(code == 1 and "in a session with swimsuits mixed, expected" in out, f"np_pair, mixed, today's list: exit {code}\n{out}")
     mixedlist = "netmatch,pad_entries,pad_mgr,task_slots,mt_833F7600,mt_83420020,mt_8321B198,frame_ctr,cache_flag,fight_state,side0,side1"
@@ -3200,6 +3319,9 @@ def test_pair_regions_state(root):
     check(code == 0, f"np_pair, none, the hunting switch's two extra regions: exit {code}\n{out}")
     code, out, runs = np_pair(root, "rg6", *both("FAKE_ONLINE_SUITS", "none"), *both("FAKE_ONLINE_REGIONS", today.replace(",frame_ctr", "")))
     check(code == 1 and "in a session with swimsuits none" in out, f"np_pair, none, a region missing: exit {code}\n{out}")
+    for state in ("none", "same"):  # a build from before B4 hashed the 10: np_pair refuses that header now, in both non-mixed states
+        code, out, runs = np_pair(root, "rg7" + state, *both("FAKE_ONLINE_SUITS", state), *both("FAKE_ONLINE_REGIONS", old10), *dig())
+        check(code == 1 and f"in a session with swimsuits {state}, expected" in out, f"np_pair, {state}, the 10 regions of before B4: exit {code}\n{out}")
 
 
 def test_frame0_diff(root):
@@ -3491,7 +3613,7 @@ def test_pair_gate_open(root):
     check(code == 0 and "host fight gate: open on 0 frames" in out, f"np_pair, mixed, no fight, gate shut: exit {code}\n{out}")
     code, out, runs = np_pair(root, "gn2", *mixed, *side(("FIGHT_STATES", 2)), *shut)
     check(code == 0, f"np_pair, mixed, two state values, gate shut: exit {code}\n{out}")
-    # A session with no gated region is not judged
+    # A session that is not mixed is not judged here: gate_check returns for it (since lockstep port B4 its side rows are gated too)
     code, out, runs = np_pair(root, "gn3", *side(("SUITS", "same")), *tables, *side(("GATE_OPEN", 0)))
     check(code == 0 and "fight gate" not in out, f"np_pair, same, gate count 0: exit {code}\n{out}")
 

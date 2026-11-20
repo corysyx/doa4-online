@@ -293,7 +293,8 @@ static void TestEventLine() {
 
 static void TestLocks() {
   const Control all[] = {Control::kExtras,   Control::kVideoRestart, Control::kAudioRestart,
-                         Control::kLanguage, Control::kGameChange,   Control::kUpdateRestart};
+                         Control::kLanguage, Control::kGameChange,   Control::kUpdateRestart,
+                         Control::kGpuUploads};
   for (const Control c : all) {
     CHECK(LockedInSession(c, true));
     CHECK(!LockedInSession(c, false));
@@ -315,12 +316,13 @@ static void TestLocks() {
   }
   CHECK(Refuse(Control::kExtras, true, "a", nullptr, {}));  // null status and empty log are allowed
   CHECK_EQ(LockedLine(true),
-           "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 language=1 game_change=1");
+           "[doa4][NET] menu: locked in session: extras=1 video_restart=1 audio_restart=1 language=1 game_change=1 "
+           "gpu_uploads=1");
   CHECK_EQ(LockedLine(false), "");
 }
 
 // Fix round M2: one notion of "locked" - in a session, or the lobby is Starting / Restarting - and the input delay, the
-// six controls and the tab's session note all follow it.
+// seven controls and the tab's session note all follow it.
 static void TestSessionLocks() {
   const State all[] = {State::kOffline,    State::kHosting,    State::kConnecting, State::kConnected,
                        State::kStarting,   State::kRestarting, State::kInSession};
@@ -336,7 +338,7 @@ static void TestSessionLocks() {
         // the input delay and the controls read the same answer
         CHECK(Describe(in).delay_enabled == !SessionLocks(in));
         for (const Control c : {Control::kExtras, Control::kVideoRestart, Control::kAudioRestart, Control::kLanguage,
-                                Control::kGameChange, Control::kUpdateRestart}) {
+                                Control::kGameChange, Control::kUpdateRestart, Control::kGpuUploads}) {
           CHECK(LockedInSession(c, SessionLocks(in)) == want);
         }
         // the language dropdown is locked exactly when the video "Restart now" is, in every row of this table
@@ -356,7 +358,7 @@ static void TestSessionLocks() {
   In s;
   s.in_session = true;
   CHECK(SessionLocks(s));
-  // a Starting lobby locks the six controls
+  // a Starting lobby locks the seven controls
   CHECK(LockedInSession(Control::kExtras, SessionLocks(Open(State::kStarting, true))));
   CHECK(!LockedInSession(Control::kExtras, SessionLocks(Open(State::kHosting, true))));
 }
@@ -403,6 +405,18 @@ static void TestBanner() {
   // an ending wins over a hold that was still showing
   CHECK_EQ(BannerText(true, Ending::kLost), BannerText(false, Ending::kLost));
   CHECK(BannerText(true, Ending::kLeft) != "Waiting for the other player...");
+  // lockstep port B3 (design section 6, final texts): this PC could not keep worker mode 4's order, or the other PC could not
+  CHECK_EQ(BannerText(false, Ending::kWorkerOrder),
+           "This PC could not keep the session's timing. The session ended; both games restart.");
+  CHECK_EQ(BannerText(false, Ending::kPeerWorkerOrder),
+           "The other player's PC could not keep the session's timing. The session ended; both games restart.");
+  CHECK(BannerText(false, Ending::kWorkerOrder) != BannerText(false, Ending::kPeerWorkerOrder));
+  CHECK_EQ(BannerText(true, Ending::kWorkerOrder), BannerText(false, Ending::kWorkerOrder));  // wins over a hold
+  CHECK(PeerLeftEnding(4, -1, false) == Ending::kPeerWorkerOrder);   // wire::LeaveReason::kWorkerOrder, every frame
+  CHECK(PeerLeftEnding(4, 0, false) == Ending::kPeerWorkerOrder);
+  CHECK(PeerLeftEnding(4, 100, false) == Ending::kPeerWorkerOrder);
+  CHECK(PeerLeftEnding(4, 0, true) == Ending::kPeerNotStarted);      // refused still wins
+  CHECK(PeerLeftEnding(5, 100, false) == Ending::kPeerLeft);         // the next number is still "anything else"
 }
 
 static void TestTabLogLine() {

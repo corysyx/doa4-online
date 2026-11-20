@@ -216,8 +216,8 @@ uint32_t RequestModel(const LoadDecision& d, bool mixed);
 // +6 although the tick did not. That is safe and pinned by the test (costumes_host_test.cpp, TestMixedSlotKey): the matcher sub_823FE9D0 reads
 // +5/+6 only while +0 is 255, and the next tick (status 11, loc_823FE83C) copies +3/+4 into +5/+6 and goes idle, where End puts +4 and +6 back
 // to S whatever the swap left, so both PCs' idle rows end (C, S). Every other session, a slot of kLoadSlotCount or more, and every other row:
-// nothing is touched; `mixed` is the caller's session test, so the guard is in here and is tested here. The hook is on the main thread, and the
-// workers never run beside it in a session (np_det_workers.cpp, mode 3).
+// nothing is touched; `mixed` is the caller's session test, so the guard is in here and is tested here. The hook is on the main thread; in a
+// session the workers run beside it only after mode 3's 2 s wait gives up (np_det_workers.cpp), and in mode 4 (lanes) never.
 struct LoaderTick {
   bool swapped = false;
   uint8_t character = 0, asked = 0, file = 0;

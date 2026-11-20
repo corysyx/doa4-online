@@ -125,7 +125,7 @@ static const char* const kSdkNames[] = {
     "vsync", "readback_resolve", "readback_resolve_half_pixel_offset", "readback_memexport",
     "readback_memexport_fast", "d3d12_readback_resolve", "d3d12_readback_memexport", "vulkan_readback_resolve",
     "vulkan_readback_memexport", "query_occlusion_fake_sample_count", "occlusion_query_enable", "clear_memory_page_state",
-    "async_shader_compilation", "audio_maxqframes",
+    "gpu_upload_prefetch", "async_shader_compilation", "audio_maxqframes",
 };
 struct NotCarried {
   const char* name;
@@ -135,6 +135,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"anisotropic_override", "gpu-render"},
     {"audio_mute", "audio-out"},
     {"audio_speakers", "audio-out"},
+    {"audio_volume", "audio-out"},
     {"backward_scan_limit", "codegen"},
     {"cache_path", "path"},
     {"d3d12_adapter", "gpu-backend"},
@@ -142,9 +143,12 @@ static const NotCarried kSdkNotCarried[] = {
     {"d3d12_bindless", "gpu-budget"},
     {"d3d12_break_on_error", "gpu-backend"},
     {"d3d12_break_on_warning", "gpu-backend"},
+    {"d3d12_clear_depth_via_drawing", "gpu-backend"},
+    {"d3d12_clear_depth_via_drawing_intel", "gpu-backend"},
     {"d3d12_debug", "gpu-backend"},
     {"d3d12_dxbc_disasm", "log"},
     {"d3d12_dxbc_disasm_dxilconv", "log"},
+    {"d3d12_gpu_timing", "log"},  // GPU transfer trial: only logs the per-frame GPU time line
     {"d3d12_pipeline_creation_threads", "gpu-budget"},
     {"d3d12_queue_priority", "gpu-backend"},
     {"d3d12_submit_on_primary_buffer_end", "gpu-budget"},
@@ -177,6 +181,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"gpu_3d_to_2d_texture", "gpu-render"},
     {"gpu_allow_invalid_fetch_constants", "gpu-render"},
     {"gpu_debug_markers", "log"},
+    {"gpu_refresh_stretch_ms", "gpu-budget"},  // N2 probe: host-timing test switch, default 0; its run computed records equal to the run without it
     {"guide_button", "input"},
     {"half_pixel_offset", "gpu-render"},
     {"headless", "excluded"},
@@ -231,6 +236,7 @@ static const NotCarried kSdkNotCarried[] = {
     {"native_stencil_value_output", "gpu-backend"},
     {"native_stencil_value_output_d3d12_intel", "gpu-backend"},
     {"non_seamless_cube_map", "gpu-render"},
+    {"pad_fresh_read", "input"},
     {"pad_remap_p1", "input"},
     {"pad_remap_p2", "input"},
     {"pad_remap_p3", "input"},
@@ -311,7 +317,10 @@ static const NotCarried kSdkNotCarried[] = {
 // on the finished picture and touch no guest memory.
 static const char* const kPortNotCarried[] = {"doa4_game_files", "doa4_suits_import_pending", "doa4_show_fps", "doa4_skip_intro", "doa4_discord_status", "doa4_picture_fx", "doa4_update_notice", "doa4_idle_waits", "doa4_photo_auto","doa4_photo_dir", "doa4_photo_format", "doa4_user_data",
                                               "netplay_port", "netplay_delay_auto", "netplay_delay", "netplay_last_join",
-                                              "netplay_show_stats", "netplay_upnp", "netplay_autohost", "netplay_autojoin", "doa4_rb_wmap"};
+                                              "netplay_show_stats", "netplay_upnp",
+                                              // lockstep port B3: the host's worker order; the hand-off carries its result as the
+                                              // typed byte worker_order, never the key's text
+                                              "netplay_worker_order", "netplay_autohost", "netplay_autojoin", "doa4_rb_wmap"};
 // the trust class: carried settings whose non-default value weakens a boundary of the PC that applies it
 struct Trusted {
   const char* name;
@@ -334,7 +343,7 @@ static constexpr size_t kSdkCount = sizeof(kSdkNames) / sizeof(kSdkNames[0]);
 static constexpr size_t kSdkNotCarriedCount = sizeof(kSdkNotCarried) / sizeof(kSdkNotCarried[0]);
 static constexpr size_t kPortNotCarriedCount = sizeof(kPortNotCarried) / sizeof(kPortNotCarried[0]);
 static constexpr size_t kTrustedCount = sizeof(kTrusted) / sizeof(kTrusted[0]);
-static constexpr size_t kSdkTotal = 199;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c)
+static constexpr size_t kSdkTotal = 206;  // the distinct cvar names the SDK's src defines at that commit (+1 Task 8, +1 Task 9, +1 Task 9b, +2 Task 9c, +1 audio_volume, +2 GPU trial diagnostics, +1 gpu_upload_prefetch, +1 pad_fresh_read, +2 Intel depth clear)
 
 // The expected names: the carried list, then the Extras tweak cvars of the tweaks module.
 // The port's own carried settings beyond the tweaks: they change guest memory and are no trust matter (np_handoff.cpp
@@ -411,7 +420,7 @@ struct RawFile {
 };
 struct Raw {
   std::string magic = "D4HO";
-  uint16_t version = 3;
+  uint16_t version = 4;
   uint64_t build = 0x1122334455667788ull;
   std::string release = "netplay-v1.0.3";
   std::optional<uint16_t> release_len;
@@ -424,6 +433,7 @@ struct Raw {
   uint64_t seed = 0x0102030405060708ull;
   uint8_t suit_state = 2;
   uint8_t suit_holders = 1;  // kMixed, only the host
+  uint8_t worker_order = 1;  // serial (version 4): not the default 0, so a writer that drops the field is seen
   std::string guest = GoodText();
   std::optional<uint32_t> guest_len;
   std::optional<uint32_t> count;
@@ -449,6 +459,7 @@ static Bytes Encode(const Raw& r) {
   PutLe(&b, r.seed, 8);
   PutLe(&b, r.suit_state, 1);
   PutLe(&b, r.suit_holders, 1);
+  PutLe(&b, r.worker_order, 1);
   PutLe(&b, r.guest_len ? *r.guest_len : r.guest.size(), 4);
   PutText(&b, r.guest);
   PutLe(&b, r.count ? *r.count : r.files.size(), 4);
@@ -466,9 +477,9 @@ static Raw RawOf(std::vector<RawFile> files) {
   return r;
 }
 
-// The packed size by the documented layout: 48 fixed bytes + release + guest + per file (2 + name + 4 + data).
+// The packed size by the documented layout: 49 fixed bytes + release + guest + per file (2 + name + 4 + data).
 static size_t ExpectedSize(const ho::Handoff& h) {
-  size_t n = 48 + h.release.size() + h.guest_settings.size();
+  size_t n = 49 + h.release.size() + h.guest_settings.size();
   for (const ho::File& f : h.files) n += 2 + f.name.size() + 4 + f.data.size();
   return n;
 }
@@ -501,6 +512,7 @@ static void CheckSame(const ho::Handoff& a, const ho::Handoff& b) {
   CHECK(a.seed == b.seed);
   CHECK(a.suit_state == b.suit_state);
   CHECK(a.suit_holders == b.suit_holders);
+  CHECK(a.worker_order == b.worker_order);
   CHECK(a.guest_settings == b.guest_settings);
   CHECK(a.files.size() == b.files.size());
   for (size_t i = 0; i < a.files.size() && i < b.files.size(); ++i) {
@@ -511,7 +523,7 @@ static void CheckSame(const ho::Handoff& a, const ho::Handoff& b) {
 
 static bool IsEmpty(const ho::Handoff& h) {
   return h.build == 0 && h.release.empty() && h.role == ho::Role::kHost && h.delay == 2 && h.local_port == 0 &&
-         h.peer == rules::Endpoint{} && h.session_token == 0 && h.seed == 0 && h.guest_settings.empty() &&
+         h.peer == rules::Endpoint{} && h.session_token == 0 && h.seed == 0 && h.worker_order == 0 && h.guest_settings.empty() &&
          h.files.empty();
 }
 
@@ -536,14 +548,15 @@ static std::string UnpackRefusal(const Bytes& b) {
 // The layout, round trips, truncation
 // =====================================================================================================
 
-// Hand-derived from the documented layout (np_handoff.h), not by running Pack: "D4HO", u16 version 3, u64 build,
+// Hand-derived from the documented layout (np_handoff.h), not by running Pack: "D4HO", u16 version 4, u64 build,
 // text release "v1", u8 role 1, u8 delay 3, u16 local port 7201 (0x1C21), peer 203.0.113.7, u16 peer port 7200
-// (0x1C20), u32 token 0xCAFEF00D, u64 seed, u8 suit_state 2 (kMixed), u8 suit_holders 1 (the host), u32 guest length + the settings text (GoodText: every carried name once,
+// (0x1C20), u32 token 0xCAFEF00D, u64 seed, u8 suit_state 2 (kMixed), u8 suit_holders 1 (the host), u8 worker_order 1 (serial),
+// u32 guest length + the settings text (GoodText: every carried name once,
 // built from the pinned list), u32 file count 1, then the file: u16 name length 27 (26-byte prefix + "x"), the name,
-// u32 data length 3, 09 08 07. 86 bytes plus the text.
+// u32 data length 3, 09 08 07. 87 bytes plus the text.
 static Bytes Golden() {
   Bytes g = {0x44, 0x34, 0x48, 0x4F,                                                  // "D4HO"
-             0x03, 0x00,                                                              // version 3
+             0x04, 0x00,                                                              // version 4
              0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,                          // build
              0x02, 0x00, 0x76, 0x31,                                                  // "v1"
              0x01, 0x03,                                                              // role joiner, delay 3
@@ -554,6 +567,7 @@ static Bytes Golden() {
              0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,                          // seed
              0x02,                                                                    // suit_state kMixed
              0x01,                                                                    // suit_holders: the host
+             0x01,                                                                    // worker_order: serial
              };
   const std::string text = GoodText();  // u32 length, then the text
   for (int k = 0; k < 4; ++k) g.push_back(uint8_t(text.size() >> (8 * k)));
@@ -579,6 +593,7 @@ static ho::Handoff GoldenHandoff() {
   h.seed = 0x0102030405060708ull;
   h.suit_state = rules::SuitSession::kMixed;
   h.suit_holders = 1;
+  h.worker_order = 1;
   h.guest_settings = GoodText();
   h.files.push_back({kPre + "x", {9, 8, 7}});
   return h;
@@ -668,7 +683,7 @@ static void TestSuitState() {
 static void TestLayout() {
   Group("layout: Pack writes the documented bytes (little-endian, in the documented order)");
   const Bytes golden = Golden();
-  CHECK(golden.size() == 86 + GoodText().size());
+  CHECK(golden.size() == 87 + GoodText().size());
   CHECK(ho::Pack(GoldenHandoff()) == golden);
   CHECK(Encode([] {
           Raw r;
@@ -727,6 +742,29 @@ static void TestLayout() {
     h = base;
     h.seed ^= 0x0100000000000000ull;
     differs_only_at(h, 32, 40);
+    h = base;  // lockstep port B3: suit state 40, suit holders 41, worker order 42, then the guest length
+    h.worker_order = 0;
+    differs_only_at(h, 42, 43);
+  }
+
+  Group("layout (B3): version 4, 49 fixed bytes, the worker order byte right after the suit holders");
+  {
+    ho::Handoff h = GoldenHandoff();
+    h.suit_holders = 3;  // two different values in the two neighbouring bytes, so a swap of the two is seen
+    h.worker_order = 1;
+    const Bytes b = ho::Pack(h);
+    CHECK(b.size() > 44);
+    if (b.size() > 44) {
+      CHECK(b[4] == 0x04 && b[5] == 0x00);  // u16 version 4
+      CHECK(b[40] == 0x02);                 // suit state kMixed
+      CHECK(b[41] == 0x03);                 // suit holders 3
+      CHECK(b[42] == 0x01);                 // worker order 1 (serial)
+      const size_t guest = size_t(b[43]) | size_t(b[44]) << 8;  // the guest length follows at 43 (low 16 bits; GoodText < 64 KB)
+      CHECK(guest == h.guest_settings.size());
+    }
+    size_t variable = h.release.size() + h.guest_settings.size();
+    for (const ho::File& f : h.files) variable += 2 + f.name.size() + 4 + f.data.size();
+    CHECK(b.size() == 49 + variable);  // the fixed part: 4+2+8+2+1+1+2+4+2+4+8+1+1+1+4+4
   }
 }
 
@@ -742,6 +780,25 @@ static void TestRoundTrip() {
   CheckSame(back, h);
   CHECK(ho::Pack(back) == packed);  // canonical: packing the unpacked copy gives the same bytes
   CHECK(ho::Pack(h) == packed);     // deterministic
+
+  Group("round trip (B3): worker order 0 and 1 survive Pack, Unpack, Pack");
+  for (const uint8_t order : {uint8_t(0), uint8_t(1)}) {
+    ho::Handoff x = Full();
+    x.worker_order = order;
+    const Bytes first = ho::Pack(x);
+    ho::Handoff y = Dirty();
+    CHECK(!first.empty() && ho::Unpack(S(first), &y).empty());
+    g_ctx = "worker order " + std::to_string(order);
+    CHECK(y.worker_order == order);
+    CHECK(ho::Pack(y) == first);  // the second pack's bytes equal the first's
+  }
+  g_ctx.clear();
+  {
+    ho::Handoff zero = Full(), one = Full();
+    zero.worker_order = 0;
+    one.worker_order = 1;
+    CHECK(ho::Pack(zero) != ho::Pack(one));  // the byte is written at all
+  }
 
   Group("round trip: both roles, every delay, no files, a file with no bytes");
   for (ho::Role role : {ho::Role::kHost, ho::Role::kJoiner}) {
@@ -1052,6 +1109,60 @@ static void TestFieldLimits() {
       CHECK(UnpackRefusal(Encode(r)) == "an unknown role");
     }
   }
+
+  Group("limit (B3): worker order 0 and 1 accepted, 2 and 255 refused by Pack and by Unpack");
+  {
+    for (const int v : {0, 1, 2, 255}) {
+      g_ctx = "worker order " + std::to_string(v);
+      ho::Handoff h = Full();
+      h.worker_order = uint8_t(v);
+      CHECK(ho::Pack(h).empty() == (v > 1));  // Packable
+      Raw r;
+      r.worker_order = uint8_t(v);
+      ho::Handoff out = Dirty();
+      const std::string why = ho::Unpack(S(Encode(r)), &out);
+      if (v <= 1) {
+        CHECK(why.empty() && out.worker_order == v);
+      } else {
+        CHECK(why == "an unknown worker order");
+        CHECK(IsEmpty(out));
+      }
+    }
+    g_ctx.clear();
+  }
+  Group("limit (B3): a packed file with the worker order byte patched: to 2 refused, to 0 read as 0 (the patch's control)");
+  {
+    ho::Handoff h = GoldenHandoff();
+    h.suit_holders = 3;
+    h.worker_order = 1;
+    const Bytes packed = ho::Pack(h);
+    const size_t at = 4 + 2 + 8 + 2 + 2 + 1 + 1 + 2 + 4 + 2 + 4 + 8 + 1 + 1;  // the bytes before it, with the two-byte release text
+    CHECK(packed.size() > at);
+    if (packed.size() > at) {
+      CHECK(packed[at] == 1);
+      Bytes two = packed;
+      two[at] = 2;
+      CHECK(UnpackRefusal(two) == "an unknown worker order");
+      Bytes zero = packed;
+      zero[at] = 0;
+      ho::Handoff out = Dirty();
+      CHECK(ho::Unpack(S(zero), &out).empty());
+      CHECK(out.worker_order == 0 && out.suit_holders == 3);  // the patch reached the worker order byte and nothing else
+    }
+  }
+}
+
+// Lockstep port B3: the host's netplay_worker_order text as the hand-off's byte. Exact: the likeliest wrong versions are a
+// comparison without regard to case, one that trims spaces, and one that reads a digit.
+static void TestWorkerOrderText() {
+  Group("worker order text (B3): lanes 0, serial 1, every other text 0");
+  CHECK(ho::WorkerOrderFromText("lanes") == 0);
+  CHECK(ho::WorkerOrderFromText("serial") == 1);
+  for (const char* t : {"", "Serial", "serial ", " serial", "SERIAL", "1", "seria", "serial\n", "lanes "}) {
+    g_ctx = std::string("'") + t + "'";
+    CHECK(ho::WorkerOrderFromText(t) == 0);
+  }
+  g_ctx.clear();
 }
 
 static void TestHeaderRefusals() {
@@ -1072,7 +1183,7 @@ static void TestHeaderRefusals() {
       b[size_t(pos)] ^= 0xFF;
       CHECK(UnpackRefusal(b) == "not a session hand-off");
     }
-    for (unsigned v : {0u, 1u, 2u, 4u, 0x0100u, 0xFFFFu}) {
+    for (unsigned v : {0u, 1u, 2u, 3u, 5u, 0x0300u, 0x0400u, 0xFFFFu}) {  // B3: version 3 (before the worker order) is refused
       Raw m;
       m.version = uint16_t(v);
       g_ctx = "version " + std::to_string(v);
@@ -1539,7 +1650,7 @@ static void TestGuestNames() {
   Group("guest settings: the names are the census list, then every Extras tweak cvar, in that order");
   const std::vector<std::string>& names = ho::GuestSettingNames();
   const std::vector<std::string> want = ExpectedNames();
-  CHECK(kSdkCount == 38);
+  CHECK(kSdkCount == 39);
   CHECK(doa4::tweaks::AllTweaks().size() >= 2);
   CHECK(names.size() == want.size());
   CHECK(names == want);
@@ -2538,6 +2649,7 @@ int main(int argc, char** argv) {
   TestFileSizeLimit();
   TestTotalLimit();
   TestFieldLimits();
+  TestWorkerOrderText();
   TestHeaderRefusals();
   TestNameOk();
   TestNameSweeps();

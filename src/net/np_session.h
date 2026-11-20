@@ -9,10 +9,12 @@
 //                           sweep.d4s, counters.d4k, shots/, dumps/
 //   DOA4_NP_SCRIPT=<file>   pad script played from frame 0 (record)
 //   DOA4_NP_REC=<file>      recording to replay; the run quits after its last frame. A recording
-//                           made by another build, game data (default.xex), fix set, worker mode
-//                           (DOA4_NP_SERIAL), sweep setting or Extras tweak state is refused, and
+//                           made by another build, game data (default.xex), fix set, worker-order
+//                           switch (DOA4_NP_SERIAL), sweep setting or Extras tweak state is refused, and
 //                           so is one that cannot be read: np_log.txt gets a "refused: ..." or
-//                           "cannot replay ..." line and the host is asked to quit, with no session
+//                           "cannot replay ..." line and the host is asked to quit, with no session.
+//                           The worker order the recording ran (its workers= line) is the order the
+//                           replay runs; a recording without that line runs mode 3 with a WARN workers: line
 //   DOA4_NP_ALLOW_MISMATCH=1  replay a recording of another build etc. anyway (hunting only; a
 //                           recording that cannot be read is never replayed)
 //   DOA4_NP_SEED=<n>        session seed written into the recording (record)
@@ -51,7 +53,8 @@
 // injection hooks), (7) shots, (8) the 600-frame timing line. The session writes into Host::session_dir: np_log.txt,
 // rec.d4r (the confirmed-input tap), digest.d4d, sweep.d4s, counters.d4k (rows of the frames that advanced), events.txt.
 // At the end: "session ended at frame F: <reason>", "checksums handed to GekkoNet: N", the Leave to the peer, the det
-// layer stopped, and after 5 s (8 s for a desync) Host::restart(false) (the offline relaunch).
+// layer stopped, and after 5 s (8 s for a desync) Host::restart(false) (the offline relaunch); later, to 10 s after the
+// end at most, while the session lobby still keeps the Leave for a peer it has not seen (Host::leave_kept).
 
 namespace doa4::np {
 
@@ -76,6 +79,9 @@ struct Host {
   std::function<void()> overlay_changed;             // the banner or session state changed (posts to the UI thread)
   const GuestBytes* guest = nullptr;                 // for unlocks::FindProfile / ApplyUnlock
   std::function<void(int32_t frame, wire::LeaveReason reason)> send_leave;  // Lobby::SendLeave of the session lobby
+  // The session lobby's Status::leave_kept (the frame-0 Leave fix): while it is true at the end's 5 s (8 s), the offline
+  // relaunch waits on, to 10 s after the end at most (live::RestartReady). Empty: nothing is waited for.
+  std::function<bool()> leave_kept;
   std::function<net::Transport*()> transport;        // the session lobby's transport, asked for at the first frame hook
                                                      // (the app starts the lobby right after np::Start)
   // Additions (Task 12):
@@ -162,5 +168,8 @@ const FrameInput* StagedInput();  // null outside a session
 uint32_t CurrentFrame();          // the frame being run (the last frame hook's)
 uint64_t SessionSeed();
 void LogLine(const std::string& line);  // np_log.txt and the game log
+// The title mask's latch (np_title_mask.h): the 2D sprite hook hands it every submission with its draw bit. Does
+// nothing outside an np session.
+void NoteTitleMaskSprite(uint32_t sprite, bool visible);
 
 }  // namespace doa4::np

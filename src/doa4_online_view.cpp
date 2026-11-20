@@ -192,11 +192,13 @@ std::string LockedLine(bool in_session) {
   auto flag = [&](Control c) { return LockedInSession(c, in_session) ? "1" : "0"; };
   return std::string("[doa4][NET] menu: locked in session: extras=") + flag(Control::kExtras) +
          " video_restart=" + flag(Control::kVideoRestart) + " audio_restart=" + flag(Control::kAudioRestart) +
-         " language=" + flag(Control::kLanguage) + " game_change=" + flag(Control::kGameChange);
+         " language=" + flag(Control::kLanguage) + " game_change=" + flag(Control::kGameChange) +
+         " gpu_uploads=" + flag(Control::kGpuUploads);
 }
 
 Ending PeerLeftEnding(int reason, int32_t frame, bool refused) {
   if (refused) return Ending::kPeerNotStarted;
+  if (reason == 4) return Ending::kPeerWorkerOrder;  // wire::LeaveReason::kWorkerOrder (lockstep port B3), at every frame
   if (reason == 0 && frame >= 0) return Ending::kPeerQuit;  // wire::LeaveReason::kLeft with a frame: the other player quit
   return Ending::kPeerLeft;  // a Bye (frame -1), kTimeout, kInternal, anything else
 }
@@ -211,6 +213,9 @@ std::string BannerText(bool waiting, Ending ending) {
     case Ending::kFrame0Timeout: return "The other player's game did not come back.";
     case Ending::kLeft: return "You left the session.";
     case Ending::kInternal: return "The session ended unexpectedly; both games restart.";
+    case Ending::kWorkerOrder: return "This PC could not keep the session's timing. The session ended; both games restart.";
+    case Ending::kPeerWorkerOrder:
+      return "The other player's PC could not keep the session's timing. The session ended; both games restart.";
     case Ending::kNone: break;
   }
   return waiting ? "Waiting for the other player..." : "";

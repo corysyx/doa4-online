@@ -83,6 +83,33 @@ static void TestCursor() {
   CHECK(DecideCursor(menu) == CursorAction::kShow);
 }
 
+// An SDK XAM dialog (the first-run "Select a Device" message box, the keyboard, ...) needs the mouse like the Esc menu.
+static void cursor_shows_over_xam_dialog() {
+  CursorInputs in;
+  in.focused = true;
+  in.xam_dialog_open = true;
+  CHECK(DecideCursor(in) == CursorAction::kShow);
+}
+static void cursor_hides_after_xam_dialog_closes() {
+  CursorInputs in;
+  in.focused = true;
+  in.xam_dialog_open = true;
+  in.xam_dialog_open = false;  // closed: back to playing
+  CHECK(DecideCursor(in) == CursorAction::kHide);
+}
+static void cursor_mnk_beats_xam_dialog() {
+  CursorInputs in;
+  in.focused = true;
+  in.mnk_mode = true;
+  in.xam_dialog_open = true;
+  CHECK(DecideCursor(in) == CursorAction::kLeave);
+}
+static void cursor_unfocused_xam_dialog_shows() {
+  CursorInputs in;
+  in.xam_dialog_open = true;
+  CHECK(DecideCursor(in) == CursorAction::kShow);
+}
+
 // The name the user chose for the window (rebrand 2026-11-05); the exe keeps its name.
 static void TestWindowTitle() { CHECK(std::string(kWindowTitle) == "Dead or Alive 4 Online"); }
 
@@ -279,6 +306,10 @@ int main() {
   TestWindowTitle();
   TestFpsMeter();
   TestCursor();
+  cursor_shows_over_xam_dialog();
+  cursor_hides_after_xam_dialog_closes();
+  cursor_mnk_beats_xam_dialog();
+  cursor_unfocused_xam_dialog_shows();
   if (g_failures) {
     std::printf("FAILED: %d checks, %d failures\n", g_checks, g_failures);
     return 1;

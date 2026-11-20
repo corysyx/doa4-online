@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 
+#include <rex/audio/output_gain.h>
 #include <rex/audio/speaker_mode.h>
 #include <rex/cvar.h>
 #include <rex/input/input_system.h>
@@ -164,9 +165,16 @@ constexpr std::array<const char*, 2> kAntiAliasingNote = {
     "The game uses 2x MSAA; FXAA Extreme suits it best. FXAA also softens", "text a little."};
 constexpr std::array<const char*, 2> kTextureFilteringNote = {
     "Applies to textures as the game draws them; you may see it after the", "next screen loads."};
+constexpr const char* kGpuUploadsLabel = "Batch GPU uploads (for slower graphics cards)";
+constexpr std::array<const char*, 3> kGpuUploadsNote = {
+    "May raise the frame rate when the graphics card is the limit. Side effect:",
+    "hair and other moving parts can be drawn one frame late now and then.",
+    "In an online session the host's choice is used."};
 constexpr std::array<const char*, 2> kSpeakersNote = {
     "Automatic follows Windows: 5.1 when the speakers are set to 5.1 or more,",
     "stereo otherwise. 5.1 surround always sends six channels."};
+constexpr float kVolumeSliderWidth = 260.0f;
+constexpr const char* kVolumeSessionNote = "In an online session the volume is kept until the game closes.";
 constexpr float kLanguageComboWidth = 220.0f;
 constexpr float kShaderSliderWidth = 260.0f;
 constexpr const char* kShaderHelpNote = "Hover a setting for a description. Ctrl+click a slider to type a value.";
@@ -429,7 +437,11 @@ float MenuDialog::WidestRow() {
   }
   for (const char* t : kAntiAliasingNote) w.push_back(text(t));
   for (const char* t : kTextureFilteringNote) w.push_back(text(t));
+  w.push_back(toggle(kGpuUploadsLabel));
+  for (const char* t : kGpuUploadsNote) w.push_back(text(t));
   for (const char* t : kSpeakersNote) w.push_back(text(t));
+  w.push_back(text(kVolumeSessionNote));
+  w.push_back(row({display::MenuPx(kVolumeSliderWidth, ImGui::GetFontSize()), text("Reset")}));
   w.push_back(text(fmt::format("Custom ({}) set in dead_or_alive_4.toml.", rex::cvar::Query<int32_t>("anisotropic_override"))));
   {
     ExtrasState unsaved;  // both restart warnings (UnsavedUnlocksWarning), whichever shows
@@ -487,7 +499,7 @@ float MenuDialog::WidestRow() {
   return widest;
 }
 
-// The Game tab's first part: display mode, Show FPS, render scale, anti-aliasing, texture filtering.
+// The Game tab's first part: display mode, Show FPS, render scale, anti-aliasing, texture filtering, performance.
 void MenuDialog::DrawVideoSettings() {
   ImGui::SeparatorText("Display mode");
   DrawDisplayRows();
@@ -562,10 +574,57 @@ void MenuDialog::DrawVideoSettings() {
     ImGui::TextColored(kNoteColor, "Custom (%d) set in dead_or_alive_4.toml.", aniso);
   }
   for (const char* line : kTextureFilteringNote) ImGui::TextDisabled("%s", line);
+
+  // gpu_upload_prefetch is read by the SDK at every swap: no further call needed. The hand-off carries the host's value to
+  // the joiner, so in a session the box shows the value in effect and is locked (drawn disabled; no other menu code acts on
+  // kGpuUploads). The SDK's F4 settings overlay and the DOA4_GX test switch can still set the cvar in a session.
+  ImGui::SeparatorText("Performance");
+  bool prefetch = rex::cvar::Query<bool>("gpu_upload_prefetch");
+  const bool uploads_locked = Locked(online_view::Control::kGpuUploads);
+  ImGui::BeginDisabled(uploads_locked);
+  if (ImGui::Checkbox(kGpuUploadsLabel, &prefetch)) {
+    SaveThenSet("gpu_upload_prefetch", prefetch ? "true" : "false", false);
+  }
+  ImGui::EndDisabled();
+  if (uploads_locked) {
+    ImGui::TextColored(kNoteColor, "%s", online_view::kLockedText);
+  }
+  for (const char* line : kGpuUploadsNote) ImGui::TextDisabled("%s", line);
 }
 
 // The Game tab's speakers part: the Speakers choice (its own separator) and the Output device block.
 void MenuDialog::DrawSpeakerSettings() {
+  // Master volume (audio_volume, read by the audio driver for every chunk it plays): a drag is heard at
+  // once and the value is written to the settings file when the drag ends. It changes only this PC's
+  // output, so it stays usable in an online session; there it is set in memory only, like every other
+  // setting near a session (the session restores the settings file at its end).
+  ImGui::SeparatorText("Volume");
+  ImGui::PushID("volume");
+  int volume = rex::cvar::Query<int32_t>("audio_volume");
+  ImGui::SetNextItemWidth(display::MenuPx(kVolumeSliderWidth, ImGui::GetFontSize()));
+  if (ImGui::SliderInt("##volume", &volume, rex::audio::kVolumePercentMin, rex::audio::kVolumePercentMax,
+                       "%d %%", ImGuiSliderFlags_AlwaysClamp)) {
+    if (!rex::cvar::SetFlagByName("audio_volume", std::to_string(volume))) {
+      status_ = fmt::format("Could not set audio_volume to {}.", volume);
+    }
+  }
+  if (ImGui::IsItemDeactivatedAfterEdit() && !SessionLocked()) {
+    std::string error = SaveTomlKey(host_.config_path, "audio_volume",
+                                    std::to_string(rex::cvar::Query<int32_t>("audio_volume")));
+    if (error.empty()) {
+      status_.clear();
+      REXLOG_INFO("[doa4][UI] audio_volume = {} saved", rex::cvar::Query<int32_t>("audio_volume"));
+    } else {
+      status_ = "Could not save settings: " + error;
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Reset")) {
+    SetPresentationSetting("audio_volume", std::to_string(rex::audio::kVolumePercentDefault), false);
+  }
+  ImGui::PopID();
+  if (SessionLocked()) ImGui::TextColored(kNoteColor, "%s", kVolumeSessionNote);
+
   ImGui::SeparatorText("Speakers");
   if (!host_.saved_speakers) return;
   std::string& saved = *host_.saved_speakers;

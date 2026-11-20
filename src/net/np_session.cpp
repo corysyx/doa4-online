@@ -35,11 +35,13 @@
 #include <xmmintrin.h>
 
 #include <rex/cvar.h>
+#include <rex/graphics/graphics_system.h>
 #include <rex/hash.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/memory.h>
 #include <rex/ppc/context.h>
+#include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
@@ -56,6 +58,8 @@
 #include "../doa4_unlocks.h"
 #include "../doa4_update_notice.h"
 #include "np_core.h"
+#include "np_start_rules.h"
+#include "np_title_mask.h"
 #include "np_det.h"
 #include "np_det_internal.h"
 #include "np_exec.h"
@@ -71,6 +75,9 @@
 #endif
 #include <windows.h>
 
+#ifdef DOA4_PGO_DUMP
+extern "C" int __llvm_profile_dump(void);  // the clang profile runtime (docs/PGO.md, instrumented build only)
+#endif
 // Task 1 review M1 (carry 2l): the dot-product self-test is run-time evidence and depends on the CPU; this is the
 // compile-time half. The SDK's canonical-NaN redirect (rex/ppc/dot_product.h, reached through the generated init
 // header above) must be in effect in this translation unit, as in every generated one: the raw-product macro it
@@ -143,6 +150,7 @@ struct State {
   uint32_t shot_every = 0;
   std::vector<uint32_t> dump_frames;
   bool heap_dump = false;  // DOA4_NP_HEAPDUMP=1: each dump also writes the guest heaps' committed pages
+  std::vector<uint32_t> gpu_trace_frames;  // DOA4_NP_GPUTRACE=f,f,...: a one-frame GPU trace at each frame (record and replay)
 
   // hashes
   std::vector<Region> regions;
@@ -199,6 +207,9 @@ struct State {
   // ---- online ----
   handoff::Handoff ho;
   int slot = 0;
+  // Lockstep port B3: the worker mode this process decided (det::WorkersMode, latched in StartOnline once CurrentMeta has decided),
+  // mixed into every checksum handed to the other PC (exec::WithWorkerMode).
+  int workers_mode = 0;
   bool local_script = false;
   std::unique_ptr<gekko::Session> gk;
   std::unique_ptr<exec::Executor> ex;
@@ -395,7 +406,7 @@ std::string CurrentMeta(const std::filesystem::path& game_data_root, uint32_t sw
   }
   const std::string serial = Switch("DOA4_NP_SERIAL");
   return "build=" + BuildId() + "\ndata=" + DataId(game_data_root) + "\nfixes=" + det::FixSetName() +
-         "\nserial=" + (serial.empty() ? std::string("default") : serial) + "\nsweep=" +
+         "\nserial=" + (serial.empty() ? std::string("default") : serial) + "\nworkers=" + det::WorkersMeta() + "\nsweep=" +
          std::to_string(sweep_per_frame) + "\ntweaks=" + tweaks + "\n" + extra;
 }
 
@@ -608,6 +619,22 @@ void Quit(State& s, const std::string& why, bool ask_host = true) {
   CloseFiles(s);
   det::Stop();
   g_active.store(false, std::memory_order_release);  // the hooks pass through from here on
+#ifdef DOA4_PGO_DUMP
+  // PGO (docs/PGO.md), instrumented build only: the shutdown watchdog ends the process with TerminateProcess, so the
+  // profile runtime's atexit writer never runs. Write the exe's profile here, and rexruntime.dll's through the dump
+  // function that build exports (-Wl,/export:__llvm_profile_dump on its DLL links). tools/pgo_recipe.py refuses a
+  // training run without the line 'pgo dump: exe 0, rexruntime.dll 0'. Without the define this block does not exist
+  // (its lines still count, so __LINE__ in the SDK's log macros is the physical line in every build).
+  {
+    const int exe_rc = __llvm_profile_dump();
+    int dll_rc = -100;
+    if (HMODULE dll = GetModuleHandleW(L"rexruntime.dll")) {
+      if (auto dump = reinterpret_cast<int (*)(void)>(GetProcAddress(dll, "__llvm_profile_dump"))) dll_rc = dump();
+      else dll_rc = -101;
+    }
+    Log("pgo dump: exe " + std::to_string(exe_rc) + ", rexruntime.dll " + std::to_string(dll_rc));
+  }
+#endif
   if (ask_host && s.host.quit) s.host.quit();
 }
 
@@ -811,39 +838,7 @@ void UnlockStep(State& s, uint32_t f) {
 }
 
 // ---- online ----
-
-const char* EndText(live::End e) {
-  switch (e) {
-    case live::End::kLeft: return "left";
-    case live::End::kPeerLeft: return "peer left";
-    case live::End::kLost: return "lost";
-    case live::End::kDesync: return "desync";
-    case live::End::kFrame0Timeout: return "frame 0 timeout";
-    case live::End::kInternal: return "internal";
-    case live::End::kNone: break;
-  }
-  return "none";
-}
-
-// The terminal reason np_pair judges: left | peer left | lost | frame 0 timeout | desync at frame ... | internal: ...
-std::string TerminalReason(const live::FrameResult& r, bool refused) {
-  if (refused) return "internal: the other player's game did not start the session";
-  switch (r.end) {
-    case live::End::kDesync: return r.why;  // "desync at frame N (this side X, other side Y)" or "... (reported by the other player)"
-    case live::End::kInternal: return "internal: " + r.why;
-    default: return EndText(r.end);
-  }
-}
-
-wire::LeaveReason LeaveReasonFor(live::End e) {
-  switch (e) {
-    case live::End::kDesync: return wire::LeaveReason::kDesync;
-    case live::End::kLost:
-    case live::End::kFrame0Timeout: return wire::LeaveReason::kTimeout;
-    case live::End::kInternal: return wire::LeaveReason::kInternal;
-    default: return wire::LeaveReason::kLeft;
-  }
-}
+// (EndText, TerminalReason and LeaveReasonFor live in np_live since lockstep port B3, where a host test reaches them.)
 
 void Event(State& s, int64_t unix_ms, const std::string& text) {
   std::lock_guard lk(s.events_mu);
@@ -934,7 +929,8 @@ void LogNetStats(State& s, const std::string& when) {
 }
 
 // The end of an online session (game thread, or Abort before the first frame): the terminal lines, the Leave, the
-// det layer off, the overlay, and the offline relaunch after 5 s (8 s for a desync, R16).
+// det layer off, the overlay, and the offline relaunch after 5 s (8 s for a desync, R16), or later while the session
+// lobby keeps the Leave for a peer it has not seen (the frame-0 Leave fix; 10 s after the end at most).
 void LogGeneratorSync(State& s) {
   if (s.gen_sync_frames.load() || s.gen_sync_locked.load()) Log("scene generator made equal on " + std::to_string(s.gen_sync_frames.load()) + " frames, its lock held on " + std::to_string(s.gen_sync_locked.load()));
 }
@@ -943,9 +939,9 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   if (s.ended.exchange(true)) return;
   s.running.store(false);
   const bool refused = s.refused.load();
-  const std::string reason = TerminalReason(r, refused);
+  const std::string reason = live::TerminalReason(r, refused);
   const int32_t f = r.end_frame;
-  if (!r.why.empty()) Log("session end: " + std::string(EndText(r.end)) + " (" + r.why + ")");
+  if (!r.why.empty()) Log("session end: " + std::string(live::EndText(r.end)) + " (" + r.why + ")");
   const uint32_t handed = s.ex ? s.ex->saves_filled() : 0;
   if (at_hook) LogNetStats(s, "at the end");
   Log("session ended at frame " + std::to_string(f) + ": " + reason);
@@ -958,8 +954,13 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   // GekkoNet's one checksum message)
   // Task 15 G1: a desync's Leave carries the DESYNC frame (wire.h Leave: for kDesync the frame is the desync frame), so
   // the other side, which ends on it as a desync too, names the same frame
-  if (s.host.send_leave && r.end != live::End::kPeerLeft)
-    s.host.send_leave(r.end == live::End::kDesync && r.desync_frame >= 0 ? r.desync_frame : f, LeaveReasonFor(r.end));
+  // Round 2 F5 (review I1): a refused end (the hand-off's peer answered as a lobby; WatchLoop ends it as kPeerLeft) sends
+  // Leave(0, kInternal) like any other end, so the other game's session process, if it binds late, still ends with it
+  // (the lobby keeps it for the unseen peer); a kPeerLeft end from the peer's own Leave or Bye still sends none.
+  if (s.host.send_leave && refused && r.end == live::End::kPeerLeft)
+    s.host.send_leave(0, wire::LeaveReason::kInternal);
+  else if (s.host.send_leave && r.end != live::End::kPeerLeft)
+    s.host.send_leave(r.end == live::End::kDesync && r.desync_frame >= 0 ? r.desync_frame : f, live::LeaveReasonFor(r.end));
   {
     std::lock_guard lk(s.result_mu);
     s.last_result = r;
@@ -974,13 +975,32 @@ void EndOnline(State& s, const live::FrameResult& r, bool at_hook) {
   g_active.store(false, std::memory_order_release);
   s.quitting = true;
   if (s.host.overlay_changed) s.host.overlay_changed();
-  const int delay_ms = r.end == live::End::kDesync ? 8000 : 5000;
+  const int delay_ms = int(r.end == live::End::kDesync ? live::kRestartDesyncMs : live::kRestartMs);
   Log("offline restart in " + std::to_string(delay_ms / 1000) + " s");
-  s.restarter = std::thread([delay_ms] {
+  const live::End end_kind = r.end;
+  const auto ended_at = std::chrono::steady_clock::now();
+  s.restarter = std::thread([delay_ms, end_kind, ended_at] {
     State& st = S();
     std::unique_lock lk(st.watch_mu);
     if (st.watch_cv.wait_for(lk, std::chrono::milliseconds(delay_ms), [&] { return st.watch_stop; })) return;
+    // The frame-0 Leave fix: a Leave the session lobby still keeps for a peer it has not seen holds the relaunch on,
+    // polled every 100 ms, to 10 s after the end at most (live::RestartReady); the lobby is asked without watch_mu held.
+    bool waited = false;
+    uint32_t since = 0;
+    for (;;) {
+      lk.unlock();
+      since = uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ended_at).count());
+      const bool ready = live::RestartReady(end_kind, since, st.host.leave_kept && st.host.leave_kept());
+      lk.lock();
+      if (ready) {  // round 2 F9 (review M3): a stop asked for during the last poll wins over the relaunch
+        if (st.watch_stop) return;
+        break;
+      }
+      waited = true;
+      if (st.watch_cv.wait_for(lk, std::chrono::milliseconds(100), [&] { return st.watch_stop; })) return;
+    }
     lk.unlock();
+    if (waited) Log("offline restart waited " + std::to_string(since - uint32_t(delay_ms)) + " ms for the Leave");
     Log("offline restart");
     if (st.host.restart) st.host.restart(false);
   });
@@ -1134,6 +1154,88 @@ void ForceStash(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+// Lockstep port B3 (design section 6): worker mode 4's end request, read at the frame hook. A request found here ends the online
+// session before this frame's checksum or input is handed over (EndOnline: "session end: the worker order could not be kept
+// (<cause>)", "session ended at frame <f>: worker order", the Leave with reason 4, the offline relaunch after 5 s; no dump).
+bool EndOnWorkerRequest(State& s, uint32_t f) {
+  std::string cause;
+  if (!det::EndRequested(&cause)) return false;
+  live::FrameResult r;
+  r.end = live::End::kWorkerOrder;
+  r.end_frame = int32_t(f);
+  r.why = cause.empty() ? std::string("no cause given") : cause;  // never empty: the "session end:" line names the cause
+  EndOnline(s, r, true);
+  return true;
+}
+
+// The title mask (np_title_mask.h): the latch, armed at frame 0 and stepped once a frame by the frame hook
+// (TitleMaskFrame) from the draws the sprite hook notes (NoteTitleMaskSprite), and the joiner's filter, applied to the
+// joiner's pad in OnFrameOnline. The sprite hook and the
+// frame hook are both guest main-thread work; the lock keeps a call from another thread from tearing the state.
+// The edge lines are written in every np session (record, replay, live), from guest draws, so both sides of a pair
+// write the same lines at the same frames; the replaced-input lines only on a live session's joiner.
+std::mutex g_title_mask_mu;
+title_mask::TitleMask g_title_mask;
+title_mask::JoinerFilter g_joiner_filter;
+uint32_t g_title_mask_armed_at = 0;  // the frame of the last arm edge
+
+std::string Hex(uint32_t v, int digits) {
+  char text[16];
+  std::snprintf(text, sizeof text, "%0*X", digits, unsigned(v));
+  return text;
+}
+
+// The caller holds g_title_mask_mu.
+void LogTitleMaskEdge(title_mask::Edge e, uint32_t frame, uint32_t sprite) {
+  const std::string at = "title mask: frame " + std::to_string(frame) + ": ";
+  switch (e) {
+    case title_mask::Edge::kNone:
+      return;
+    case title_mask::Edge::kArmedSessionStart:
+      g_title_mask_armed_at = frame;
+      Log(at + "armed (session start)");
+      return;
+    case title_mask::Edge::kArmedTitleLogo:
+      g_title_mask_armed_at = frame;
+      Log(at + "armed (title logo 0x30000 drawn)");
+      return;
+    case title_mask::Edge::kOff: {
+      Log(at + "off (Mode Select reached: item caption 0x" + Hex(sprite, 5) + " drawn)");
+      const uint32_t replaced = g_joiner_filter.TakeReplacedCount();
+      if (S().mode == Mode::kOnline && S().slot != 0)
+        Log(at + "the joiner's input was replaced on " + std::to_string(replaced) +
+            " frames of the armed period that began at frame " + std::to_string(g_title_mask_armed_at));
+      return;
+    }
+  }
+}
+
+// The frame hook, at the start of frame f, before f's input: frame 0 arms (session start); every later frame applies the
+// draws of frame f - 1 (np_title_mask.h EndFrame) and logs an edge with that frame's number.
+void TitleMaskFrame(uint32_t f) {
+  std::lock_guard lk(g_title_mask_mu);
+  if (f == 0) {
+    g_title_mask.EndFrame();  // nothing is drawn before frame 0's hook; forget it if anything was
+    LogTitleMaskEdge(g_title_mask.OnSessionStart(), f, 0);
+    return;
+  }
+  const title_mask::Edge e = g_title_mask.EndFrame();
+  LogTitleMaskEdge(e, f - 1, g_title_mask.LastMenuSprite());
+}
+
+// The frame's local pad on a live session's side: the joiner's is sent as nothing pressed while the latch is armed, and
+// a button held from under the mask stays released until let go once. The host's goes through unchanged.
+Pad TitleMaskLocalPad(const State& s, uint32_t f, const Pad& local) {
+  std::lock_guard lk(g_title_mask_mu);
+  const bool mask = title_mask::MaskLocalInput(s.slot != 0, s.mode == Mode::kOnline, g_title_mask.Armed());
+  const title_mask::JoinerFilter::Out out = g_joiner_filter.Apply(mask, local);
+  if (out.first_replaced)
+    Log("title mask: frame " + std::to_string(f) + ": the joiner's input (buttons " + Hex(local.buttons, 4) +
+        ") replaced by nothing pressed, the first in the armed period that began at frame " +
+        std::to_string(g_title_mask_armed_at));
+  return out.sent;
+}
+
 void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   State& s = S();
   const double t0 = Now(s);
@@ -1163,13 +1265,22 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     }
   }
 
+  // P17 (design section 6): worker mode 4's end request and the frame hook's checks, before anything of frame f is hashed. The first
+  // read ends on a request raised during the frame before, before PreFrame runs its checks or makes a section object (B2's fix check,
+  // W2); PreFrame's checks may raise one; the second read ends on that.
+  if (EndOnWorkerRequest(s, f)) return;
+  det::PreFrame(f, base);
+  if (EndOnWorkerRequest(s, f)) return;
+
   if (f == 0) ForceStash(ctx, base);
+  TitleMaskFrame(f);
 
   // (1) the state entering f, and its checksum
   const double h0 = Now(s);
   HashRows(s, base, f);
   if (base[kFightState] == kFightRound) s.gate_open_frames.fetch_add(1);
-  const uint32_t checksum = exec::FoldChecksum(int32_t(f), s.digest_row, s.sweep_row);
+  // P20: the decided worker mode is mixed in, so two PCs that decided differently disagree at the first compared frame (a desync)
+  const uint32_t checksum = exec::WithWorkerMode(exec::FoldChecksum(int32_t(f), s.digest_row, s.sweep_row), s.workers_mode);
   const double h1 = Now(s);
   WriteFieldRow(s, base, f);
 
@@ -1192,8 +1303,9 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     Log("forced desync: one byte of the MT state 0x833F7600 flipped at frame " + std::to_string(f));
   }
   // A mixed session: the scene generator made equal on both peers at this boundary, after the row and the field log, so the log shows what the
-  // frame before it drew (np_digest.h says why, and what it leaves). The workers do not run beside this thread unless main's 2 s wait in
-  // np_det_workers.cpp mode 3 times out; a frame that finds the generator's lock held is skipped and counted apart, and np_pair fails a pair
+  // frame before it drew (np_digest.h says why, and what it leaves). The workers do not run beside this thread: in the serial order (mode 3)
+  // only once main's 2 s wait in np_det_workers.cpp times out, and in the lanes order (mode 4) never, since a worker found inside a section
+  // at the frame hook ends the session (det::PreFrame, before the hash); a frame that finds the generator's lock held is skipped and counted apart, and np_pair fails a pair
   // on any such frame and on a resync that did not cover every frame.
   static const bool no_resync = MixedOff("sync");
   if (ResyncsSceneGenerator(s.ho.suit_state) && !no_resync) {
@@ -1209,6 +1321,9 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
   const double d0 = Now(s);
   det::OnFrame(f, ctx, base);
   const double det_us = Now(s) - d0;
+  // The third read (a guard; design section 6): a request found after det::OnFrame ends the session before step 5 (so a script's
+  // quit of this frame is not acted on) and before step 6 hands this frame's checksum and input to the other PC.
+  if (EndOnWorkerRequest(s, f)) return;
 
   // (5) the local pad
   Pad local;
@@ -1220,6 +1335,7 @@ void OnFrameOnline(PPCContext& ctx, uint8_t* base) {
     Pad p;
     if (s.host.read_local_pad(&p)) local = p;
   }
+  local = TitleMaskLocalPad(s, f, local);  // before the pad enters the lockstep (np_title_mask.h)
   bool shot = false;
   for (ScriptEvent::Kind k : fired) {
     if (k == ScriptEvent::kShot) shot = true;
@@ -1383,6 +1499,13 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
     Quit(s, "end of the recording");
     return;
   }
+  // P17: the frame hook's checks of worker mode 4, then its end request, both before anything of frame f is hashed (design 6).
+  det::PreFrame(f, base);
+  if (std::string cause; det::EndRequested(&cause)) {
+    Quit(s, "lanes end request: " + cause);
+    return;
+  }
+  TitleMaskFrame(f);  // the title mask's edge lines (np_title_mask.h); a record or replay never masks
   // Rollback milestone 2 (rb_snap.h): the save / restore test of a record run. A restore puts the game back at an
   // earlier boundary, so the frame counter goes back with it and those frames run again with their recorded input.
   rb::SnapStep snap;
@@ -1431,6 +1554,10 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
   const double d0 = Now(s);
   det::OnFrame(f, ctx, base);
   const double det_us = Now(s) - d0;
+  if (std::string cause; det::EndRequested(&cause)) {  // the second read (design 6): a request raised since the first ends the run here
+    Quit(s, "lanes end request: " + cause);
+    return;
+  }
 
   // 3. Screenshots and the end of the run.
   bool shot = false;
@@ -1444,6 +1571,16 @@ void OnFrame(PPCContext& ctx, uint8_t* base) {
   }
   if (s.shot_every && f % s.shot_every == 0) shot = true;
   if (shot) Enqueue({Job::kShot, f, {}});
+  // DOA4_NP_GPUTRACE=f,f,... (a debug test switch, record and replay runs): the SDK writes one frame of the GPU command stream as
+  // an .xtr file under --trace_gpu_prefix, from the next swap. Issue #10's verification raises the slit rate with it.
+  while (!s.gpu_trace_frames.empty() && s.gpu_trace_frames.front() <= f) {
+    if (s.gpu_trace_frames.front() == f) {
+      auto* graphics = dynamic_cast<rex::graphics::GraphicsSystem*>(rex::Runtime::instance()->graphics_system());
+      if (graphics) graphics->RequestFrameTrace();
+      Log("gpu trace at frame " + std::to_string(f) + (graphics ? ": requested" : ": NOT requested, no graphics system"));
+    }
+    s.gpu_trace_frames.erase(s.gpu_trace_frames.begin());
+  }
   if (f >= s.quit_frame) {
     Quit(s, "quit frame");
     return;
@@ -1581,8 +1718,14 @@ void StartOnline(Host host) {
       s.ho.suit_state == rules::SuitSession::kNone ? "" : "suits=" + std::string(rules::SuitSessionName(s.ho.suit_state)) + "\n";
   const std::string extra = "guest=" + s.guest_meta + "\nunlock=1\nguest_skipped=" +
                             (g_skipped.empty() ? std::string("none") : g_skipped) + "\nsession=online role=" +
-                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta;
+                            std::string(s.slot == 0 ? "host" : "joiner") + " delay=" + std::to_string(s.ho.delay) + "\n" + suits_meta +
+                            start_rules::MetaLine(start_rules::MemoryWriteArmed());  // fix round 1: a replay arms from it
+  // The worker order's inputs, before CurrentMeta (its workers= line is the decision). Lockstep port B3: the order is the host's, from
+  // the hand-off's worker_order byte (0 lanes, 1 serial; range-checked by handoff::Unpack), the same byte in both session processes;
+  // this process never reads the netplay_worker_order key. A session runs lanes (mode 4) unless the host's key says serial.
+  det::SetWorkerInputs(true, s.ho.worker_order == 1, false, std::string());
   const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
+  s.workers_mode = det::WorkersMode();  // decided by CurrentMeta's workers= line: latched once, mixed into every checksum (P20)
   s.rec = _wfopen((s.dir / "rec.d4r").wstring().c_str(), L"wb");
   const std::string head = EncodeRecHeader(s.seed, 0, meta);
   if (s.rec) std::fwrite(head.data(), 1, head.size(), s.rec);
@@ -1731,6 +1874,16 @@ void PrepareReplayRules() {
     s.unlock = unlock == "1";
     EarlyLog("replay: the recording's unlock=" + unlock + (s.unlock ? " (the frame hook unlocks everything)" : ""));
   }
+  // Starting rules (fix round 1): a live armed session wrote the rules in memory; its replay starts from ud_start, the
+  // unedited save, so it arms from the recording's key and makes the same write. No key: not armed (a recording made
+  // before the key existed; only the unreleased sf2-5a made armed recordings without it).
+  const std::string rules = MetaValue(rec.meta, start_rules::kMetaKey);
+  const bool armed = start_rules::ArmedFromMeta(rules);
+  start_rules::ArmMemoryWrite(armed);
+  EarlyLog(rules == "(none)"
+               ? std::string("replay: start rules: the recording has no start_rules key: no in-memory write")
+               : "replay: start rules: the recording's start_rules=" + rules +
+                     (armed ? ": written in memory at the first match-rule load" : ": no in-memory write"));
 }
 
 bool Online() { return S().mode == Mode::kOnline; }
@@ -1866,6 +2019,10 @@ void Start(Host host) {
   } else {
     det::AllowFileTimes(false);
   }
+  // The worker order's inputs, before CurrentMeta (its workers= line is the decision): a replay runs the order its recording names
+  // (MetaValue answers "(none)" for a recording without the line, which the decision refuses: mode 3 and a WARN line).
+  det::SetWorkerInputs(false, false, s.mode == Mode::kReplay,
+                       s.mode == Mode::kReplay ? MetaValue(s.replay.meta, "workers") : std::string());
   const std::string meta = CurrentMeta(s.host.game_data_root, s.sweep_per_frame, extra);
 
   if (s.mode == Mode::kReplay) {
@@ -1910,6 +2067,7 @@ void Start(Host host) {
   s.shot_every = std::strtoul(Env("DOA4_NP_SHOT_EVERY").c_str(), nullptr, 10);
   s.dump_frames = FrameList(Env("DOA4_NP_DUMP"));
   s.heap_dump = Env("DOA4_NP_HEAPDUMP") == "1";
+  s.gpu_trace_frames = FrameList(Env("DOA4_NP_GPUTRACE"));
 
   OpenHashFiles(s);
   det::Start(s.seed, s.dir);
@@ -1920,6 +2078,13 @@ void Start(Host host) {
 }
 
 void LogLine(const std::string& line) { Log(line); }
+
+void NoteTitleMaskSprite(uint32_t sprite, bool visible) {
+  if (!Active()) return;
+  if (sprite != title_mask::kTitleLogoSprite && !title_mask::IsMenuSignal(sprite, visible)) return;
+  std::lock_guard lk(g_title_mask_mu);
+  g_title_mask.OnDraw(sprite, visible);  // applied at the frame's end (TitleMaskFrame)
+}
 
 // The writer captures through the presenter, so it must be done before the presenter goes. The race this
 // closes (a queued shot captured while the presenter is torn down) cannot be forced by a test: the check

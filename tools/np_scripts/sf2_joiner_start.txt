@@ -1,0 +1,34 @@
+# Small fixes 2, Task 6 (Part A): the joiner presses START on the title screen at the start of a session.
+# One script for both copies: np_session.cpp reads column s.slot of each frame line, so the first pad column is the
+# host's pad (user 0) and the second the joiner's (user 1). The host idles at the title; the JOINER presses START at
+# frame 1500 (where the working scripts press the host's START). Then shots on both sides, the host's START and A some
+# hundred frames later, then the joiner's A and START, each followed by a wait and a shot, then quit.
+# Needs --headless=true (np_pair passes it).
+connect 0 1
+1500 -
+shot
+# the joiner's START on the title
+6 - START
+60 -
+shot
+240 -
+shot
+300 -
+shot
+# the host's START, then the host's A
+6 START
+240 -
+shot
+4 A
+240 -
+shot
+# the joiner's A, then the joiner's START
+4 - A
+240 -
+shot
+6 - START
+240 -
+shot
+600 -
+shot
+quit

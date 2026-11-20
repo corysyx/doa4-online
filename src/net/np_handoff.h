@@ -18,8 +18,9 @@
 
 namespace doa4::np::handoff {
 
-// Layout (little-endian): "D4HO", u16 version (3), u64 build, text release, u8 role, u8 delay, u16 local_port,
-// u8 peer ip[4], u16 peer port, u32 session_token, u64 seed, u8 suit_state, u8 suit_holders, text guest_settings (u32 length),
+// Layout (little-endian): "D4HO", u16 version (4), u64 build, text release, u8 role, u8 delay, u16 local_port,
+// u8 peer ip[4], u16 peer port, u32 session_token, u64 seed, u8 suit_state, u8 suit_holders, u8 worker_order,
+// text guest_settings (u32 length),
 // u32 file count,
 // then per file: text name (u16 length), u32 data length, data. Every length checked before use; the bytes must
 // end exactly where the last file does.
@@ -51,6 +52,10 @@ struct Handoff {
   // bit 1 the joiner (player 1); set by the host from both import checksums. Agrees with suit_state (SuitHoldersOk): none
   // 0, same 3, mixed 1, 2 or 3 (3: two different imports).
   uint8_t suit_holders = 0;
+  // The order of the game's job workers in the session (version 4, lockstep port B3; design section 4): 0 lanes (worker mode 4),
+  // 1 serial (mode 3, 0.3.4's order). Set by the host's lobby from its netplay_worker_order key (WorkerOrderFromText); both
+  // session processes give it to the determinism layer (np_session.cpp StartOnline), which never reads the key itself.
+  uint8_t worker_order = 0;
   std::string guest_settings;   // CaptureGuestSettings text
   std::vector<File> files;      // the host's save, names under kSavePrefix
 };
@@ -64,11 +69,16 @@ struct Handoff {
 // case-sensitive.)
 bool NameOk(std::string_view name);
 
+// The host's netplay_worker_order text as Handoff::worker_order: "lanes" 0, "serial" 1, compared exactly (case and spaces
+// count); any other text 0 (lanes). The lobby logs a text that is neither (np_online.cpp StartSessionNow).
+uint8_t WorkerOrderFromText(std::string_view text);
+
 // The bytes of `h`; empty if a limit is broken, the packed total included. What breaks one: more than kMaxFiles
 // files; a file over kMaxFileBytes or a name NameOk refuses; two names that are one file on Windows (equal but for
 // the case of a letter) or a name that is also a folder of another (a/b with a/b/c); a release over
 // kMaxReleaseBytes or guest settings over kMaxGuestBytes; a release that is not printable ASCII (0x20..0x7E); a role
-// that is neither; a delay outside 1..8; a suit state that is none of the three; a zero session token, local port or peer
+// that is neither; a delay outside 1..8; a suit state that is none of the three; a worker order other than 0 and 1; a zero
+// session token, local port or peer
 // port; the peer address 0.0.0.0;
 // guest settings text that ApplyGuestSettings would refuse (empty, a malformed line, a missing or unknown name, a
 // trust-class setting off its default: the host fails early); a packed total over kMaxPackedBytes.

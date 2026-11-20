@@ -32,6 +32,7 @@ struct CursorInputs {
   bool setup_open = false;        // the first-run setup screen
   bool sdk_overlay_open = false;  // F3, F4 or the console
   bool mnk_mode = false;          // keyboard and mouse as a controller: the SDK's input driver owns the cursor
+  bool xam_dialog_open = false;  // an SDK XAM dialog (message box, keyboard, ...) is open: xeXamIsUIActive()
 };
 enum class CursorAction { kLeave, kShow, kHide };
 CursorAction DecideCursor(const CursorInputs& in);

@@ -401,6 +401,7 @@ static const char* EndName(live::End e) {
     case live::End::kDesync: return "desync";
     case live::End::kFrame0Timeout: return "frame0-timeout";
     case live::End::kInternal: return "internal";
+    case live::End::kWorkerOrder: return "worker-order";
   }
   return "?";
 }
@@ -872,6 +873,105 @@ static void TestPeerReason() {
   }
 }
 
+// Lockstep port B3: the other PC could not keep worker mode 4's order and sent its Leave with reason 4. This side ends kPeerLeft
+// with that reason, and the why names it (np_live.cpp's file-local ReasonText, seen through the text it makes; np_session.cpp logs
+// the why in its "session end: peer left (...)" line, which np_pair's worker-order expectation reads).
+static void TestPeerWorkerOrder() {
+  Group("peer-left reason 4 (worker order)");
+  World w;
+  w.label = "peer worker order";
+  w.a[0].frames = w.a[1].frames = 200;
+  w.a[1].before_frame = [](Actor& me, int32_t f) {
+    if (f == 150) me.live->PeerLeft(150, wire::LeaveReason::kWorkerOrder);
+  };
+  w.a[0].before_frame = [](Actor& me, int32_t f) {
+    if (f == 152) me.live->Leave(152);
+  };
+  Setup(w);
+  Run(w);
+  const live::FrameResult* rb = Last(w.a[1]);
+  CHECKF(rb && rb->end == live::End::kPeerLeft && rb->peer_reason == 4 && rb->end_frame == 150, "B: end %s reason %d at %d",
+         rb ? EndName(rb->end) : "-", rb ? rb->peer_reason : -9, rb ? rb->end_frame : -9);
+  const std::string want = "the other player left at frame 150 (worker order)";
+  CHECKF(rb && rb->why == want, "B: why \"%s\", want \"%s\"", rb ? rb->why.c_str() : "", want.c_str());
+}
+
+// Lockstep port B3 (moved from np_session.cpp so that a host test reaches them): the end's name, the terminal reason np_pair
+// judges, and the Leave reason this side sends, for every End value.
+static void TestEndTexts() {
+  Group("end texts: EndText of every End, word for word");
+  const struct { live::End e; const char* text; wire::LeaveReason leave; } rows[] = {
+      {live::End::kNone, "none", wire::LeaveReason::kLeft},
+      {live::End::kLeft, "left", wire::LeaveReason::kLeft},
+      {live::End::kPeerLeft, "peer left", wire::LeaveReason::kLeft},
+      {live::End::kLost, "lost", wire::LeaveReason::kTimeout},
+      {live::End::kDesync, "desync", wire::LeaveReason::kDesync},
+      {live::End::kFrame0Timeout, "frame 0 timeout", wire::LeaveReason::kTimeout},
+      {live::End::kInternal, "internal", wire::LeaveReason::kInternal},
+      {live::End::kWorkerOrder, "the worker order could not be kept", wire::LeaveReason::kWorkerOrder},
+  };
+  for (const auto& r : rows) {
+    CHECKF(std::string(live::EndText(r.e)) == r.text, "EndText(%s) = \"%s\", want \"%s\"", EndName(r.e), live::EndText(r.e), r.text);
+  }
+  Group("end texts: LeaveReasonFor of every End");
+  for (const auto& r : rows) {
+    CHECKF(live::LeaveReasonFor(r.e) == r.leave, "LeaveReasonFor(%s) = %d, want %d", EndName(r.e), int(live::LeaveReasonFor(r.e)),
+           int(r.leave));
+  }
+  Group("end texts: TerminalReason");
+  live::FrameResult fr;
+  fr.end = live::End::kWorkerOrder;
+  fr.why = "a worker was inside a section at the frame hook";
+  CHECKF(live::TerminalReason(fr, false) == "worker order", "worker order: \"%s\"", live::TerminalReason(fr, false).c_str());
+  fr.end = live::End::kDesync;
+  fr.why = "desync at frame 3000 (this side 1A2B3C4D, other side 5E6F7081)";
+  CHECK(live::TerminalReason(fr, false) == fr.why);
+  fr.end = live::End::kInternal;
+  fr.why = "session closed";
+  CHECK(live::TerminalReason(fr, false) == "internal: session closed");
+  for (const live::End e : {live::End::kWorkerOrder, live::End::kLeft, live::End::kDesync}) {  // refused wins over every end
+    fr.end = e;
+    CHECKF(live::TerminalReason(fr, true) == "internal: the other player's game did not start the session", "refused, %s: \"%s\"",
+           EndName(e), live::TerminalReason(fr, true).c_str());
+  }
+  fr.end = live::End::kPeerLeft;
+  fr.why = "the other player left at frame 5 (worker order)";
+  CHECK(live::TerminalReason(fr, false) == "peer left");
+}
+
+// The frame-0 Leave fix (lockstep port Phase C, ledger L72): the offline relaunch waits 5 s (8 s for a desync) as before;
+// a Leave the session lobby still keeps for an unseen peer holds it on, to 10 s after the end at most.
+static void TestRestartReady() {
+  Group("restart rule: RestartReady over every end, with and without a kept Leave");
+  CHECKF(live::kRestartMs == 5000 && live::kRestartDesyncMs == 8000 && live::kRestartCapMs == 10000, "constants %u %u %u",
+         live::kRestartMs, live::kRestartDesyncMs, live::kRestartCapMs);
+  const live::End ends[] = {live::End::kNone,   live::End::kLeft,          live::End::kPeerLeft, live::End::kLost,
+                            live::End::kDesync, live::End::kFrame0Timeout, live::End::kInternal, live::End::kWorkerOrder};
+  for (const live::End e : ends) {
+    const uint32_t wait = e == live::End::kDesync ? 8000 : 5000;
+    // no Leave kept: as before (5 s, 8 s for a desync)
+    CHECKF(!live::RestartReady(e, wait - 1, false), "%s, not kept: ready at %u ms", EndName(e), wait - 1);
+    CHECKF(live::RestartReady(e, wait, false), "%s, not kept: not ready at %u ms", EndName(e), wait);
+    CHECKF(live::RestartReady(e, 60000, false), "%s, not kept: not ready at 60 s", EndName(e));
+    // a kept Leave: not before the end's own wait either
+    CHECKF(!live::RestartReady(e, wait - 1, true), "%s, kept: ready at %u ms", EndName(e), wait - 1);
+    // kept at the end's wait -> not ready; kept to 9.99 s -> not ready; kept at exactly 10 s -> ready (the cap)
+    CHECKF(!live::RestartReady(e, wait, true), "%s, kept: ready at %u ms", EndName(e), wait);
+    CHECKF(!live::RestartReady(e, 9990, true), "%s, kept: ready at 9990 ms", EndName(e));
+    CHECKF(!live::RestartReady(e, 9999, true), "%s, kept: ready at 9999 ms", EndName(e));
+    CHECKF(live::RestartReady(e, 10000, true), "%s, kept: not ready at exactly 10000 ms", EndName(e));
+    CHECKF(live::RestartReady(e, 60000, true), "%s, kept: not ready at 60 s", EndName(e));
+  }
+  // the Leave stops being kept at 6.2 s (it went to the peer): kept at 6199 -> not ready, not kept at 6200 -> ready
+  CHECK(!live::RestartReady(live::End::kWorkerOrder, 6199, true));
+  CHECK(live::RestartReady(live::End::kWorkerOrder, 6200, false));
+  // a desync: kept at 8 s -> not ready; no longer kept at 8.5 s -> ready; kept to the cap -> ready at 10 s
+  CHECK(!live::RestartReady(live::End::kDesync, 8000, true));
+  CHECK(live::RestartReady(live::End::kDesync, 8500, false));
+  CHECK(!live::RestartReady(live::End::kDesync, 9990, true));
+  CHECK(live::RestartReady(live::End::kDesync, 10000, true));
+}
+
 static void TestDesyncFrameOwn() {
   Group("own desync names desync_frame");
   World w;
@@ -1001,6 +1101,27 @@ static void TestClose() {
   CHECKF(r.end == live::End::kInternal && r.why == "session closed" && !r.ok, "Frame after Close: end %s why \"%s\"", EndName(r.end),
          r.why.c_str());
   CHECK(A.gk.local_inputs_added() == adds);
+}
+
+// Lockstep port B3 (review answer 8): a worker-order end at frame 0 closes a session that has had no Frame call yet (np_session.cpp
+// EndOnline closes the live session before step 6 of frame 0). Close twice, then what TestClose pins after a close.
+static void TestCloseBeforeFrame() {
+  Group("close before any Frame");
+  World w;
+  w.label = "close before frame";
+  w.a[0].frames = w.a[1].frames = 20;
+  Setup(w);  // no Run: neither side calls Frame
+  Actor& A = w.a[0];
+  CHECK(A.live != nullptr);
+  if (!A.live) return;
+  CHECK(A.gk.local_inputs_added() == 0);  // the control: nothing was added before the close
+  A.live->Close();
+  A.live->Close();  // twice
+  CHECK(A.gk.Update().empty() && A.gk.FramesAhead() == 0.f);  // destroyed: the wrapper's no-session answers
+  live::FrameResult r = A.live->Frame(0, 0, Pad{});
+  CHECKF(r.end == live::End::kInternal && r.why == "session closed" && !r.ok, "Frame after Close: end %s why \"%s\"", EndName(r.end),
+         r.why.c_str());
+  CHECK(A.gk.local_inputs_added() == 0);
 }
 
 // The single-producer debug check (carry 2c; fix round 1 M3): a Frame call from a second thread returns kInternal
@@ -1224,11 +1345,15 @@ int main(int argc, char** argv) {
   TestReportedDesync();
   TestReportedDesyncAhead();
   TestPeerReason();
+  TestPeerWorkerOrder();
+  TestEndTexts();
+  TestRestartReady();
   TestDesyncFrameOwn();
   TestLoad();
   TestPacer();
   TestPing();
   TestClose();
+  TestCloseBeforeFrame();
   TestThread();
   TestSlackAhead();
   TestMagicZero();

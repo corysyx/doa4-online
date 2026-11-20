@@ -1,0 +1,68 @@
+# boot -> title -> Versus -> Single Battle -> entry (P1 left, P2 right) -> P1 four right and one down of the defaults = Lei Fang,
+# P2 five left of the defaults = Zack (the 8 x 3 grid: Lei Fang is 4,1 and Zack 2,0), costume 1 -> stage three right of RANDOM
+# (the casino street, as single_b) -> 60 s of random fighting (seeds 31-36) -> quit. Lei Fang v Zack was the heaviest pairing on
+# file (2026-11-05 perf session). Built for rb0 (rollback stage 0), after single_b.
+# Needs --headless=true (the entry's sign-in message box is answered with its default).
+connect 0 1
+1500 -
+shot
+6 START
+120 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+40 -
+shot
+4 A
+90 -
+4 A
+120 -
+shot
+4 - RIGHT
+30 -
+4 - A
+300 -
+shot
+4 RIGHT LEFT
+30 -
+4 RIGHT LEFT
+30 -
+4 RIGHT LEFT
+30 -
+4 RIGHT LEFT
+30 -
+4 DOWN LEFT
+30 -
+shot
+4 A A
+60 -
+4 A A
+360 -
+shot
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+4 RIGHT
+30 -
+shot
+4 A
+600 -
+shot
+random 600 31 0 1
+shot
+random 600 32 0 1
+shot
+random 600 33 0 1
+shot
+random 600 34 0 1
+shot
+random 600 35 0 1
+shot
+random 600 36 0 1
+shot
+quit
