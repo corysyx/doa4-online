@@ -333,6 +333,11 @@ void WorkersPreFrame(uint32_t frame, uint8_t* base) {
   eng::PreFrame(frame, base);
 }
 
+// corysyx: rb_snap.cpp leaves the job workers out of the threads it holds and saves (np_det.h)
+bool IsWorkerEntry(uint32_t start) {
+  return std::find(std::begin(kWorkerEntries), std::end(kWorkerEntries), start) != std::end(kWorkerEntries);
+}
+
 void WorkerCreated(uint32_t start, uint32_t tid) {
   if (std::find(std::begin(kWorkerEntries), std::end(kWorkerEntries), start) == std::end(kWorkerEntries)) return;
   const bool lanes_mode = Mode() == 4;  // decided before any guest thread (CurrentMeta); read holding no lock (review M8)

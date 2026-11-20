@@ -8,7 +8,7 @@ corysyx rollback research build.
   0.3.1xx sections): the job workers run in two lanes side by side online and in an offline record (0.3.6), pads
   are read just before use (one frame less input lag, 0.3.7), the profile-guided build (0.3.7), a volume slider,
   online starting rules, batch GPU uploads, the Kyoto canal, Safari buffalo and Intel fixes.
-- The worker file is dwreckgg's lanes version; this build's 0.3.138 per-worker timing is dropped, and the 0.3.140
+- The worker file is dwreckgg's lanes version (with this build's `IsWorkerEntry`, which the snapshot code uses); this build's 0.3.138 per-worker timing is dropped, and the 0.3.140
   SnapTest job skip (`DOA4_NP_SNAPTEST_SKIPJOB`) sits on top of it.
 - Round 42 (0.3.140): replays that left the 82370638 job out differed only in that job's own memory (the low heap's
   0x10292000 and 0x109D4000 runs, and its output at 0x100F1000, which is equal again after two frames with the job
