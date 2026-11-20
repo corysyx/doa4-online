@@ -1094,7 +1094,13 @@ def test_pgo_wiring_cmd(root):
     write(os.path.join(repo, "src", "x.cpp"), b"int x = 10;\n")
     commit(repo, "hot fix")
     for side in sides:
-        stopped(f"{side} mismatch", run_side(side), "pgo: refused: game tree differs")
+        if side == "workflow":
+            # corysyx/doa4-online: the fork's release workflow sets DOA4_PGO_STALE_OK=1, so a tree mismatch alone builds
+            # with the profile (tools/pgo_source_id.py); np_build.bat still refuses
+            f, _ = reached(f"{side} mismatch (DOA4_PGO_STALE_OK)", run_side(side))
+            check("-fprofile-use=" in (f.get("CMAKE_C_FLAGS") or ""), f"wiring {side} mismatch: the profile is used: {f}")
+        else:
+            stopped(f"{side} mismatch", run_side(side), "pgo: refused: game tree differs")
 
 
 def test_pgo_source_unreadable(root):
