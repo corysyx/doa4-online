@@ -313,6 +313,19 @@ struct Snap {
   // differs from run to run. An address into one of these stacks is hashed and compared as its offset from that
   // stack's top (DOA4_NP_SNAPTEST_WSTACKS=hash: as it is).
   bool mask_wstacks = true;
+  // 0.3.143: round 45's saves spent ~40 ms of their ~50 ms asking Windows (VirtualQuery) which of the marked pages are
+  // committed, the same 632 runs each time. The list is kept and used again while the marked pages and the heaps'
+  // page tables (allocations and protection) are the same as when it was made (DOA4_NP_SNAPTEST_PAGELIST=fresh: made
+  // each save). Each save in the harness also makes the list fresh afterwards and reports any difference.
+  bool pagelist_cache = true;
+  struct PageList {
+    bool valid = false;
+    std::vector<unsigned char> map;
+    std::vector<HeapTable> heaps;
+    std::vector<Chunk> chunks;
+    size_t bytes = 0;
+  } pagelist;
+  uint32_t pagelist_hits = 0, pagelist_misses = 0, pagelist_bad = 0;
   std::vector<std::pair<uint32_t, uint32_t>> wstacks;  // [low, high) of the 82370638 workers' stacks, at the save
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   uint32_t diff_at = 1;            // DOA4_NP_SNAPTEST_DIFFAT: the boundary whose differing words are listed (1-based)
@@ -1316,6 +1329,14 @@ void LoadHeaps(Snap& s);
 void TakeHeaps(std::vector<Snap::HeapTable>* out);
 void CompareHeaps(const Snap& s);
 
+bool SameHeaps(const std::vector<Snap::HeapTable>& a, const std::vector<Snap::HeapTable>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].addr != b[i].addr || a[i].unreserved != b[i].unreserved || a[i].table != b[i].table) return false;
+  }
+  return true;
+}
+
 // Round 26: a guest thread that is neither the main thread nor held nor a worker whose stack and registers go back
 // (the sound thread, tid 2) keeps running across the load. Its PCR (current IRQL, ...) and its thread object are
 // its own live state: putting back the copy of the save gave it the IRQL it had then (DISPATCH, inside a spin lock),
@@ -1389,7 +1410,33 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     }
   }
   Lap("page list");
-  const size_t bytes = Capture(base, s.saved, &s.chunks, &s.buf);
+  // 0.3.143: the committed runs of the marked pages, kept while the marks and the heaps' page tables stay the same
+  bool list_hit = false;
+  std::vector<Snap::HeapTable> heaps_now;
+  if (s.pagelist_cache) {
+    TakeHeaps(&heaps_now);
+    list_hit = s.pagelist.valid && SameHeaps(s.pagelist.heaps, heaps_now) &&
+               std::memcmp(s.pagelist.map.data(), s.saved, sizeof s.saved) == 0;
+  }
+  Lap(list_hit ? "heap tables (page list kept)" : "heap tables (page list made)");
+  size_t bytes = 0;
+  if (list_hit) {
+    ++s.pagelist_hits;
+    s.chunks = s.pagelist.chunks;
+    bytes = s.pagelist.bytes;
+    if (s.buf.size() < bytes) s.buf.resize(bytes);
+    for (const Chunk& c : s.chunks) std::memcpy(s.buf.data() + c.off, base + c.addr + HostOff(c.addr), c.len);
+  } else {
+    ++s.pagelist_misses;
+    bytes = Capture(base, s.saved, &s.chunks, &s.buf);
+    if (s.pagelist_cache) {
+      s.pagelist.map.assign(s.saved, s.saved + sizeof s.saved);
+      s.pagelist.heaps = std::move(heaps_now);
+      s.pagelist.chunks = s.chunks;
+      s.pagelist.bytes = bytes;
+      s.pagelist.valid = true;
+    }
+  }
   Lap("copy");
   // physical memory the game's code wrote: not in the snapshot (the GPU reads and writes it), copied to report
   std::memset(s.phys_map, 0, sizeof s.phys_map);
@@ -1427,12 +1474,37 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     const double back = MsSince(bt);
     bt = std::chrono::steady_clock::now();
     size_t n_chunks = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> fresh;
     for (const Range& r : Runs(s.saved, kPages)) {
-      ForCommitted(base, r.first_page << kPageShift, r.pages << kPageShift, [&](uint32_t, uint32_t) { ++n_chunks; });
+      ForCommitted(base, r.first_page << kPageShift, r.pages << kPageShift, [&](uint32_t a, uint32_t n) {
+        ++n_chunks;
+        fresh.emplace_back(a, n);
+      });
     }
     const double list = MsSince(bt);
+    // 0.3.143: the list the save used (kept or made) against one made now
+    bool same = fresh.size() == s.chunks.size();
+    for (size_t i = 0; same && i < fresh.size(); ++i) {
+      same = fresh[i].first == s.chunks[i].addr && fresh[i].second == s.chunks[i].len;
+    }
+    if (!same) {
+      ++s.pagelist_bad;
+      s.pagelist.valid = false;  // made again at the next save
+    }
+    std::string first_diff;
+    if (!same) {
+      size_t i = 0;
+      while (i < fresh.size() && i < s.chunks.size() && fresh[i].first == s.chunks[i].addr &&
+             fresh[i].second == s.chunks[i].len) ++i;
+      first_diff = fmt::format(" - FIRST DIFFERENCE at run {}: used {} now {}", i,
+                               i < s.chunks.size() ? fmt::format("{:08X}+{:X}", s.chunks[i].addr, s.chunks[i].len) : "none",
+                               i < fresh.size() ? fmt::format("{:08X}+{:X}", fresh[i].first, fresh[i].second) : "none");
+    }
     bench = fmt::format("copy {:.2f} then {:.2f}, compare by page {:.2f} ({} pages differ), buffer to buffer {:.2f}, "
-                        "list of {} committed runs {:.2f}", cold, warm, cmp, diff_pages, back, n_chunks, list);
+                        "list of {} committed runs {:.2f}; page list {} ({} kept, {} made so far), {}{}",
+                        cold, warm, cmp, diff_pages, back, n_chunks, list, list_hit ? "kept" : "made",
+                        s.pagelist_hits, s.pagelist_misses,
+                        same ? "the same as a fresh one" : "DIFFERS from a fresh one", first_diff);
     lap = std::chrono::steady_clock::now();
   }
   // memory that changes while the game stands at the boundary: written by the GPU or by threads that run on (kept)
@@ -1625,7 +1697,20 @@ void Load(Snap& s, uint8_t* base) {
   std::vector<uint8_t> kept;
   for (const Keep& k : s.keeps) kept.insert(kept.end(), base + k.lo, base + k.hi);
   size_t restored = 0, skipped = 0;
+  // 0.3.143: when the heaps' page tables are as they were at the save, the saved runs are all still committed and
+  // writable, so they are copied back without asking Windows again for each one
+  bool direct = false;
+  if (s.pagelist_cache && s.pagelist.valid) {
+    std::vector<Snap::HeapTable> heaps_now;
+    TakeHeaps(&heaps_now);
+    direct = SameHeaps(s.pagelist.heaps, heaps_now);
+  }
   for (const Chunk& c : s.chunks) {
+    if (direct) {
+      std::memcpy(base + c.addr, s.buf.data() + c.off, c.len);
+      restored += c.len;
+      continue;
+    }
     size_t done = 0;
     ForCommitted(base, c.addr, c.len, [&](uint32_t a, uint32_t n) {
       std::memcpy(base + a, s.buf.data() + c.off + (a - c.addr), n);
@@ -1634,7 +1719,7 @@ void Load(Snap& s, uint8_t* base) {
     restored += done;
     skipped += c.len - done;
   }
-  Lap("copy back");
+  Lap(direct ? "copy back (runs as saved)" : "copy back");
   size_t off = 0;
   for (const Keep& k : s.keeps) {
     std::memcpy(base + k.lo, kept.data() + off, k.hi - k.lo);
@@ -1868,6 +1953,8 @@ bool SnapActive() {
     s.mask_stashes = !(stash && std::string(stash) == "hash");
     const char* wst = std::getenv("DOA4_NP_SNAPTEST_WSTACKS");
     s.mask_wstacks = !(wst && std::string(wst) == "hash");
+    const char* pl = std::getenv("DOA4_NP_SNAPTEST_PAGELIST");
+    s.pagelist_cache = !(pl && std::string(pl) == "fresh");
     const char* thr = std::getenv("DOA4_NP_SNAPTEST_THREADS");
     s.threads_fix = !(thr && std::string(thr) == "restore");
     if (const char* d = std::getenv("DOA4_NP_SNAPTEST_DIFFAT")) {
@@ -2157,6 +2244,8 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
     s.next_at = frame + s.cfg.every;
     if (s.tests_done == s.cfg.count) {
       Out(fmt::format("done: {} of {} tests passed", s.equal_tests, s.cfg.count));
+      Out(fmt::format("page list: kept at {} saves, made at {}, {} differed from a fresh one{}", s.pagelist_hits,
+                      s.pagelist_misses, s.pagelist_bad, s.pagelist_cache ? "" : " (DOA4_NP_SNAPTEST_PAGELIST=fresh)"));
       s.phase = 3;
     }
   }

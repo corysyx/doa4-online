@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.143 (2026-11-21)
+
+corysyx rollback research build.
+
+- SnapTest save: the list of committed memory runs to copy is kept and used again while the marked pages and the heaps'
+  page tables (allocations and protection) are unchanged (`DOA4_NP_SNAPTEST_PAGELIST=fresh`: made each save). Round 45:
+  about 40 ms of each ~50 ms save went to asking Windows which of the same 632 runs are committed; the copy itself
+  takes about 1.2 ms. Each harness save also makes a fresh list afterwards and reports whether it matches.
+- SnapTest load: with the heaps' page tables as they were at the save, the saved runs are copied back directly
+  (round 45: about 41 ms of a ~44 ms load).
+- Round 45 (0.3.142, lanes): 18 of 30 rewinds pass and 25 end identical; the stale cloth-stack links are gone. What is
+  left is the known sound words (4001C68C, 400246DC, ...) and pages made after the save; the skip test again changes
+  only the cloth memory (0x10292000, 0x109D4000).
+
 ## 0.3.142 (2026-11-21)
 
 corysyx rollback research build.
