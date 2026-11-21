@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.145 (2026-11-21)
+
+corysyx rollback research build.
+
+- SnapTest save: a marked page that the SDK's page tables do not show as committed and writable is asked of Windows
+  (VirtualQuery), as before 0.3.144. Round 47: every save's heap-table list missed runs Windows has as committed and
+  writable, first 0x401B0000 (256 KB, holding 401CFDE8), so those pages were not saved; and since the check marked the
+  list bad, loads fell back to the slow copy (~46 ms). The check now also prints the SDK's table entry for the first
+  page the lists disagree on, and each save says how many pages came from the tables and how many were asked.
+- Round 47 (0.3.144): saves fell from ~55 ms to ~11.7 ms (median; physical copy ~7 ms and the harness hash ~3.7 ms are
+  most of what is left). 19 of 30 rewinds passed (17 in the second run); 4 frames in, the differing words are the sound
+  counters (4001C68C, 4001C698, 400246DC, 400246E8) and float pairs at 400E6DA8 and 400EB5CC that are equal again by
+  the end.
+
 ## 0.3.144 (2026-11-21)
 
 corysyx rollback research build.

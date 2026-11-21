@@ -1331,6 +1331,8 @@ void TakeHeaps(std::vector<Snap::HeapTable>* out);
 void CompareHeaps(const Snap& s);
 
 size_t CaptureByHeaps(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chunks, std::vector<uint8_t>* buf);
+std::string HeapEntryText(uint32_t a);
+extern uint32_t g_heap_pages, g_asked_pages, g_asked_runs;
 
 bool SameHeaps(const std::vector<Snap::HeapTable>& a, const std::vector<Snap::HeapTable>& b) {
   if (a.size() != b.size()) return false;
@@ -1519,11 +1521,18 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
       first_diff = fmt::format(" - FIRST DIFFERENCE at run {}: used {} now {}", i,
                                i < used_runs.size() ? fmt::format("{:08X}+{:X}", used_runs[i].first, used_runs[i].second) : "none",
                                i < fresh.size() ? fmt::format("{:08X}+{:X}", fresh[i].first, fresh[i].second) : "none");
+      // 0.3.145: the first page the two lists disagree on, and what the SDK's table says about it
+      if (i < fresh.size() && i < used_runs.size()) {
+        const auto& u = used_runs[i];
+        const auto& f = fresh[i];
+        const uint32_t at = u.first == f.first ? u.first + std::min(u.second, f.second) : std::min(u.first, f.first);
+        first_diff += fmt::format("; page {:08X}: {}", at, HeapEntryText(at));
+      }
     }
     bench = fmt::format("copy {:.2f} then {:.2f}, compare by page {:.2f} ({} pages differ), buffer to buffer {:.2f}, "
-                        "list of {} committed runs {:.2f}; page list {} ({} kept, {} made so far), {}{}",
+                        "list of {} committed runs {:.2f}; page list {} ({} kept, {} made so far; {} pages from the heap tables, {} asked of Windows in {} runs), {}{}",
                         cold, warm, cmp, diff_pages, back, n_chunks, list, list_hit ? "kept" : "made",
-                        s.pagelist_hits, s.pagelist_misses,
+                        s.pagelist_hits, s.pagelist_misses, g_heap_pages, g_asked_pages, g_asked_runs,
                         same ? "the same as a fresh one" : "DIFFERS from a fresh one", first_diff);
     lap = std::chrono::steady_clock::now();
   }
@@ -2034,31 +2043,78 @@ void SaveHeaps(Snap& s) { TakeHeaps(&s.heaps); }
 // 0.3.144: the committed, writable parts of the marked pages, from the SDK's page tables (what it committed and
 // protected through VirtualAlloc / VirtualProtect) instead of a VirtualQuery per run; each harness save checks it
 // against VirtualQuery afterwards.
+// 0.3.145: round 47 found marked pages the tables do not show as committed and writable that Windows does (first at
+// 0x401B0000, 256 KB, holding 401CFDE8), so a save missed them. A marked page has been written by the game, so any
+// marked page the tables do not show as committed and writable is asked of Windows, as before 0.3.144.
+uint32_t g_heap_pages = 0, g_asked_pages = 0, g_asked_runs = 0;  // the last save's split
 size_t CaptureByHeaps(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chunks, std::vector<uint8_t>* buf) {
   chunks->clear();
   size_t bytes = 0;
+  g_heap_pages = g_asked_pages = g_asked_runs = 0;
+  const auto Add = [&](uint32_t a, uint32_t n) {
+    if (!chunks->empty() && chunks->back().addr + chunks->back().len == a) {
+      chunks->back().len += n;
+    } else {
+      chunks->push_back(Chunk{a, n, bytes});
+    }
+    bytes += n;
+  };
+  uint32_t ask_a = 0, ask_n = 0;  // a run of marked pages to ask Windows about
+  const auto Ask = [&]() {
+    if (!ask_n) return;
+    ++g_asked_runs;
+    ForCommitted(base, ask_a, ask_n, [&](uint32_t a, uint32_t n) { Add(a, n); });
+    ask_n = 0;
+  };
   rex::memory::BaseHeap* h = nullptr;
   for (const Range& r : Runs(map, kPages)) {
     for (uint32_t p = r.first_page; p < r.first_page + r.pages; ++p) {
       const uint32_t a = p << kPageShift;
       if (!h || a < h->heap_base() || uint64_t(a) >= uint64_t(h->heap_base()) + h->heap_size()) h = SnapHeap(a, false);
-      if (!h || a < h->heap_base()) { h = nullptr; continue; }
-      const auto& table = h->*HeapPeek::kTable;
-      const size_t i = (a - h->heap_base()) >> (h->*HeapPeek::kShift);
-      if (i >= table.size()) continue;
-      const rex::memory::PageEntry& e = table[i];
-      if (!(e.state & rex::memory::kMemoryAllocationCommit) || !(e.current_protect & rex::memory::kMemoryProtectWrite)) continue;
-      if (!chunks->empty() && chunks->back().addr + chunks->back().len == a) {
-        chunks->back().len += kPage;
+      bool ok = false;
+      if (h && a >= h->heap_base()) {
+        const auto& table = h->*HeapPeek::kTable;
+        const size_t i = (a - h->heap_base()) >> (h->*HeapPeek::kShift);
+        if (i < table.size()) {
+          const rex::memory::PageEntry& e = table[i];
+          ok = (e.state & rex::memory::kMemoryAllocationCommit) && (e.current_protect & rex::memory::kMemoryProtectWrite);
+        }
       } else {
-        chunks->push_back(Chunk{a, kPage, bytes});
+        h = nullptr;
       }
-      bytes += kPage;
+      if (ok) {
+        Ask();
+        ++g_heap_pages;
+        Add(a, kPage);
+      } else {
+        if (ask_n && ask_a + ask_n == a) {
+          ask_n += kPage;
+        } else {
+          Ask();
+          ask_a = a;
+          ask_n = kPage;
+        }
+        ++g_asked_pages;
+      }
     }
   }
+  Ask();
   if (buf->size() < bytes) buf->resize(bytes);
   for (const Chunk& c : *chunks) std::memcpy(buf->data() + c.off, base + c.addr + HostOff(c.addr), c.len);
   return bytes;
+}
+
+// 0.3.145: what the SDK's page table says about a page, for the harness's list check
+std::string HeapEntryText(uint32_t a) {
+  rex::memory::BaseHeap* h = SnapHeap(a, false);
+  if (!h || a < h->heap_base()) return "no heap";
+  const auto& table = h->*HeapPeek::kTable;
+  const size_t i = (a - h->heap_base()) >> (h->*HeapPeek::kShift);
+  if (i >= table.size()) return "past the heap's table";
+  const rex::memory::PageEntry& e = table[i];
+  return fmt::format("heap {:08X} state {} protect {} (allocated {}), region {:05X}000+{:X} pages", h->heap_base(),
+                     uint32_t(e.state), uint32_t(e.current_protect), uint32_t(e.allocation_protect),
+                     uint32_t(e.base_address), uint32_t(e.region_page_count));
 }
 
 void TakeHeaps(std::vector<Snap::HeapTable>* out) {
