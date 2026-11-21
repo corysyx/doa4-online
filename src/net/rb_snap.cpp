@@ -307,6 +307,13 @@ struct Snap {
   std::vector<HeapTable> heaps;
   std::vector<HeapTable> heaps_end;  // the same tables at the end of the first pass (against the replay's end)
   bool mask_stashes = true;        // DOA4_NP_SNAPTEST_STASHES=hash: the SDK's handle stashes are hashed as they are
+  // Round 44: the cloth job (thread start 82370638) runs on 4 workers at once in lanes, and sub_82359578 links each
+  // item's record to list heads in its own stack frame (r1+128, +176, +224, +272). The link is reset when the record is
+  // used again, so it is stale between frames, but which worker took the item - and so which stack the address is in -
+  // differs from run to run. An address into one of these stacks is hashed and compared as its offset from that
+  // stack's top (DOA4_NP_SNAPTEST_WSTACKS=hash: as it is).
+  bool mask_wstacks = true;
+  std::vector<std::pair<uint32_t, uint32_t>> wstacks;  // [low, high) of the 82370638 workers' stacks, at the save
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   uint32_t diff_at = 1;            // DOA4_NP_SNAPTEST_DIFFAT: the boundary whose differing words are listed (1-based)
   std::vector<Chunk> b1_chunks;    // the first pass at boundary diff_at (1: the earliest point a difference can show)
@@ -443,17 +450,48 @@ size_t Capture(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chun
 // (round 25; DOA4_NP_SNAPTEST_STASHES=hash: as they are).
 bool IsStashSig(const uint8_t* p) { return p[0] == 0x52 && p[1] == 0x45 && p[2] == 0x58 && p[3] == 0x00; }
 
+uint32_t BeWord(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+
+// A big-endian word that points into a cloth worker's stack, as its offset from that stack's top (tagged so it cannot
+// equal an ordinary value of the same number); otherwise the word itself.
+bool WStackWord(const Snap& s, uint32_t v, uint32_t* canon) {
+  if ((v >> 28) != 7) return false;
+  for (const auto& r : s.wstacks) {
+    if (v >= r.first && v < r.second) {
+      *canon = 0x5A000000u | (r.second - v);
+      return true;
+    }
+  }
+  return false;
+}
+
 uint64_t Hash(const Snap& s, uint8_t* base) {
   uint64_t h = 0;
   thread_local std::vector<uint8_t> scratch;
   for (const Chunk& c : s.chunks) {
     ForUnkept(s, c.addr, c.len, [&](uint32_t a, uint32_t n) {
       const uint8_t* p = base + a;
+      if (s.mask_wstacks && !s.wstacks.empty()) {
+        bool any = false;
+        uint32_t c = 0;
+        for (uint32_t o = 0; o + 4 <= n && !any; o += 4) any = p[o] == 0x70 && WStackWord(s, BeWord(p + o), &c);
+        if (any) {
+          scratch.assign(p, p + n);
+          for (uint32_t o = 0; o + 4 <= n; o += 4) {
+            if (p[o] != 0x70 || !WStackWord(s, BeWord(p + o), &c)) continue;
+            scratch[o] = uint8_t(c >> 24);
+            scratch[o + 1] = uint8_t(c >> 16);
+            scratch[o + 2] = uint8_t(c >> 8);
+            scratch[o + 3] = uint8_t(c);
+          }
+          p = scratch.data();
+        }
+      }
       if (s.mask_stashes) {
         bool any = false;
         for (uint32_t o = 0; o + 4 <= n && !any; o += 4) any = IsStashSig(p + o);
         if (any) {
-          scratch.assign(p, p + n);
+          if (p != scratch.data()) scratch.assign(p, p + n);
           for (uint32_t o = 0; o + 4 <= n; o += 4) {
             if (!IsStashSig(p + o)) continue;
             std::memset(scratch.data() + o, 0, std::min<uint32_t>(8, n - o));
@@ -478,6 +516,10 @@ std::vector<uint32_t> ChangedWords(const Snap& s, uint8_t* base, const std::vect
       if (std::memcmp(was, now, kPage) == 0) continue;
       for (uint32_t w = 0; w < kPage; w += 4) {
         if (std::memcmp(was + w, now + w, 4) == 0) continue;
+        if (s.mask_wstacks) {
+          uint32_t c1 = 0, c2 = 0;
+          if (WStackWord(s, BeWord(was + w), &c1) && WStackWord(s, BeWord(now + w), &c2) && c1 == c2) continue;
+        }
         if (s.mask_stashes) {
           if (IsStashSig(was + w) || IsStashSig(now + w)) continue;
           if (o + w >= 4 && (IsStashSig(was + w - 4) || IsStashSig(now + w - 4))) continue;
@@ -1414,6 +1456,18 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
   s.kobj_save = KernelObjects();
   Lap("kernel objects");
   SaveStacks(s, base);
+  s.wstacks.clear();
+  for (const auto& st : s.stacks) {
+    if (st.start == 0x82370638) s.wstacks.emplace_back(st.low, st.high);
+  }
+  static bool told = false;
+  if (!told) {
+    told = true;
+    std::string t;
+    for (const auto& r : s.wstacks) t += fmt::format(" {:08X}-{:08X}", r.first, r.second);
+    Out(fmt::format("cloth worker stacks (82370638): {}{}; an address into one is compared as its offset from the top{}",
+                    s.wstacks.size(), t, s.mask_wstacks ? std::string() : std::string(" - off (DOA4_NP_SNAPTEST_WSTACKS=hash)")));
+  }
   Lap("thread stacks");
   SaveFiberStacks(s, base);
   Lap("fiber stacks");
@@ -1812,6 +1866,8 @@ bool SnapActive() {
     s.heaps_fix = !(heaps && std::string(heaps) == "leave");
     const char* stash = std::getenv("DOA4_NP_SNAPTEST_STASHES");
     s.mask_stashes = !(stash && std::string(stash) == "hash");
+    const char* wst = std::getenv("DOA4_NP_SNAPTEST_WSTACKS");
+    s.mask_wstacks = !(wst && std::string(wst) == "hash");
     const char* thr = std::getenv("DOA4_NP_SNAPTEST_THREADS");
     s.threads_fix = !(thr && std::string(thr) == "restore");
     if (const char* d = std::getenv("DOA4_NP_SNAPTEST_DIFFAT")) {

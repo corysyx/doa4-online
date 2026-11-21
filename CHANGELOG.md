@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.142 (2026-11-21)
+
+corysyx rollback research build.
+
+- SnapTest: an address into a cloth worker's stack (the 4 workers with thread start 82370638) is hashed and compared as
+  its offset from that stack's top (`DOA4_NP_SNAPTEST_WSTACKS=hash`: as it is). Rounds 43-44: with the workers in lanes
+  the cloth job runs on 4 threads at once, and sub_82359578 links each item's record to list heads in its own stack
+  frame (r1+128, +176, +224, +272). The record is reset before it is used again, so the link is stale between frames,
+  but which worker took the item differs from run to run. That was the only new difference with lanes: the serial
+  order (`DOA4_NP_SERIAL=3`) shows none, and 29 of its 30 rewinds end identical.
+- Rounds 43-44, timing: the main thread's wait for the job workers in a fight frame is p50 1.75 ms / p99 2.75 ms in
+  lanes, against 8.5 / 11.5 ms one at a time.
+- A desync check between two machines will need the same treatment of these words.
+
 ## 0.3.141 (2026-11-20)
 
 corysyx rollback research build.
