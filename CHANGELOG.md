@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.144 (2026-11-21)
+
+corysyx rollback research build.
+
+- SnapTest save: the list of committed, writable runs to copy is made from the SDK's heap page tables instead of a
+  VirtualQuery per run (`DOA4_NP_SNAPTEST_PAGELIST=fresh`: VirtualQuery). Round 46 (0.3.143): the kept list could be
+  used at only 1 of 30 saves, so saves stayed at ~55 ms; the summary line now says whether new marked pages or changed
+  heap tables were the reason. Each harness save still compares the list it used with a VirtualQuery one, by the
+  bytes they cover.
+- Round 46 (0.3.143): the load's direct copy-back cut a load from ~49.5 ms to ~6 ms (median), with no list ever
+  different from a fresh one; 21 of 30 rewinds passed and 28 ended identical (the fresh-list run: 18 and 24), the
+  remaining words again the sound ones (4001C68C, 400246DC, 401CFDE8).
+
 ## 0.3.143 (2026-11-21)
 
 corysyx rollback research build.

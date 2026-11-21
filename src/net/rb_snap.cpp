@@ -326,6 +326,7 @@ struct Snap {
     size_t bytes = 0;
   } pagelist;
   uint32_t pagelist_hits = 0, pagelist_misses = 0, pagelist_bad = 0;
+  uint32_t pagelist_new_marks = 0, pagelist_new_heaps = 0;  // why a kept list could not be used
   std::vector<std::pair<uint32_t, uint32_t>> wstacks;  // [low, high) of the 82370638 workers' stacks, at the save
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   uint32_t diff_at = 1;            // DOA4_NP_SNAPTEST_DIFFAT: the boundary whose differing words are listed (1-based)
@@ -1329,6 +1330,8 @@ void LoadHeaps(Snap& s);
 void TakeHeaps(std::vector<Snap::HeapTable>* out);
 void CompareHeaps(const Snap& s);
 
+size_t CaptureByHeaps(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chunks, std::vector<uint8_t>* buf);
+
 bool SameHeaps(const std::vector<Snap::HeapTable>& a, const std::vector<Snap::HeapTable>& b) {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); ++i) {
@@ -1428,7 +1431,15 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     for (const Chunk& c : s.chunks) std::memcpy(s.buf.data() + c.off, base + c.addr + HostOff(c.addr), c.len);
   } else {
     ++s.pagelist_misses;
-    bytes = Capture(base, s.saved, &s.chunks, &s.buf);
+    if (s.pagelist_cache && s.pagelist.valid) {
+      const bool marks = std::memcmp(s.pagelist.map.data(), s.saved, sizeof s.saved) != 0;
+      const bool heaps = !SameHeaps(s.pagelist.heaps, heaps_now);
+      s.pagelist_new_marks += marks;
+      s.pagelist_new_heaps += heaps;
+    }
+    // 0.3.144: round 46 kept the list at only 1 of 30 saves (the marks or the heaps change between saves 61 frames
+    // apart), so it is made from the SDK's heap page tables (committed and writable pages) instead of VirtualQuery
+    bytes = s.pagelist_cache ? CaptureByHeaps(base, s.saved, &s.chunks, &s.buf) : Capture(base, s.saved, &s.chunks, &s.buf);
     if (s.pagelist_cache) {
       s.pagelist.map.assign(s.saved, s.saved + sizeof s.saved);
       s.pagelist.heaps = std::move(heaps_now);
@@ -1483,10 +1494,20 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     }
     const double list = MsSince(bt);
     // 0.3.143: the list the save used (kept or made) against one made now
-    bool same = fresh.size() == s.chunks.size();
-    for (size_t i = 0; same && i < fresh.size(); ++i) {
-      same = fresh[i].first == s.chunks[i].addr && fresh[i].second == s.chunks[i].len;
-    }
+    // compared as the bytes they cover: adjacent runs are joined first (Windows splits a run where its regions do)
+    const auto Join = [](std::vector<std::pair<uint32_t, uint32_t>> v) {
+      std::vector<std::pair<uint32_t, uint32_t>> o;
+      for (const auto& r : v) {
+        if (!o.empty() && uint64_t(o.back().first) + o.back().second == r.first) o.back().second += r.second;
+        else o.push_back(r);
+      }
+      return o;
+    };
+    fresh = Join(std::move(fresh));
+    std::vector<std::pair<uint32_t, uint32_t>> used_runs;
+    for (const Chunk& c : s.chunks) used_runs.emplace_back(c.addr, c.len);
+    used_runs = Join(std::move(used_runs));
+    bool same = fresh == used_runs;
     if (!same) {
       ++s.pagelist_bad;
       s.pagelist.valid = false;  // made again at the next save
@@ -1494,10 +1515,9 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     std::string first_diff;
     if (!same) {
       size_t i = 0;
-      while (i < fresh.size() && i < s.chunks.size() && fresh[i].first == s.chunks[i].addr &&
-             fresh[i].second == s.chunks[i].len) ++i;
+      while (i < fresh.size() && i < used_runs.size() && fresh[i] == used_runs[i]) ++i;
       first_diff = fmt::format(" - FIRST DIFFERENCE at run {}: used {} now {}", i,
-                               i < s.chunks.size() ? fmt::format("{:08X}+{:X}", s.chunks[i].addr, s.chunks[i].len) : "none",
+                               i < used_runs.size() ? fmt::format("{:08X}+{:X}", used_runs[i].first, used_runs[i].second) : "none",
                                i < fresh.size() ? fmt::format("{:08X}+{:X}", fresh[i].first, fresh[i].second) : "none");
     }
     bench = fmt::format("copy {:.2f} then {:.2f}, compare by page {:.2f} ({} pages differ), buffer to buffer {:.2f}, "
@@ -2011,6 +2031,36 @@ rex::memory::BaseHeap* SnapHeap(uint32_t addr, bool physical_parent) {
 
 void SaveHeaps(Snap& s) { TakeHeaps(&s.heaps); }
 
+// 0.3.144: the committed, writable parts of the marked pages, from the SDK's page tables (what it committed and
+// protected through VirtualAlloc / VirtualProtect) instead of a VirtualQuery per run; each harness save checks it
+// against VirtualQuery afterwards.
+size_t CaptureByHeaps(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chunks, std::vector<uint8_t>* buf) {
+  chunks->clear();
+  size_t bytes = 0;
+  rex::memory::BaseHeap* h = nullptr;
+  for (const Range& r : Runs(map, kPages)) {
+    for (uint32_t p = r.first_page; p < r.first_page + r.pages; ++p) {
+      const uint32_t a = p << kPageShift;
+      if (!h || a < h->heap_base() || uint64_t(a) >= uint64_t(h->heap_base()) + h->heap_size()) h = SnapHeap(a, false);
+      if (!h || a < h->heap_base()) { h = nullptr; continue; }
+      const auto& table = h->*HeapPeek::kTable;
+      const size_t i = (a - h->heap_base()) >> (h->*HeapPeek::kShift);
+      if (i >= table.size()) continue;
+      const rex::memory::PageEntry& e = table[i];
+      if (!(e.state & rex::memory::kMemoryAllocationCommit) || !(e.current_protect & rex::memory::kMemoryProtectWrite)) continue;
+      if (!chunks->empty() && chunks->back().addr + chunks->back().len == a) {
+        chunks->back().len += kPage;
+      } else {
+        chunks->push_back(Chunk{a, kPage, bytes});
+      }
+      bytes += kPage;
+    }
+  }
+  if (buf->size() < bytes) buf->resize(bytes);
+  for (const Chunk& c : *chunks) std::memcpy(buf->data() + c.off, base + c.addr + HostOff(c.addr), c.len);
+  return bytes;
+}
+
 void TakeHeaps(std::vector<Snap::HeapTable>* out) {
   out->clear();
   auto keep = [&](uint32_t addr, bool parent) {
@@ -2244,8 +2294,11 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
     s.next_at = frame + s.cfg.every;
     if (s.tests_done == s.cfg.count) {
       Out(fmt::format("done: {} of {} tests passed", s.equal_tests, s.cfg.count));
-      Out(fmt::format("page list: kept at {} saves, made at {}, {} differed from a fresh one{}", s.pagelist_hits,
-                      s.pagelist_misses, s.pagelist_bad, s.pagelist_cache ? "" : " (DOA4_NP_SNAPTEST_PAGELIST=fresh)"));
+      Out(fmt::format("page list: kept at {} saves, made at {} ({} with new marked pages, {} with changed heap tables; "
+                      "{}), {} differed from a fresh one", s.pagelist_hits, s.pagelist_misses, s.pagelist_new_marks,
+                      s.pagelist_new_heaps,
+                      s.pagelist_cache ? "made from the heap tables" : "made by VirtualQuery: DOA4_NP_SNAPTEST_PAGELIST=fresh",
+                      s.pagelist_bad));
       s.phase = 3;
     }
   }
