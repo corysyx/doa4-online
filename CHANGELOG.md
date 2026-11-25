@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.146 (2026-11-25)
+
+corysyx rollback research build.
+
+- SnapTest: `DOA4_NP_SNAPTEST_XEXDATA=all` also saves every committed, writable page of the XEX heap (0x82000000),
+  written yet or not, so a page first written after the save (round 48: 0x82CE9000) can be put back; the summary says
+  how many pages that adds. A page first written during a first pass is now reported with what the heap table held
+  at the save and holds now (round 48: 0x4021B000, in test 3 of each run).
+- Round 48 (0.3.145): the saved-run list matched VirtualQuery at all 30 saves of both runs (3620-3633 pages from the
+  heap tables, 32 asked of Windows in 2 runs); loads ~5.5 ms, saves ~11.7-15 ms (physical copy 7.5-11.4 ms, harness
+  hash ~3.1 ms). 19 and 18 of 30 rewinds passed: the missed pages were not what failed them; the differing words are
+  still the sound counters, the floats at 400E6DA8/400EB5CC and the page first written in test 3.
+
 ## 0.3.145 (2026-11-21)
 
 corysyx rollback research build.

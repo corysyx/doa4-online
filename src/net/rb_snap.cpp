@@ -327,6 +327,11 @@ struct Snap {
   } pagelist;
   uint32_t pagelist_hits = 0, pagelist_misses = 0, pagelist_bad = 0;
   uint32_t pagelist_new_marks = 0, pagelist_new_heaps = 0;  // why a kept list could not be used
+  // 0.3.146: round 48 found 1 page per run first written during a first pass (0x4021B000, 0x82CE9000), which the
+  // snapshot cannot put back. DOA4_NP_SNAPTEST_XEXDATA=all also saves every committed, writable page of the XEX
+  // (0x82000000 heap) whether written yet or not; the report of such pages now says what the heap table held at the save.
+  bool xex_all = false;
+  uint32_t xex_pages = 0;
   std::vector<std::pair<uint32_t, uint32_t>> wstacks;  // [low, high) of the 82370638 workers' stacks, at the save
   bool kobj_fix = true;            // DOA4_NP_SNAPTEST_KOBJ=leave: only report the kernel objects, change nothing
   uint32_t diff_at = 1;            // DOA4_NP_SNAPTEST_DIFFAT: the boundary whose differing words are listed (1-based)
@@ -1332,6 +1337,8 @@ void CompareHeaps(const Snap& s);
 
 size_t CaptureByHeaps(uint8_t* base, const unsigned char* map, std::vector<Chunk>* chunks, std::vector<uint8_t>* buf);
 std::string HeapEntryText(uint32_t a);
+bool HeapWritable(uint32_t a);
+std::string SavedEntryText(const Snap& s, uint32_t a);
 extern uint32_t g_heap_pages, g_asked_pages, g_asked_runs;
 
 bool SameHeaps(const std::vector<Snap::HeapTable>& a, const std::vector<Snap::HeapTable>& b) {
@@ -1412,6 +1419,15 @@ void Save(Snap& s, uint8_t* base, uint32_t frame, uint8_t fight_state) {
     for (uint32_t p = 0; p < kPages; ++p) {
       s.saved[p] = s.seen[p] && SnapPage(p, 0, 0);
       pages += s.saved[p];
+    }
+    if (s.xex_all) {
+      s.xex_pages = 0;
+      for (uint32_t p = 0x80000000u >> kPageShift; p < (0x90000000u >> kPageShift); ++p) {
+        if (s.saved[p] || !SnapPage(p, 0, 0) || !HeapWritable(p << kPageShift)) continue;
+        s.saved[p] = 1;
+        ++pages;
+        ++s.xex_pages;
+      }
     }
   }
   Lap("page list");
@@ -1622,6 +1638,13 @@ void EndFirstPass(Snap& s, uint8_t* base) {
     for (const Range& x : Ranges(outside.data(), kPages, 12)) runs += (runs.empty() ? "" : ", ") + RangeText(x);
     Out(fmt::format("{} pages were first written during the first pass (not in the snapshot, not restored): {}",
                     s.outside, runs));
+    uint32_t shown = 0;
+    for (uint32_t p = 0; p < kPages && shown < 4; ++p) {
+      if (!outside[p]) continue;
+      ++shown;
+      Out(fmt::format("  page {:08X}: at the save {}; now {}", p << kPageShift, SavedEntryText(s, p << kPageShift),
+                      HeapEntryText(p << kPageShift)));
+    }
   }
 }
 
@@ -1982,6 +2005,8 @@ bool SnapActive() {
     s.mask_stashes = !(stash && std::string(stash) == "hash");
     const char* wst = std::getenv("DOA4_NP_SNAPTEST_WSTACKS");
     s.mask_wstacks = !(wst && std::string(wst) == "hash");
+    const char* xd = std::getenv("DOA4_NP_SNAPTEST_XEXDATA");
+    s.xex_all = xd && std::string(xd) == "all";
     const char* pl = std::getenv("DOA4_NP_SNAPTEST_PAGELIST");
     s.pagelist_cache = !(pl && std::string(pl) == "fresh");
     const char* thr = std::getenv("DOA4_NP_SNAPTEST_THREADS");
@@ -2102,6 +2127,33 @@ size_t CaptureByHeaps(uint8_t* base, const unsigned char* map, std::vector<Chunk
   if (buf->size() < bytes) buf->resize(bytes);
   for (const Chunk& c : *chunks) std::memcpy(buf->data() + c.off, base + c.addr + HostOff(c.addr), c.len);
   return bytes;
+}
+
+// 0.3.146: whether the SDK's page table has a page committed and writable now
+bool HeapWritable(uint32_t a) {
+  rex::memory::BaseHeap* h = SnapHeap(a, false);
+  if (!h || a < h->heap_base()) return false;
+  const auto& table = h->*HeapPeek::kTable;
+  const size_t i = (a - h->heap_base()) >> (h->*HeapPeek::kShift);
+  if (i >= table.size()) return false;
+  const rex::memory::PageEntry& e = table[i];
+  return (e.state & rex::memory::kMemoryAllocationCommit) && (e.current_protect & rex::memory::kMemoryProtectWrite);
+}
+
+// 0.3.146: what the page table kept at the save says about a page
+std::string SavedEntryText(const Snap& s, uint32_t a) {
+  rex::memory::BaseHeap* h = SnapHeap(a, false);
+  if (!h || a < h->heap_base()) return "no heap";
+  for (const Snap::HeapTable& t : s.heaps) {
+    if (!t.addr || SnapHeap(t.addr, false) != h) continue;
+    const size_t i = (a - h->heap_base()) >> (h->*HeapPeek::kShift);
+    if (i >= t.table.size()) return "past the kept table";
+    rex::memory::PageEntry e;
+    e.qword = t.table[i];
+    return fmt::format("state {} protect {}, region {:05X}000+{:X} pages", uint32_t(e.state), uint32_t(e.current_protect),
+                       uint32_t(e.base_address), uint32_t(e.region_page_count));
+  }
+  return "its heap's table was not kept";
 }
 
 // 0.3.145: what the SDK's page table says about a page, for the harness's list check
@@ -2350,6 +2402,7 @@ SnapStep SnapBoundary(uint32_t frame, uint8_t* base, uint8_t fight_state, ::PPCC
     s.next_at = frame + s.cfg.every;
     if (s.tests_done == s.cfg.count) {
       Out(fmt::format("done: {} of {} tests passed", s.equal_tests, s.cfg.count));
+      if (s.xex_all) Out(fmt::format("XEX data: {} committed, writable pages not yet written were saved too at the last save", s.xex_pages));
       Out(fmt::format("page list: kept at {} saves, made at {} ({} with new marked pages, {} with changed heap tables; "
                       "{}), {} differed from a fresh one", s.pagelist_hits, s.pagelist_misses, s.pagelist_new_marks,
                       s.pagelist_new_heaps,
